@@ -233,6 +233,8 @@ class Scheduler extends EventEmitter {
       this.timers.set('end:' + schedule.id, endTimer);
     }
     this._scheduleNext(schedule, startAt, duration);
+    console.log(files);
+    this.vlc.replacePlaylist(files);
   }
 
   _expire(schedule, startAt, duration) {

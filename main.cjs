@@ -87,7 +87,17 @@ function buildTrayMenu() {
   items.push({ type: 'separator' });
   items.push({ label: 'Show Dashboard', click: () => showDashboard() });
   items.push({ label: 'Reconnect', click: () => { if (socket) socket.connect(); } });
-  items.push({ label: 'Retry VLC', click: () => { if (vlc) vlc.start().catch(()=>{}); } });
+  items.push({
+    label: 'Retry VLC',
+    click: async () => {
+        try {
+            await vlc.start();
+        } catch (e) {
+            console.error("VLC start failed", e);
+            setStatus("vlc-error");
+        }
+    }
+});
   items.push({ label: 'Open Config Folder', click: () => { shell.openPath(DATA_DIR); } });
   items.push({ label: 'Logout', click: () => logout() });
   items.push({ type: 'separator' });
@@ -393,16 +403,19 @@ async function startRuntime() {
     pushDashboard();
   });
 
-  vlc.start().catch((e) => {
-    console.error('VLC start failed', e);
-    setStatus('vlc-error');
-  });
+  try {
+        await vlc.start();
+    } catch (e) {
+        console.error("VLC start failed", e);
+        setStatus("vlc-error");
+        return;
+    }
 
   const cache = readJson(CACHE_PATH, null);
   if (cache && Array.isArray(cache.schedules) && cache.schedules.length) {
     scheduler.update(cache.schedules);
   } else {
-    vlc.clear();
+    await vlc.clear();
   }
 
   app.setLoginItemSettings({ openAtLogin: true, path: process.execPath });

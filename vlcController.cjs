@@ -54,8 +54,19 @@ class VlcController extends EventEmitter {
     const qs = new URLSearchParams({ command: cmd, ...params });
     const url = `http://${this.httpHost}:${this.httpPort}/requests/status.xml?${qs.toString()}`;
     const auth = Buffer.from(':' + this.httpPass).toString('base64');
-    const r = await fetch(url, { headers: { Authorization: 'Basic ' + auth } });
-    return await r.text();
+    const r = await fetch(url, {
+    headers: {
+        Authorization: 'Basic ' + auth
+    }
+});
+
+console.log(cmd, r.status, url);
+
+const text = await r.text();
+
+console.log(text);
+
+return text;
   }
 
   async _status() {
@@ -196,6 +207,17 @@ class VlcController extends EventEmitter {
     } catch (e) {
       this.emit('error', e);
     }
+        console.log(filePaths);
+        const mrl = this._toMrl(filePaths[0]);
+
+    console.log(mrl);
+
+    const xml =
+    await this._api("in_play", {
+        input: mrl
+    });
+
+    console.log(xml);
   }
 
   async clear() {
