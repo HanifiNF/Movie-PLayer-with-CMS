@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Player — Login</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f172a; color: #e2e8f0;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100vh;
+    }
+    .card {
+      width: 100%; max-width: 360px;
+      background: #1e293b; padding: 28px; border-radius: 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.4);
+    }
+    h1 { margin: 0 0 6px; font-size: 22px; color: #38bdf8; }
+    .subtitle { margin: 0 0 22px; font-size: 12px; color: #94a3b8; }
+    label { display: block; font-size: 12px; color: #94a3b8; margin: 14px 0 6px; }
+    input {
+      width: 100%; padding: 10px 12px; border: 1px solid #334155;
+      background: #0f172a; color: #e2e8f0; border-radius: 8px;
+      font-size: 14px; outline: none;
+    }
+    input:focus { border-color: #38bdf8; }
+    button {
+      width: 100%; margin-top: 22px; padding: 12px;
+      background: #38bdf8; color: #0f172a; border: none;
+      border-radius: 8px; font-size: 14px; font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: #0ea5e9; }
+    button:disabled { background: #475569; cursor: not-allowed; }
+    .btn-secondary {
+      margin-top: 10px;
+      background: transparent;
+      color: #38bdf8;
+      border: 1px solid #334155;
+      font-weight: 500;
+    }
+    .btn-secondary:hover { background: #0f172a; border-color: #38bdf8; }
+    .btn-secondary:disabled { background: transparent; color: #475569; border-color: #334155; }
+    .err {
+      margin-top: 14px; padding: 10px 12px; border-radius: 6px;
+      background: #7f1d1d; color: #fecaca; font-size: 12px; display: none;
+    }
+    .err.show { display: block; }
+  </style>
+</head>
+<body>
+  <form class="card" id="f">
+    <h1>Player</h1>
+    <p class="subtitle">Sign in with your CMS account</p>
+
+    <label>Username</label>
+    <input name="username" type="text" placeholder="your username" required autocomplete="username" />
+
+    <label>Password</label>
+    <input name="password" type="password" placeholder="••••••••" required autocomplete="current-password" />
+
+    <button type="submit" id="btn">Login</button>
+
+    <button type="button" id="btnTest" class="btn-secondary">Test Mode (skip login)</button>
+
+    <div class="err" id="err"></div>
+  </form>
+
+  <script>
+    const { ipcRenderer } = require('electron');
+    const form = document.getElementById('f');
+    const btn = document.getElementById('btn');
+    const btnTest = document.getElementById('btnTest');
+    const errEl = document.getElementById('err');
+
+    function setBusy(busy) {
+      btn.disabled = busy;
+      btnTest.disabled = busy;
+      btn.textContent = busy ? 'Connecting...' : 'Login';
+      btnTest.textContent = busy ? 'Starting...' : 'Test Mode (skip login)';
+    }
+
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      errEl.classList.remove('show');
+      setBusy(true);
+      const fd = new FormData(form);
+      const payload = Object.fromEntries(fd);
+      try {
+        const result = await ipcRenderer.invoke('login', payload);
+        if (!result || !result.ok) throw new Error(result && result.error || 'Login failed');
+      } catch (err) {
+        errEl.textContent = err.message || String(err);
+        errEl.classList.add('show');
+        setBusy(false);
+      }
+    };
+
+    btnTest.onclick = async () => {
+      errEl.classList.remove('show');
+      setBusy(true);
+      try {
+        const result = await ipcRenderer.invoke('login-bypass');
+        if (!result || !result.ok) throw new Error(result && result.error || 'Bypass failed');
+      } catch (err) {
+        errEl.textContent = err.message || String(err);
+        errEl.classList.add('show');
+        setBusy(false);
+      }
+    };
+  </script>
+</body>
+</html>

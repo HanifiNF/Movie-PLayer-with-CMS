@@ -1,0 +1,70 @@
+{
+  "name": "player",
+  "version": "1.0.0",
+  "description": "Realtime media player for WirGroup CMS - receives schedule via Socket.IO and plays through VLC",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "build": "electron-builder --win nsis portable"
+  },
+  "author": "WirGroup",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": { "node": ">=22.12.0" },
+  "devDependencies": {
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.7"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.8.3"
+  },
+  "build": {
+    "appId": "com.wirgroup.player",
+    "productName": "Player",
+    "copyright": "Copyright © 2026 WirGroup",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "main.cjs",
+      "vlcController.cjs",
+      "scheduler.cjs",
+      "login.html",
+      "package.json",
+      "!**/node_modules/*/{README.md,readme.md}",
+      "!**/node_modules/*/{CHANGELOG.md,changelog.md}",
+      "!**/node_modules/.bin",
+      "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,suo,xproj,cc,d.ts}",
+      "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
+      "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.vs,.nyc_output}",
+      "!**/{appveyor.yml,.travis.yml,circle.yml}"
+    ],
+    "extraResources": [
+      {
+        "from": "vlc-portable",
+        "to": "vlc"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Player",
+      "runAfterFinish": true
+    },
+    "portable": {
+      "artifactName": "Player-Portable-${version}.exe"
+    }
+  }
+}
