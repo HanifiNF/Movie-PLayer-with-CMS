@@ -363,13 +363,11 @@ async function startRuntime() {
     console.log('[VLC stdout]', line.trim());
     appendVlcLog(line);
   });
-  vlc.on('rc-data', (msg) => {
-    const m = msg && msg.match(/Now Playing.*/);
-    if (m) {
-      nowSchedule = { ...(nowSchedule || {}), title: m[0].trim() };
-      refreshTray();
-      pushDashboard();
-    }
+  vlc.on('vlc-log', (line) => {
+    appendVlcLog(line);
+  });
+  vlc.on('exit', (code) => {
+    appendVlcLog(`[VLC exit] code=${code} at ${new Date().toISOString()}`);
   });
   vlc.on('state-change', () => {
     if (vlc.state === 'error') setStatus('vlc-error');

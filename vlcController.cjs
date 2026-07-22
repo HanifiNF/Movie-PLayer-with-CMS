@@ -1,12 +1,10 @@
 'use strict';
 
 const { spawn } = require('child_process');
-const net = require('net');
 const path = require('path');
 const fs = require('fs');
 const { EventEmitter } = require('events');
-
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+const CFG = require('./config.cjs');
 
 function resolveVlcPath() {
   const candidates = [
@@ -21,35 +19,20 @@ function resolveVlcPath() {
   return 'vlc.exe';
 }
 
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
 class VlcController extends EventEmitter {
   constructor(options = {}) {
     super();
     this.vlcPath = options.vlcPath || resolveVlcPath();
-    this.rcHost = '127.0.0.1';
-    this.rcPort = options.rcPort || 4212;
+    this.httpHost = '127.0.0.1';
+    this.httpPort = options.httpPort || CFG.VLC_HTTP_PORT || 8888;
+    this.httpPass = options.httpPass || CFG.VLC_HTTP_PASSWORD || 'player';
     this.proc = null;
-    this.rc = null;
     this.ready = false;
     this.currentPlaylist = [];
     this.state = 'idle';
-    this._buffer = '';
-    this.on('rc-data', (chunk) => this._parseRc(chunk));
-  }
-
-  _parseRc(chunk) {
-    this._buffer += chunk;
-    const lines = this._buffer.split(/\r?\n/);
-    this._buffer = lines.pop() || '';
-    for (const line of lines) {
-      const t = line.trim();
-      if (!t) continue;
-      if (t.indexOf('state:') === 0) {
-        const v = t.split(':')[1].trim();
-        const map = { playing: 'playing', paused: 'paused', stopped: 'idle' };
-        const next = map[v] || 'idle';
-        this._setState(next);
-      }
-    }
+    this._pollHandle = null;
   }
 
   _setState(next) {
@@ -58,50 +41,90 @@ class VlcController extends EventEmitter {
     this.emit('state-change', next);
   }
 
+  _toMrl(p) {
+    let s = String(p);
+    s = s.replace(/\\/g, '/');
+    s = s.replace(/%/g, '%25').replace(/#/g, '%23').replace(/\?/g, '%3F').replace(/ /g, '%20');
+    if (/^[A-Za-z]:/.test(s)) s = 'file:///' + s;
+    else if (!/^file:/.test(s)) s = 'file://' + s;
+    return s;
+  }
+
+  async _api(cmd, params = {}) {
+    const qs = new URLSearchParams({ command: cmd, ...params });
+    const url = `http://${this.httpHost}:${this.httpPort}/requests/status.xml?${qs.toString()}`;
+    const auth = Buffer.from(':' + this.httpPass).toString('base64');
+    const r = await fetch(url, { headers: { Authorization: 'Basic ' + auth } });
+    return await r.text();
+  }
+
+  async _status() {
+    const url = `http://${this.httpHost}:${this.httpPort}/requests/status.xml`;
+    const auth = Buffer.from(':' + this.httpPass).toString('base64');
+    const r = await fetch(url, { headers: { Authorization: 'Basic ' + auth } });
+    return await r.text();
+  }
+
+  async _refreshState() {
+    try {
+      const xml = await this._status();
+      const m = /<state>([^<]+)<\/state>/.exec(xml);
+      if (!m) return;
+      const map = { playing: 'playing', paused: 'paused', stopped: 'idle' };
+      this._setState(map[m[1]] || 'idle');
+      return m[1];
+    } catch (e) {
+      return null;
+    }
+  }
+
   start() {
     if (this.proc) return Promise.resolve();
     return new Promise((resolve, reject) => {
       const args = [
-        '--intf', 'rc',
-        '--rc-host', `${this.rcHost}:${this.rcPort}`,
+        '--intf', 'qt',
+        '--extraintf', 'http',
+        '--http-host', this.httpHost,
+        '--http-port', String(this.httpPort),
+        '--http-password', this.httpPass,
         '--fullscreen',
         '--no-video-title-show',
-        '--loop'
+        '--loop',
+        '--no-qt-error-dialogs'
       ];
 
       const vlcDir = path.dirname(this.vlcPath);
       const vlcPlugins = path.join(vlcDir, 'plugins');
-      const env = Object.assign({}, process.env, {
-        VLC_PLUGIN_PATH: vlcPlugins,
-        VLC_PLUGIN_DATA_PATH: vlcDir,
-        PATH: vlcDir + ';' + (process.env.PATH || '')
-      });
+      const env = process.env;
+
+      this.emit('vlc-log', `--- start attempt at ${new Date().toISOString()} ---`);
 
       try {
+        console.log("VLC Path:", this.vlcPath);
+        console.log("Exists:", fs.existsSync(this.vlcPath));
         this.proc = spawn(this.vlcPath, args, {
-          detached: false,
+          detached: true,
           stdio: ['ignore', 'pipe', 'pipe'],
           windowsHide: false,
           cwd: vlcDir,
           env: env
         });
+        console.log("PID:", this.proc.pid);
       } catch (err) {
         this._setState('error');
         return reject(err);
       }
 
       const stderrLines = [];
-      const maxStderr = 50;
       this.proc.stderr.on('data', (buf) => {
         const text = buf.toString('utf8');
         stderrLines.push(text.trim());
-        if (stderrLines.length > maxStderr) stderrLines.shift();
+        if (stderrLines.length > 50) stderrLines.shift();
         this.emit('vlc-stderr', text.trim());
       });
       this.proc.stdout.on('data', (buf) => {
         this.emit('vlc-stdout', buf.toString('utf8'));
       });
-
       this.proc.on('error', (err) => {
         this._setState('error');
         this.emit('error', err);
@@ -111,111 +134,100 @@ class VlcController extends EventEmitter {
         if (code !== 0 && code != null) {
           const tail = stderrLines.slice(-15).join('\n');
           this.emit('error', new Error('VLC exited code=' + code + (tail ? '\n' + tail : '')));
+          this._setState('error');
+        } else {
+          this._setState('idle');
         }
         this.proc = null;
         this.ready = false;
-        this.rc = null;
-        this._setState('idle');
       });
 
-      const connectRc = (attempt = 0) => {
+      const probeHttp = async (attempt = 0) => {
         if (attempt > 15) {
           this._setState('error');
           const tail = stderrLines.slice(-15).join('\n');
-          return reject(new Error('VLC RC interface not reachable' + (tail ? '\n' + tail : '')));
+          this.emit('vlc-log', `http probe failed after 15 attempts${tail ? '\n' + tail : ''}`);
+          return reject(new Error('VLC HTTP interface not reachable' + (tail ? '\n' + tail : '')));
         }
-        const sock = net.connect(this.rcPort, this.rcHost);
-        let opened = false;
-        sock.on('connect', () => {
-          opened = true;
-          this.rc = sock;
+        if (!this.proc) return reject(new Error('VLC exited during startup'));
+        try {
+          await this._status();
           this.ready = true;
           this.emit('ready');
-          this._setState(this.currentPlaylist.length ? 'playing' : 'idle');
+          this._startPoll();
           resolve();
-        });
-        sock.on('error', () => {
-          if (!opened && attempt < 15) {
-            setTimeout(() => connectRc(attempt + 1), 800);
-          }
-        });
-        sock.on('close', () => { this.rc = null; this.ready = false; });
-        sock.on('data', (buf) => this.emit('rc-data', buf.toString('utf8')));
+        } catch (_) {
+          this.emit('vlc-log', `http probe attempt ${attempt + 1} failed`);
+          await sleep(800);
+          probeHttp(attempt + 1);
+        }
       };
-      setTimeout(() => connectRc(0), 800);
+      setTimeout(() => probeHttp(0), 1000);
     });
   }
 
-  send(cmd) {
-    if (!this.rc || !this.rc.writable) return false;
-    const line = cmd.endsWith('\n') ? cmd : cmd + '\n';
-    return this.rc.write(line);
+  _startPoll() {
+    if (this._pollHandle) clearInterval(this._pollHandle);
+    this._pollHandle = setInterval(() => { this._refreshState(); }, 2000);
+    if (this._pollHandle.unref) this._pollHandle.unref();
+  }
+
+  _stopPoll() {
+    if (this._pollHandle) { clearInterval(this._pollHandle); this._pollHandle = null; }
   }
 
   async replacePlaylist(filePaths) {
     if (!Array.isArray(filePaths)) filePaths = [];
     this.currentPlaylist = filePaths.slice();
     if (!this.ready) await this.start();
-    this.send('clear');
-    await sleep(200);
-    for (const p of filePaths) {
-      this.send('add ' + this._toVlcUri(p));
-      await sleep(100);
-    }
-    if (filePaths.length) {
-      this.send('goto 0');
+    try {
+      await this._api('pl_empty');
+      await sleep(150);
+      for (const p of filePaths) {
+        const mrl = this._toMrl(p);
+        await this._api('in_play', { input: mrl });
+        await sleep(80);
+      }
+      if (filePaths.length) {
+        await this._api('pl_play');
+      }
       await sleep(300);
-      this.send('status');
+      await this._refreshState();
+    } catch (e) {
+      this.emit('error', e);
     }
-    this.send('fullscreen on');
-    this._setState(filePaths.length ? 'playing' : 'idle');
   }
 
-  enqueue(filePath) {
-    this.send('enqueue ' + this._toVlcUri(filePath));
-  }
-
-  clear() {
+  async clear() {
     this.currentPlaylist = [];
-    this.send('clear');
+    try { await this._api('pl_empty'); } catch (_) {}
     this._setState('idle');
   }
 
-  _toVlcUri(p) {
-    let s = String(p);
-    s = s.replace(/\\/g, '/');
-    s = s.replace(/%/g, '%25').replace(/#/g, '%23').replace(/\?/g, '%3F').replace(/ /g, '%20');
-    if (/^[A-Za-z]:/.test(s)) s = 'file:///' + s;
-    else if (!/^file:/.test(s)) s = 'file://' + s;
-    return s;
+  async pause() {
+    try { await this._api('pl_pause'); } catch (_) {}
+    await sleep(100);
+    await this._refreshState();
   }
 
-  pause() {
-    this.send('pause');
-    if (this.state === 'playing') this._setState('paused');
+  async play() {
+    try { await this._api('pl_play'); } catch (_) {}
+    await sleep(100);
+    await this._refreshState();
   }
-  play() {
-    this.send('play');
-    if (this.state === 'paused') this._setState('playing');
-  }
+
   isPlaying() { return this.state === 'playing'; }
 
-  quit() {
-    try { this.send('quit'); } catch (_) {}
+  async quit() {
+    this._stopPoll();
+    try { await this._api('pl_stop'); } catch (_) {}
+    await sleep(100);
     if (this.proc) {
       try { this.proc.kill(); } catch (_) {}
-    }
-    if (this.rc) {
-      try { this.rc.destroy(); } catch (_) {}
-      this.rc = null;
     }
     this.proc = null;
     this.ready = false;
     this._setState('idle');
-  }
-
-  _quote(p) {
-    return '"' + String(p).replace(/"/g, '\\"') + '"';
   }
 }
 

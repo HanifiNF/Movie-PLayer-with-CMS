@@ -5,6 +5,10 @@ module.exports = {
   // CMS server URL. Hardcoded; the login form no longer asks for it.
   SERVER_URL: 'http://localhost:3000',
 
+  // VLC HTTP interface settings (used by vlcController.cjs).
+  VLC_HTTP_PORT: 8888,
+  VLC_HTTP_PASSWORD: 'player',
+
   // Test/bypass mode credentials injected when user clicks "Test Mode".
   // No real network call happens; the player runs offline with a mock schedule.
   TEST_DEVICE_ID: 'test-device-001',
