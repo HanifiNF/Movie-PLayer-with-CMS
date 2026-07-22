@@ -33,6 +33,7 @@ class VlcController extends EventEmitter {
     this.currentPlaylist = [];
     this.state = 'idle';
     this._pollHandle = null;
+    this.display = options.display || null;
   }
 
   _setState(next) {
@@ -92,12 +93,29 @@ return text;
   start() {
     if (this.proc) return Promise.resolve();
     return new Promise((resolve, reject) => {
+      let x = 0;
+      let y = 0;
+      let w = 1920;
+      let h = 1080;
+
+      if (this.display) {
+          x = this.display.bounds.x;
+          y = this.display.bounds.y;
+          w = this.display.bounds.width;
+          h = this.display.bounds.height;
+
+          console.log("Using display:", this.display.bounds);
+      }
       const args = [
         '--intf', 'qt',
         '--extraintf', 'http',
         '--http-host', this.httpHost,
         '--http-port', String(this.httpPort),
         '--http-password', this.httpPass,
+        '--video-x', String(x),
+        '--video-y', String(y),
+        '--width', String(w),
+        '--height', String(h),
         '--fullscreen',
         '--no-video-title-show',
         '--loop',

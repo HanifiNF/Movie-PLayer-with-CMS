@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, shell, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -24,6 +24,7 @@ let connecting = false;
 let statusLabel = 'offline';
 let nowSchedule = null;
 let broadcastHandle = null;
+let secondDisplay = null;
 
 function readJson(file, fallback) {
   try {
@@ -177,11 +178,14 @@ function createDashboardWindow() {
   dashboardWin.removeMenu();
   dashboardWin.loadFile(path.join(__dirname, 'dashboard.html'));
   dashboardWin.on('close', (e) => {
-    e.preventDefault();
-    dashboardWin.hide();
+    if (!app.isQuiting) {
+        e.preventDefault();
+        dashboardWin.hide();
+    }
   });
   dashboardWin.on('minimize', () => {
-    dashboardWin.hide();
+    //e.preventDefault();
+    //dashboardWin.hide();
   });
   startBroadcastLoop();
 }
@@ -363,7 +367,9 @@ function injectMockSchedule() {
 async function startRuntime() {
   if (!cfg || !cfg.token) return;
   if (vlc) vlc.quit();
-  vlc = new VlcController();
+  vlc = new VlcController({
+    display: secondDisplay
+});
   vlc.on('error', (e) => console.error('VLC error', e));
   vlc.on('vlc-stderr', (line) => {
     console.error('[VLC stderr]', line);
@@ -507,6 +513,15 @@ function quitApp() {
 }
 
 app.on('ready', () => {
+  const displays = screen.getAllDisplays();
+
+  console.log("Displays:", displays);
+
+  if (displays.length > 1) {
+    secondDisplay = displays[1];
+  } else {
+    secondDisplay = displays[0];
+  }
   cfg = readJson(CONFIG_PATH, null);
   if (cfg && cfg.bypass) {
     try { fs.unlinkSync(CONFIG_PATH); } catch (_) {}

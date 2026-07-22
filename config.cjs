@@ -19,5 +19,7 @@ module.exports = {
   // Replace with an absolute local path that exists on this PC, e.g.
   //   'C:\\Users\\Public\\Videos\\sample.mp4'
   // or leave empty to just open VLC idle (black fullscreen).
-  TEST_FILE: 'C:\\Users\\Hanifi Setiawan\\Videos\\wwm\\wwm 2025.11.16 - 09.48.44.04.DVR.mp4'
+  TEST_FILE: 'C:\\Users\\Hanifi Setiawan\\Videos\\wwm\\wwm 2025.11.16 - 09.48.44.04.DVR.mp4',
+
+  VLC_MONITOR: 2
 };
