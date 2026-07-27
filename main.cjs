@@ -346,12 +346,27 @@ ipcMain.handle('quit', async () => {
   return { ok: true };
 });
 
+function parseTestScheduleStartAt(at) {
+  if (!at || typeof at !== 'string') return null;
+  const m = /^(\d{1,2}):(\d{2})$/.exec(at.trim());
+  if (!m) return null;
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(m[1], 10), parseInt(m[2], 10), 0, 0);
+  // If the time has already passed today, schedule for tomorrow.
+  if (start.getTime() <= now.getTime()) {
+    start.setTime(start.getTime() + 24 * 60 * 60 * 1000);
+  }
+  return start;
+}
+
 function injectMockSchedule() {
   if (!scheduler) return;
   const file = CFG.TEST_FILE && CFG.TEST_FILE.trim();
   const files = file ? [{ path: file, title: 'Test Media' }] : [];
-  const start = new Date(Date.now() - 1000);
-  const end = new Date(Date.now() + 60 * 60 * 1000);
+  const now = new Date();
+  const configuredStart = parseTestScheduleStartAt(CFG.TEST_SCHEDULE_START_AT);
+  const start = configuredStart || new Date(now.getTime() - 1000);
+  const end = new Date(start.getTime() + 60 * 60 * 1000);
   const mock = [{
     id: 'test-schedule-001',
     startTime: start.toISOString(),
@@ -361,6 +376,7 @@ function injectMockSchedule() {
     files: files,
     title: 'Test Schedule'
   }];
+  console.log(`[injectMockSchedule] start=${start.toISOString()} end=${end.toISOString()}`);
   writeJson(CACHE_PATH, { updatedAt: new Date().toISOString(), schedules: mock, mock: true });
   scheduler.update(mock);
 }
