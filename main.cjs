@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, shell, screen } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, shell, screen, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -16,6 +16,7 @@ const CACHE_PATH = path.join(DATA_DIR, 'schedules.json');
 let tray = null;
 let loginWin = null;
 let dashboardWin = null;
+let scheduleAdderWin = null;
 let socket = null;
 let vlc = null;
 let scheduler = null;
@@ -197,6 +198,34 @@ function showDashboard() {
   }
 }
 
+function createScheduleAdderWindow() {
+  if (scheduleAdderWin && !scheduleAdderWin.isDestroyed()) {
+    scheduleAdderWin.show();
+    scheduleAdderWin.focus();
+    return;
+  }
+  const parent = (dashboardWin && !dashboardWin.isDestroyed()) ? dashboardWin : undefined;
+  scheduleAdderWin = new BrowserWindow({
+    width: 480,
+    height: 540,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    parent,
+    modal: !!parent,
+    title: 'Player — Add Test Schedule',
+    autoHideMenuBar: true,
+    background: '#0b1220',
+    webPreferences: {
+      contextIsolation: false,
+      nodeIntegration: true
+    }
+  });
+  scheduleAdderWin.removeMenu();
+  scheduleAdderWin.loadFile(path.join(__dirname, 'scheduleAdder.html'));
+  scheduleAdderWin.on('closed', () => { scheduleAdderWin = null; });
+}
+
 function appendVlcLog(line) {
   try {
     const logPath = path.join(DATA_DIR, 'vlc-stderr.log');
@@ -290,7 +319,6 @@ ipcMain.handle('login-bypass', async () => {
     saveConfig(next, false);
     if (fs.existsSync(CACHE_PATH)) fs.unlinkSync(CACHE_PATH);
     await startRuntime();
-    injectMockSchedule();
     createDashboardWindow();
     if (loginWin && !loginWin.isDestroyed()) loginWin.hide();
     return { ok: true, deviceId: next.deviceId, bypass: true };
@@ -336,6 +364,78 @@ ipcMain.handle('open-config-folder', async () => {
   return { ok: true };
 });
 
+ipcMain.handle('open-schedule-adder', async () => {
+  if (!cfg || !cfg.bypass) return { ok: false, error: 'Only available in Test Mode' };
+  createScheduleAdderWindow();
+  return { ok: true };
+});
+
+ipcMain.handle('get-test-file', async () => {
+  return CFG.TEST_FILE || '';
+});
+
+function parseTimeLocal(hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
+  if (!m) return null;
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(m[1], 10), parseInt(m[2], 10), 0, 0);
+  return start;
+}
+
+ipcMain.handle('add-test-schedule', async (_e, payload) => {
+  try {
+    if (!cfg || !cfg.bypass) throw new Error('Only available in Test Mode');
+    if (!payload) throw new Error('No payload');
+    const title = String(payload.title || '').trim();
+    const pathStr = String(payload.path || '').trim();
+    const startStr = String(payload.startTime || '').trim();
+    const durationMinutes = parseInt(payload.durationMinutes, 10);
+    if (!title) throw new Error('Schedule name is required');
+    if (!startStr) throw new Error('Start time is required');
+    if (!pathStr) throw new Error('Video path is required');
+    if (!Number.isFinite(durationMinutes) || durationMinutes < 1) throw new Error('Duration must be at least 1 minute');
+
+    let start = parseTimeLocal(startStr);
+    if (!start) throw new Error('Start time must be HH:MM');
+
+    const now = new Date();
+    if (start.getTime() <= now.getTime()) {
+      const parent = (scheduleAdderWin && !scheduleAdderWin.isDestroyed()) ? scheduleAdderWin : (dashboardWin && !dashboardWin.isDestroyed() ? dashboardWin : undefined);
+      const choice = await dialog.showMessageBox(parent, {
+        type: 'question',
+        buttons: ['Schedule tomorrow', 'Cancel'],
+        defaultId: 0,
+        cancelId: 1,
+        title: 'Start time has passed',
+        message: `The time ${startStr} has already passed today. Schedule it for tomorrow instead?`
+      });
+      if (choice.response === 1) return { ok: false, cancelled: true, error: 'Schedule cancelled' };
+      start.setTime(start.getTime() + 24 * 60 * 60 * 1000);
+    }
+
+    const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
+    const newSchedule = {
+      id: 'manual-' + Date.now(),
+      title,
+      startTime: start.toISOString(),
+      endTime: end.toISOString(),
+      recurrence: null,
+      loop: true,
+      files: [{ path: pathStr, title: path.basename(pathStr) }]
+    };
+
+    const cache = readJson(CACHE_PATH, { schedules: [] });
+    const schedules = Array.isArray(cache.schedules) ? cache.schedules.slice() : [];
+    schedules.push(newSchedule);
+    writeJson(CACHE_PATH, { updatedAt: new Date().toISOString(), schedules, mock: true });
+    if (scheduler) scheduler.update(schedules);
+    pushDashboard();
+    return { ok: true, schedule: newSchedule };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
 ipcMain.handle('logout', async () => {
   logout();
   return { ok: true };
@@ -345,41 +445,6 @@ ipcMain.handle('quit', async () => {
   quitApp();
   return { ok: true };
 });
-
-function parseTestScheduleStartAt(at) {
-  if (!at || typeof at !== 'string') return null;
-  const m = /^(\d{1,2}):(\d{2})$/.exec(at.trim());
-  if (!m) return null;
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(m[1], 10), parseInt(m[2], 10), 0, 0);
-  // If the time has already passed today, schedule for tomorrow.
-  if (start.getTime() <= now.getTime()) {
-    start.setTime(start.getTime() + 24 * 60 * 60 * 1000);
-  }
-  return start;
-}
-
-function injectMockSchedule() {
-  if (!scheduler) return;
-  const file = CFG.TEST_FILE && CFG.TEST_FILE.trim();
-  const files = file ? [{ path: file, title: 'Test Media' }] : [];
-  const now = new Date();
-  const configuredStart = parseTestScheduleStartAt(CFG.TEST_SCHEDULE_START_AT);
-  const start = configuredStart || new Date(now.getTime() - 1000);
-  const end = new Date(start.getTime() + 60 * 60 * 1000);
-  const mock = [{
-    id: 'test-schedule-001',
-    startTime: start.toISOString(),
-    endTime: end.toISOString(),
-    recurrence: null,
-    loop: true,
-    files: files,
-    title: 'Test Schedule'
-  }];
-  console.log(`[injectMockSchedule] start=${start.toISOString()} end=${end.toISOString()}`);
-  writeJson(CACHE_PATH, { updatedAt: new Date().toISOString(), schedules: mock, mock: true });
-  scheduler.update(mock);
-}
 
 async function startRuntime() {
   if (!cfg || !cfg.token) return;

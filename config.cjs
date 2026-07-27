@@ -14,16 +14,10 @@ module.exports = {
   TEST_TOKEN: 'dev-test-token',
   TEST_USERNAME: 'tester',
 
-  // Media file to play when Test Mode injects a mock schedule.
+  // Default video path used by "Add Schedule" in Test Mode.
   // Replace with an absolute local path that exists on this PC, e.g.
   //   'C:\\Users\\Public\\Videos\\sample.mp4'
-  // or leave empty to just open VLC idle (black fullscreen).
   TEST_FILE: 'C:\\laragon\\www\\Netflix-clone\\storage\\app\\video\\9sbXNTj4uHvgIgIIt9Xptg8qpSBJTyjTYdoT7QwR.mp4',
-
-  // Optional start time for the Test Mode mock schedule.
-  // Format: 'HH:MM' (24-hour local time). Example: '14:15'.
-  // Leave null / empty to start the mock schedule immediately.
-  TEST_SCHEDULE_START_AT: '14:15',
 
   VLC_MONITOR: 2
 };
