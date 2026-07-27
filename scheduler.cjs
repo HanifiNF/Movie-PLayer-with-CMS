@@ -220,6 +220,8 @@ class Scheduler extends EventEmitter {
   }
 
   _activate(schedule, startAt, duration) {
+    if (this._activatingId === schedule.id) return;
+    this._activatingId = schedule.id;
     this._setCurrent(schedule.id, startAt, duration);
     const files = (schedule.files || []).map(f => f.path).filter(Boolean);
     if (files.length) {
@@ -233,8 +235,7 @@ class Scheduler extends EventEmitter {
       this.timers.set('end:' + schedule.id, endTimer);
     }
     this._scheduleNext(schedule, startAt, duration);
-    console.log(files);
-    this.vlc.replacePlaylist(files);
+    this._activatingId = null;
   }
 
   _expire(schedule, startAt, duration) {

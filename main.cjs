@@ -288,6 +288,7 @@ ipcMain.handle('login-bypass', async () => {
       bypass: true
     };
     saveConfig(next, false);
+    if (fs.existsSync(CACHE_PATH)) fs.unlinkSync(CACHE_PATH);
     await startRuntime();
     injectMockSchedule();
     createDashboardWindow();
@@ -305,7 +306,7 @@ ipcMain.handle('vlc-pause', async () => {
 });
 
 ipcMain.handle('vlc-resume', async () => {
-  if (vlc) vlc.play();
+  if (vlc) vlc.resume();
   pushDashboard();
   return { ok: true };
 });
@@ -531,6 +532,13 @@ app.on('ready', () => {
     startRuntime().then(() => createDashboardWindow()).catch(e => console.error('startRuntime', e));
   } else {
     createLoginWindow();
+    if (process.env.PLAYER_AUTO_TEST === '1') {
+      setTimeout(() => {
+        if (loginWin && !loginWin.isDestroyed()) {
+          loginWin.webContents.executeJavaScript('document.getElementById("btnTest").click()').catch(() => {});
+        }
+      }, 1200);
+    }
   }
   try {
     tray = new Tray(getTrayIcon());

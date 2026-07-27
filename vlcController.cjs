@@ -1,9 +1,9 @@
 'use strict';
 
 const { spawn } = require('child_process');
-const net = require('net');
 const path = require('path');
 const fs = require('fs');
+const net = require('net');
 const { EventEmitter } = require('events');
 const CFG = require('./config.cjs');
 
@@ -26,7 +26,6 @@ class VlcController extends EventEmitter {
   constructor(options = {}) {
     super();
     this.vlcPath = options.vlcPath || resolveVlcPath();
-    this.rcHost = '127.0.0.1';
     this.rcPort = options.rcPort || CFG.VLC_RC_PORT || 4212;
     this.proc = null;
     this.rc = null;
@@ -54,28 +53,91 @@ class VlcController extends EventEmitter {
   }
 
   send(cmd) {
-    if (!this.rc || !this.rc.writable) return false;
+    if (!this.rc || !this.rc.writable) {
+      this.emit('vlc-log', `[RC send] socket not writable`);
+      return false;
+    }
     const line = cmd.endsWith('\n') ? cmd : cmd + '\n';
+    this.emit('vlc-log', `[RC send] ${line.trim()}`);
     return this.rc.write(line);
   }
 
   _parseRc(chunk) {
+    this.emit('vlc-log', `[RC raw] ${JSON.stringify(chunk)}`);
     this._buffer += chunk;
     const lines = this._buffer.split(/\r?\n/);
     this._buffer = lines.pop() || '';
     for (const line of lines) {
       const t = line.trim();
       if (!t) continue;
-      if (t.indexOf('state:') === 0) {
-        const v = t.split(':')[1].trim();
-        const map = { playing: 'playing', paused: 'paused', stopped: 'idle' };
-        this._setState(map[v] || 'idle');
+      this.emit('rc-data', line);
+      let raw = null;
+      // console RC: "state: playing" or "| state: playing"
+      let m = t.match(/(?:^\|\s*)?state\s*:\s*([a-zA-Z_]+)/i);
+      if (m) raw = m[1];
+      // TCP RC: "( state playing )" or "state playing"
+      if (!raw) { m = t.match(/(?:state\s+)([a-zA-Z_]+)/i); if (m) raw = m[1]; }
+      if (raw) {
+        raw = raw.toLowerCase();
+        const map = { playing: 'playing', paused: 'paused', opening: 'playing', buffering: 'playing', stopped: 'idle', ended: 'idle', error: 'error' };
+        this._setState(map[raw] || 'idle');
+        continue;
       }
+      // VLC TCP RC numeric status-change notifications.
+      const l = t.toLowerCase();
+      if (l.includes('play state:')) this._setState('playing');
+      else if (l.includes('pause state:')) this._setState('paused');
+      else if (l.includes('stop state:')) this._setState('idle');
     }
   }
 
+  _connectRc() {
+    return new Promise((resolve, reject) => {
+      if (this.rc && !this.rc.destroyed) return resolve();
+      const sock = new net.Socket();
+      let settled = false;
+      sock.setEncoding('utf8');
+      sock.on('connect', () => {
+        this.rc = sock;
+        if (!settled) { settled = true; resolve(); }
+        this.emit('vlc-log', `[RC] TCP connected 127.0.0.1:${this.rcPort}`);
+        this.ready = true;
+        this.emit('ready');
+        this._startPoll();
+      });
+      sock.on('data', (data) => { this._parseRc(data); });
+      sock.on('error', (err) => {
+        this.emit('vlc-log', `[RC] TCP error: ${err.message}`);
+        if (!settled) { settled = true; reject(err); }
+      });
+      sock.on('close', () => {
+        this.emit('vlc-log', `[RC] TCP closed`);
+        this.rc = null;
+        this.ready = false;
+        this._stopPoll();
+      });
+      sock.connect(this.rcPort, '127.0.0.1');
+    });
+  }
+
+  _waitForRc(maxMs = 8000) {
+    const deadline = Date.now() + maxMs;
+    return new Promise((resolve, reject) => {
+      const tryConnect = async () => {
+        if (Date.now() > deadline) return reject(new Error('RC TCP not available'));
+        try {
+          await this._connectRc();
+          resolve();
+        } catch (err) {
+          setTimeout(tryConnect, 300);
+        }
+      };
+      tryConnect();
+    });
+  }
+
   start() {
-    if (this.proc) return Promise.resolve();
+    if (this.proc) return this._waitForRc();
     return new Promise((resolve, reject) => {
       let x = 0, y = 0, w = 1920, h = 1080;
       if (this.display) {
@@ -88,7 +150,7 @@ class VlcController extends EventEmitter {
       const args = [
         '--intf', 'qt',
         '--extraintf', 'rc',
-        '--rc-host', `${this.rcHost}:${this.rcPort}`,
+        `--rc-host=127.0.0.1:${this.rcPort}`,
         '--video-x', String(x),
         '--video-y', String(y),
         '--width', String(w),
@@ -118,14 +180,16 @@ class VlcController extends EventEmitter {
       }
 
       const stderrLines = [];
+      this.proc.stdout.on('data', (buf) => {
+        const text = buf.toString('utf8');
+        this.emit('vlc-stdout', text.trim());
+        this._parseRc(text);
+      });
       this.proc.stderr.on('data', (buf) => {
         const text = buf.toString('utf8');
         stderrLines.push(text.trim());
         if (stderrLines.length > 50) stderrLines.shift();
         this.emit('vlc-stderr', text.trim());
-      });
-      this.proc.stdout.on('data', (buf) => {
-        this.emit('vlc-stdout', buf.toString('utf8'));
       });
       this.proc.on('error', (err) => {
         this._setState('error');
@@ -142,42 +206,11 @@ class VlcController extends EventEmitter {
         }
         this.proc = null;
         this.ready = false;
-        this.rc = null;
+        if (this.rc && !this.rc.destroyed) { this.rc.destroy(); this.rc = null; }
+        this._stopPoll();
       });
 
-      const connectRc = (attempt = 0) => {
-        if (attempt > 15) {
-          this._setState('error');
-          const tail = stderrLines.slice(-15).join('\n');
-          this.emit('vlc-log', `rc probe failed after 15 attempts${tail ? '\n' + tail : ''}`);
-          return reject(new Error('VLC RC interface not reachable' + (tail ? '\n' + tail : '')));
-        }
-        if (!this.proc) return reject(new Error('VLC exited during startup'));
-        const sock = net.connect(this.rcPort, this.rcHost);
-        let opened = false;
-        sock.on('connect', () => {
-          opened = true;
-          this.rc = sock;
-          this.ready = true;
-          this.emit('ready');
-          this.emit('vlc-log', `[VLC ready] RC connected at ${new Date().toISOString()}`);
-          sock.on('data', (buf) => {
-            const text = buf.toString('utf8');
-            this.emit('rc-data', text);
-            this._parseRc(text);
-          });
-          this._startPoll();
-          resolve();
-        });
-        sock.on('error', () => {
-          if (!opened && attempt < 15) {
-            this.emit('vlc-log', `rc probe attempt ${attempt + 1} failed`);
-            setTimeout(() => connectRc(attempt + 1), 800);
-          }
-        });
-        sock.on('close', () => { this.rc = null; this.ready = false; });
-      };
-      setTimeout(() => connectRc(0), 1000);
+      this._waitForRc().then(resolve).catch(reject);
     });
   }
 
@@ -202,9 +235,10 @@ class VlcController extends EventEmitter {
       this.send('add ' + mrl);
       await sleep(100);
     }
-    if (filePaths.length) this.send('goto 0');
+    if (filePaths.length) this.send('play');
     await sleep(300);
     this.send('status');
+    if (filePaths.length) this._setState('playing');
   }
 
   async clear() {
@@ -216,12 +250,26 @@ class VlcController extends EventEmitter {
   async pause() {
     this.send('pause');
     await sleep(100);
+    this._setState('paused');
     this.send('status');
   }
 
   async play() {
     this.send('play');
     await sleep(100);
+    this._setState('playing');
+    this.send('status');
+  }
+
+  async resume() {
+    // VLC old RC pause is a toggle. When paused, send pause again to resume.
+    if (this.state === 'paused') {
+      this.send('pause');
+    } else {
+      this.send('play');
+    }
+    await sleep(100);
+    this._setState('playing');
     this.send('status');
   }
 
@@ -230,14 +278,9 @@ class VlcController extends EventEmitter {
   async quit() {
     this._stopPoll();
     this.send('quit');
-    await sleep(100);
-    if (this.rc) {
-      try { this.rc.destroy(); } catch (_) {}
-      this.rc = null;
-    }
-    if (this.proc) {
-      try { this.proc.kill(); } catch (_) {}
-    }
+    await sleep(200);
+    if (this.rc && !this.rc.destroyed) { this.rc.destroy(); this.rc = null; }
+    if (this.proc) { try { this.proc.kill(); } catch (_) {} }
     this.proc = null;
     this.ready = false;
     this._setState('idle');
