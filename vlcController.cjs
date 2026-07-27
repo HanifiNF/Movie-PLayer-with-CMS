@@ -1,6 +1,7 @@
 'use strict';
 
 const { spawn } = require('child_process');
+const net = require('net');
 const path = require('path');
 const fs = require('fs');
 const { EventEmitter } = require('events');
@@ -25,14 +26,15 @@ class VlcController extends EventEmitter {
   constructor(options = {}) {
     super();
     this.vlcPath = options.vlcPath || resolveVlcPath();
-    this.httpHost = '127.0.0.1';
-    this.httpPort = options.httpPort || CFG.VLC_HTTP_PORT || 8888;
-    this.httpPass = options.httpPass || CFG.VLC_HTTP_PASSWORD || 'player';
+    this.rcHost = '127.0.0.1';
+    this.rcPort = options.rcPort || CFG.VLC_RC_PORT || 4212;
     this.proc = null;
+    this.rc = null;
     this.ready = false;
     this.currentPlaylist = [];
     this.state = 'idle';
     this._pollHandle = null;
+    this._buffer = '';
     this.display = options.display || null;
   }
 
@@ -51,67 +53,42 @@ class VlcController extends EventEmitter {
     return s;
   }
 
-  async _api(cmd, params = {}) {
-    const qs = new URLSearchParams({ command: cmd, ...params });
-    const url = `http://${this.httpHost}:${this.httpPort}/requests/status.xml?${qs.toString()}`;
-    const auth = Buffer.from(':' + this.httpPass).toString('base64');
-    const r = await fetch(url, {
-    headers: {
-        Authorization: 'Basic ' + auth
-    }
-});
-
-console.log(cmd, r.status, url);
-
-const text = await r.text();
-
-console.log(text);
-
-return text;
+  send(cmd) {
+    if (!this.rc || !this.rc.writable) return false;
+    const line = cmd.endsWith('\n') ? cmd : cmd + '\n';
+    return this.rc.write(line);
   }
 
-  async _status() {
-    const url = `http://${this.httpHost}:${this.httpPort}/requests/status.xml`;
-    const auth = Buffer.from(':' + this.httpPass).toString('base64');
-    const r = await fetch(url, { headers: { Authorization: 'Basic ' + auth } });
-    return await r.text();
-  }
-
-  async _refreshState() {
-    try {
-      const xml = await this._status();
-      const m = /<state>([^<]+)<\/state>/.exec(xml);
-      if (!m) return;
-      const map = { playing: 'playing', paused: 'paused', stopped: 'idle' };
-      this._setState(map[m[1]] || 'idle');
-      return m[1];
-    } catch (e) {
-      return null;
+  _parseRc(chunk) {
+    this._buffer += chunk;
+    const lines = this._buffer.split(/\r?\n/);
+    this._buffer = lines.pop() || '';
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t) continue;
+      if (t.indexOf('state:') === 0) {
+        const v = t.split(':')[1].trim();
+        const map = { playing: 'playing', paused: 'paused', stopped: 'idle' };
+        this._setState(map[v] || 'idle');
+      }
     }
   }
 
   start() {
     if (this.proc) return Promise.resolve();
     return new Promise((resolve, reject) => {
-      let x = 0;
-      let y = 0;
-      let w = 1920;
-      let h = 1080;
-
+      let x = 0, y = 0, w = 1920, h = 1080;
       if (this.display) {
-          x = this.display.bounds.x;
-          y = this.display.bounds.y;
-          w = this.display.bounds.width;
-          h = this.display.bounds.height;
-
-          console.log("Using display:", this.display.bounds);
+        x = this.display.bounds.x;
+        y = this.display.bounds.y;
+        w = this.display.bounds.width;
+        h = this.display.bounds.height;
       }
+
       const args = [
         '--intf', 'qt',
-        '--extraintf', 'http',
-        '--http-host', this.httpHost,
-        '--http-port', String(this.httpPort),
-        '--http-password', this.httpPass,
+        '--extraintf', 'rc',
+        '--rc-host', `${this.rcHost}:${this.rcPort}`,
         '--video-x', String(x),
         '--video-y', String(y),
         '--width', String(w),
@@ -123,14 +100,11 @@ return text;
       ];
 
       const vlcDir = path.dirname(this.vlcPath);
-      const vlcPlugins = path.join(vlcDir, 'plugins');
       const env = process.env;
 
       this.emit('vlc-log', `--- start attempt at ${new Date().toISOString()} ---`);
 
       try {
-        console.log("VLC Path:", this.vlcPath);
-        console.log("Exists:", fs.existsSync(this.vlcPath));
         this.proc = spawn(this.vlcPath, args, {
           detached: true,
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -138,7 +112,6 @@ return text;
           cwd: vlcDir,
           env: env
         });
-        console.log("PID:", this.proc.pid);
       } catch (err) {
         this._setState('error');
         return reject(err);
@@ -169,35 +142,48 @@ return text;
         }
         this.proc = null;
         this.ready = false;
+        this.rc = null;
       });
 
-      const probeHttp = async (attempt = 0) => {
+      const connectRc = (attempt = 0) => {
         if (attempt > 15) {
           this._setState('error');
           const tail = stderrLines.slice(-15).join('\n');
-          this.emit('vlc-log', `http probe failed after 15 attempts${tail ? '\n' + tail : ''}`);
-          return reject(new Error('VLC HTTP interface not reachable' + (tail ? '\n' + tail : '')));
+          this.emit('vlc-log', `rc probe failed after 15 attempts${tail ? '\n' + tail : ''}`);
+          return reject(new Error('VLC RC interface not reachable' + (tail ? '\n' + tail : '')));
         }
         if (!this.proc) return reject(new Error('VLC exited during startup'));
-        try {
-          await this._status();
+        const sock = net.connect(this.rcPort, this.rcHost);
+        let opened = false;
+        sock.on('connect', () => {
+          opened = true;
+          this.rc = sock;
           this.ready = true;
           this.emit('ready');
+          this.emit('vlc-log', `[VLC ready] RC connected at ${new Date().toISOString()}`);
+          sock.on('data', (buf) => {
+            const text = buf.toString('utf8');
+            this.emit('rc-data', text);
+            this._parseRc(text);
+          });
           this._startPoll();
           resolve();
-        } catch (_) {
-          this.emit('vlc-log', `http probe attempt ${attempt + 1} failed`);
-          await sleep(800);
-          probeHttp(attempt + 1);
-        }
+        });
+        sock.on('error', () => {
+          if (!opened && attempt < 15) {
+            this.emit('vlc-log', `rc probe attempt ${attempt + 1} failed`);
+            setTimeout(() => connectRc(attempt + 1), 800);
+          }
+        });
+        sock.on('close', () => { this.rc = null; this.ready = false; });
       };
-      setTimeout(() => probeHttp(0), 1000);
+      setTimeout(() => connectRc(0), 1000);
     });
   }
 
   _startPoll() {
     if (this._pollHandle) clearInterval(this._pollHandle);
-    this._pollHandle = setInterval(() => { this._refreshState(); }, 2000);
+    this._pollHandle = setInterval(() => { this.send('status'); }, 2000);
     if (this._pollHandle.unref) this._pollHandle.unref();
   }
 
@@ -209,59 +195,46 @@ return text;
     if (!Array.isArray(filePaths)) filePaths = [];
     this.currentPlaylist = filePaths.slice();
     if (!this.ready) await this.start();
-    try {
-      await this._api('pl_empty');
-      await sleep(150);
-      for (const p of filePaths) {
-        const mrl = this._toMrl(p);
-        await this._api('in_play', { input: mrl });
-        await sleep(80);
-      }
-      if (filePaths.length) {
-        await this._api('pl_play');
-      }
-      await sleep(300);
-      await this._refreshState();
-    } catch (e) {
-      this.emit('error', e);
+    this.send('clear');
+    await sleep(200);
+    for (const p of filePaths) {
+      const mrl = this._toMrl(p);
+      this.send('add ' + mrl);
+      await sleep(100);
     }
-        console.log(filePaths);
-        const mrl = this._toMrl(filePaths[0]);
-
-    console.log(mrl);
-
-    const xml =
-    await this._api("in_play", {
-        input: mrl
-    });
-
-    console.log(xml);
+    if (filePaths.length) this.send('goto 0');
+    await sleep(300);
+    this.send('status');
   }
 
   async clear() {
     this.currentPlaylist = [];
-    try { await this._api('pl_empty'); } catch (_) {}
+    this.send('clear');
     this._setState('idle');
   }
 
   async pause() {
-    try { await this._api('pl_pause'); } catch (_) {}
+    this.send('pause');
     await sleep(100);
-    await this._refreshState();
+    this.send('status');
   }
 
   async play() {
-    try { await this._api('pl_play'); } catch (_) {}
+    this.send('play');
     await sleep(100);
-    await this._refreshState();
+    this.send('status');
   }
 
   isPlaying() { return this.state === 'playing'; }
 
   async quit() {
     this._stopPoll();
-    try { await this._api('pl_stop'); } catch (_) {}
+    this.send('quit');
     await sleep(100);
+    if (this.rc) {
+      try { this.rc.destroy(); } catch (_) {}
+      this.rc = null;
+    }
     if (this.proc) {
       try { this.proc.kill(); } catch (_) {}
     }
