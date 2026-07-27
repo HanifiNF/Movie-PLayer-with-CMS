@@ -221,15 +221,18 @@ class Scheduler extends EventEmitter {
 
   _activate(schedule, startAt, duration) {
     if (this._activatingId === schedule.id) return;
+    const alreadyActive = this.currentScheduleId === schedule.id;
     this._activatingId = schedule.id;
     this._setCurrent(schedule.id, startAt, duration);
-    const files = (schedule.files || []).map(f => f.path).filter(Boolean);
-    if (files.length) {
-      this.vlc.replacePlaylist(files).catch(err => this.emit('error', err));
-    } else {
-      this.vlc.clear();
+    if (!alreadyActive) {
+      const files = (schedule.files || []).map(f => f.path).filter(Boolean);
+      if (files.length) {
+        this.vlc.replacePlaylist(files).catch(err => this.emit('error', err));
+      } else {
+        this.vlc.clear();
+      }
+      this.emit('activate', { schedule, start: startAt, duration });
     }
-    this.emit('activate', { schedule, start: startAt, duration });
     if (duration && duration > 0) {
       const endTimer = setTimeout(() => this._expire(schedule, startAt, duration), duration);
       this.timers.set('end:' + schedule.id, endTimer);
