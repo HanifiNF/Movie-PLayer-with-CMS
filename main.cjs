@@ -30,6 +30,7 @@ let nowSchedule = null;
 let broadcastHandle = null;
 let secondDisplay = null;
 let transitionWin = null;
+let isShuttingDown = false;
 
 function readJson(file, fallback) {
   try {
@@ -409,6 +410,10 @@ ipcMain.handle('vlc-retry', async () => {
   if (!vlc) return { ok: false, error: 'VLC controller not initialized' };
   try {
     await vlc.start();
+    if (scheduler) {
+      const cache = readJson(CACHE_PATH, { schedules: [] });
+      scheduler.recover(cache.schedules);
+    }
     setStatus(cfg && cfg.bypass ? 'test-mode (no server)' : (socket && socket.connected ? 'online' : 'offline'));
     pushDashboard();
     return { ok: true };
@@ -530,6 +535,10 @@ async function startRuntime() {
   });
   vlc.on('exit', (code) => {
     appendVlcLog(`[VLC exit] code=${code} at ${new Date().toISOString()}`);
+    if (!isShuttingDown) {
+      setStatus('vlc-error');
+      pushDashboard();
+    }
   });
   vlc.on('state-change', () => {
     if (vlc.state === 'error') setStatus('vlc-error');
@@ -638,6 +647,7 @@ function mergeSchedules(current, incoming) {
 }
 
 function logout() {
+  isShuttingDown = true;
   try { if (socket) socket.disconnect(); } catch (_) {}
   socket = null;
   if (broadcastHandle) { clearInterval(broadcastHandle); broadcastHandle = null; }
@@ -649,9 +659,11 @@ function logout() {
   nowSchedule = null;
   setStatus('offline');
   createLoginWindow();
+  isShuttingDown = false;
 }
 
 function quitApp() {
+  isShuttingDown = true;
   try { if (socket) socket.disconnect(); } catch (_) {}
   if (broadcastHandle) { clearInterval(broadcastHandle); broadcastHandle = null; }
   if (scheduler) scheduler.clear();
@@ -700,6 +712,7 @@ app.on('window-all-closed', (e) => {
 });
 
 app.on('before-quit', () => {
+  isShuttingDown = true;
   try { if (socket) socket.disconnect(); } catch (_) {}
   if (scheduler) scheduler.clear();
   if (vlc) vlc.quit();
@@ -707,6 +720,7 @@ app.on('before-quit', () => {
 });
 
 app.on('will-quit', () => {
+  isShuttingDown = true;
   try { if (socket) socket.disconnect(); } catch (_) {}
   if (scheduler) scheduler.clear();
   if (vlc) vlc.quit();

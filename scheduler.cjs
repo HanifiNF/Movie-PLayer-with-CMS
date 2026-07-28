@@ -201,6 +201,13 @@ class Scheduler extends EventEmitter {
     this.schedules = [];
   }
 
+  recover(schedules) {
+    this.clearTimers();
+    this._setCurrent(null, null, null);
+    this._idlePlaying = false;
+    this.update(schedules || []);
+  }
+
   clearTimers() {
     for (const t of this.timers.values()) {
       clearTimeout(t);

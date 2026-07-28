@@ -48,6 +48,15 @@ class VlcController extends EventEmitter {
     this.emit('state-change', next);
   }
 
+  _resetVlc() {
+    this._stopPoll();
+    this.ready = false;
+    this.proc = null;
+    if (this.rc && !this.rc.destroyed) { this.rc.destroy(); this.rc = null; }
+    this.currentPlaylist = [];
+    this.idleMode = false;
+  }
+
   _toMrl(p) {
     let s = String(p);
     s = s.replace(/\\/g, '/');
@@ -142,7 +151,15 @@ class VlcController extends EventEmitter {
   }
 
   start() {
-    if (this.proc) return this._waitForRc();
+    if (this.proc) {
+      try {
+        process.kill(this.proc.pid, 0);
+        return this._waitForRc();
+      } catch (_) {
+        this._resetVlc();
+        this._setState('idle');
+      }
+    }
     return new Promise((resolve, reject) => {
       let x = 0, y = 0, w = 1920, h = 1080;
       if (this.display) {
@@ -205,14 +222,12 @@ class VlcController extends EventEmitter {
         if (code !== 0 && code != null) {
           const tail = stderrLines.slice(-15).join('\n');
           this.emit('error', new Error('VLC exited code=' + code + (tail ? '\n' + tail : '')));
+          this._resetVlc();
           this._setState('error');
         } else {
+          this._resetVlc();
           this._setState('idle');
         }
-        this.proc = null;
-        this.ready = false;
-        if (this.rc && !this.rc.destroyed) { this.rc.destroy(); this.rc = null; }
-        this._stopPoll();
       });
 
       this._waitForRc().then(resolve).catch(reject);
@@ -331,8 +346,7 @@ class VlcController extends EventEmitter {
     await sleep(200);
     if (this.rc && !this.rc.destroyed) { this.rc.destroy(); this.rc = null; }
     if (this.proc) { try { this.proc.kill(); } catch (_) {} }
-    this.proc = null;
-    this.ready = false;
+    this._resetVlc();
     this._setState('idle');
   }
 }
