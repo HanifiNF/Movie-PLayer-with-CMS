@@ -35,6 +35,7 @@
       "login.html",
       "dashboard.html",
       "scheduleAdder.html",
+      "assets/ensureIdleVideo.cjs",
       "package.json",
       "!**/node_modules/*/{README.md,readme.md}",
       "!**/node_modules/*/{CHANGELOG.md,changelog.md}",

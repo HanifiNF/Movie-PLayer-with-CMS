@@ -6,6 +6,7 @@ const fs = require('fs');
 const net = require('net');
 const { EventEmitter } = require('events');
 const CFG = require('./config.cjs');
+const { ensureIdleVideo } = require('./assets/ensureIdleVideo.cjs');
 
 function resolveVlcPath() {
   const candidates = [
@@ -32,6 +33,10 @@ class VlcController extends EventEmitter {
     this.ready = false;
     this.currentPlaylist = [];
     this.state = 'idle';
+    this.idleMode = false;
+    this.transitionDuration = options.transitionDuration || 0;
+    this.onTransitionStart = options.onTransitionStart || null;
+    this.onTransitionEnd = options.onTransitionEnd || null;
     this._pollHandle = null;
     this._buffer = '';
     this.display = options.display || null;
@@ -224,10 +229,27 @@ class VlcController extends EventEmitter {
     if (this._pollHandle) { clearInterval(this._pollHandle); this._pollHandle = null; }
   }
 
-  async replacePlaylist(filePaths) {
+  async replacePlaylist(filePaths, options = {}) {
     if (!Array.isArray(filePaths)) filePaths = [];
     this.currentPlaylist = filePaths.slice();
+    this.idleMode = !!options.idle;
+
+    const useTransition = this.transitionDuration > 0;
+    if (useTransition && this.onTransitionStart) {
+      this.onTransitionStart();
+      await sleep(this.transitionDuration);
+    }
+
     if (!this.ready) await this.start();
+    // If the player is paused, the old RC "play" command means resume and the
+    // prompt mode may ignore the new item. Unpause first, then stop, so the
+    // subsequent clear/add/play actually switches to the new content.
+    if (this.state === 'paused') {
+      this.send('pause');
+      await sleep(100);
+      this.send('stop');
+      await sleep(200);
+    }
     this.send('clear');
     await sleep(200);
     for (const p of filePaths) {
@@ -239,12 +261,22 @@ class VlcController extends EventEmitter {
     await sleep(300);
     this.send('status');
     if (filePaths.length) this._setState('playing');
+
+    if (useTransition && this.onTransitionEnd) {
+      await sleep(this.transitionDuration);
+      this.onTransitionEnd();
+    }
   }
 
   async clear() {
     this.currentPlaylist = [];
+    this.idleMode = false;
+    this.send('stop');
+    await sleep(100);
     this.send('clear');
+    await sleep(100);
     this._setState('idle');
+    this.send('status');
   }
 
   async pause() {
@@ -271,6 +303,24 @@ class VlcController extends EventEmitter {
     await sleep(100);
     this._setState('playing');
     this.send('status');
+  }
+
+  async playIdle() {
+    try {
+      let outputDir;
+      try {
+        const { app } = require('electron');
+        outputDir = app.getPath('userData');
+      } catch (_) {
+        outputDir = require('os').tmpdir();
+      }
+      const idlePath = await ensureIdleVideo({ outputDir, text: 'No Active Schedule', fontSize: 72 });
+      await this.replacePlaylist([idlePath], { idle: true });
+    } catch (e) {
+      this.idleMode = false;
+      this.emit('vlc-log', `[playIdle] failed: ${e.message}; falling back to clear()`);
+      await this.clear();
+    }
   }
 
   isPlaying() { return this.state === 'playing'; }

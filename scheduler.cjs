@@ -82,6 +82,7 @@ class Scheduler extends EventEmitter {
     this.currentStart = null;
     this.currentDuration = null;
     this.tickHandle = null;
+    this._idlePlaying = false;
     this._startTick();
   }
 
@@ -115,6 +116,10 @@ class Scheduler extends EventEmitter {
       this._activate(activeNow.schedule, activeNow.start, activeNow.duration);
     } else {
       this._setCurrent(null, null, null);
+      if (!this._idlePlaying) {
+        this._idlePlaying = true;
+        this.vlc.playIdle().catch(err => this.emit('error', err));
+      }
       this.emit('idle');
     }
   }
@@ -163,7 +168,6 @@ class Scheduler extends EventEmitter {
     if (startTimer) { clearTimeout(startTimer); this.timers.delete('start:' + id); }
     const endTimer = this.timers.get('end:' + id);
     if (endTimer) { clearTimeout(endTimer); this.timers.delete('end:' + id); }
-    this.vlc.clear();
     this._setCurrent(null, null, null);
     this.emit('expire', { schedule: this.schedules.find(x => x.id === id) });
     const now = new Date();
@@ -181,6 +185,8 @@ class Scheduler extends EventEmitter {
     if (nextActive) {
       this._activate(nextActive.schedule, nextActive.start, nextActive.duration);
     } else {
+      this._idlePlaying = true;
+      this.vlc.playIdle();
       this.emit('idle');
     }
     if (startAt && duration) {
@@ -223,6 +229,7 @@ class Scheduler extends EventEmitter {
     if (this._activatingId === schedule.id) return;
     const alreadyActive = this.currentScheduleId === schedule.id;
     this._activatingId = schedule.id;
+    this._idlePlaying = false;
     this._setCurrent(schedule.id, startAt, duration);
     if (!alreadyActive) {
       const files = (schedule.files || []).map(f => f.path).filter(Boolean);
@@ -234,7 +241,8 @@ class Scheduler extends EventEmitter {
       this.emit('activate', { schedule, start: startAt, duration });
     }
     if (duration && duration > 0) {
-      const endTimer = setTimeout(() => this._expire(schedule, startAt, duration), duration);
+      const delay = Math.max(0, startAt.getTime() + duration - Date.now());
+      const endTimer = setTimeout(() => this._expire(schedule, startAt, duration), delay);
       this.timers.set('end:' + schedule.id, endTimer);
     }
     this._scheduleNext(schedule, startAt, duration);
@@ -243,7 +251,8 @@ class Scheduler extends EventEmitter {
 
   _expire(schedule, startAt, duration) {
     if (this.currentScheduleId === schedule.id) {
-      this.vlc.clear();
+      this._idlePlaying = true;
+      this.vlc.playIdle();
       this._setCurrent(null, null, null);
       this.emit('expire', { schedule });
     }

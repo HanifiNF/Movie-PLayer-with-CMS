@@ -216,15 +216,17 @@
 
       const vlc = state.vlc || {};
       const vlcEl = $('vlcState');
-      vlcEl.className = 'vlc-state ' + (vlc.state || 'idle');
-      vlcEl.textContent = vlc.state || 'idle';
+      const displayState = (vlc.state === 'playing' && vlc.idleMode) ? 'idle' : (vlc.state || 'idle');
+      vlcEl.className = 'vlc-state ' + displayState;
+      vlcEl.textContent = displayState;
       $('vlcNote').textContent = (vlc.state === 'error') ? 'VLC not found — drop vlc.exe in vlc-portable/ then click Retry.' : '';
 
       const hasNow = !!now;
+      const isIdleMode = !!vlc.idleMode;
       const playing = vlc.state === 'playing';
       const paused = vlc.state === 'paused';
-      $('btnPause').disabled = !(hasNow && playing);
-      $('btnResume').disabled = !(hasNow && paused);
+      $('btnPause').disabled = !(hasNow && playing && !isIdleMode);
+      $('btnResume').disabled = !(hasNow && paused && !isIdleMode);
       $('btnSkip').disabled = !hasNow;
 
       const upEl = $('upcoming');

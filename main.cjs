@@ -9,6 +9,9 @@ const { VlcController } = require('./vlcController.cjs');
 const { Scheduler } = require('./scheduler.cjs');
 const CFG = require('./config.cjs');
 
+if (process.env.PLAYER_USER_DATA) {
+  app.setPath('userData', process.env.PLAYER_USER_DATA);
+}
 const DATA_DIR = app.getPath('userData');
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 const CACHE_PATH = path.join(DATA_DIR, 'schedules.json');
@@ -26,6 +29,7 @@ let statusLabel = 'offline';
 let nowSchedule = null;
 let broadcastHandle = null;
 let secondDisplay = null;
+let transitionWin = null;
 
 function readJson(file, fallback) {
   try {
@@ -226,6 +230,62 @@ function createScheduleAdderWindow() {
   scheduleAdderWin.on('closed', () => { scheduleAdderWin = null; });
 }
 
+function createTransitionWindow() {
+  if (!secondDisplay) return;
+  if (transitionWin && !transitionWin.isDestroyed()) return;
+  transitionWin = new BrowserWindow({
+    x: secondDisplay.bounds.x,
+    y: secondDisplay.bounds.y,
+    width: secondDisplay.bounds.width,
+    height: secondDisplay.bounds.height,
+    fullscreen: true,
+    frame: false,
+    skipTaskbar: true,
+    focusable: false,
+    resizable: false,
+    movable: false,
+    show: false,
+    backgroundColor: '#000000',
+    autoHideMenuBar: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      devTools: false
+    }
+  });
+  transitionWin.removeMenu();
+  try {
+    transitionWin.setAlwaysOnTop(true, 'screen-saver');
+    transitionWin.setVisibleOnAllWorkspaces(true);
+  } catch (_) {}
+  transitionWin.loadURL('data:text/html,<body style="margin:0;background:#000"></body>').catch(() => {});
+  transitionWin.on('closed', () => { transitionWin = null; });
+}
+
+function showTransitionOverlay() {
+  try {
+    if (!transitionWin || transitionWin.isDestroyed()) createTransitionWindow();
+    if (transitionWin && !transitionWin.isDestroyed()) transitionWin.showInactive();
+  } catch (e) {
+    console.error('showTransitionOverlay failed', e);
+  }
+}
+
+function hideTransitionOverlay() {
+  try {
+    if (transitionWin && !transitionWin.isDestroyed()) transitionWin.hide();
+  } catch (e) {
+    console.error('hideTransitionOverlay failed', e);
+  }
+}
+
+function destroyTransitionOverlay() {
+  try {
+    if (transitionWin && !transitionWin.isDestroyed()) transitionWin.destroy();
+  } catch (_) {}
+  transitionWin = null;
+}
+
 function appendVlcLog(line) {
   try {
     const logPath = path.join(DATA_DIR, 'vlc-stderr.log');
@@ -252,7 +312,7 @@ function pushDashboard() {
     bypass: !!(cfg && cfg.bypass),
     now,
     upcoming,
-    vlc: { state: vlc ? vlc.state : 'idle', rcReady: vlc ? vlc.ready : false }
+    vlc: { state: vlc ? vlc.state : 'idle', rcReady: vlc ? vlc.ready : false, idleMode: vlc ? vlc.idleMode : false }
   };
   try {
     dashboardWin.webContents.send('dashboard:update', payload);
@@ -449,9 +509,13 @@ ipcMain.handle('quit', async () => {
 async function startRuntime() {
   if (!cfg || !cfg.token) return;
   if (vlc) vlc.quit();
+  createTransitionWindow();
   vlc = new VlcController({
-    display: secondDisplay
-});
+    display: secondDisplay,
+    transitionDuration: 1000,
+    onTransitionStart: () => showTransitionOverlay(),
+    onTransitionEnd: () => hideTransitionOverlay()
+  });
   vlc.on('error', (e) => console.error('VLC error', e));
   vlc.on('vlc-stderr', (line) => {
     console.error('[VLC stderr]', line);
@@ -503,7 +567,7 @@ async function startRuntime() {
   if (cache && Array.isArray(cache.schedules) && cache.schedules.length) {
     scheduler.update(cache.schedules);
   } else {
-    await vlc.clear();
+    scheduler.update([]);
   }
 
   app.setLoginItemSettings({ openAtLogin: true, path: process.execPath });
@@ -579,6 +643,7 @@ function logout() {
   if (broadcastHandle) { clearInterval(broadcastHandle); broadcastHandle = null; }
   if (scheduler) { scheduler.clear(); scheduler = null; }
   if (vlc) { vlc.quit(); vlc = null; }
+  destroyTransitionOverlay();
   if (fs.existsSync(CACHE_PATH)) fs.unlinkSync(CACHE_PATH);
   saveConfig(null);
   nowSchedule = null;
@@ -591,6 +656,7 @@ function quitApp() {
   if (broadcastHandle) { clearInterval(broadcastHandle); broadcastHandle = null; }
   if (scheduler) scheduler.clear();
   if (vlc) vlc.quit();
+  destroyTransitionOverlay();
   app.quit();
 }
 
@@ -637,12 +703,14 @@ app.on('before-quit', () => {
   try { if (socket) socket.disconnect(); } catch (_) {}
   if (scheduler) scheduler.clear();
   if (vlc) vlc.quit();
+  destroyTransitionOverlay();
 });
 
 app.on('will-quit', () => {
   try { if (socket) socket.disconnect(); } catch (_) {}
   if (scheduler) scheduler.clear();
   if (vlc) vlc.quit();
+  destroyTransitionOverlay();
 });
 
 process.on('uncaughtException', (err) => {
