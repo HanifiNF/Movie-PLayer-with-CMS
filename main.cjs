@@ -307,12 +307,14 @@ function pushDashboard() {
   if (!dashboardWin || dashboardWin.isDestroyed() || !dashboardWin.webContents) return;
   const now = scheduler ? scheduler.getNow() : null;
   const upcoming = scheduler ? scheduler.getUpcoming(6) : [];
+  const skipped = scheduler ? scheduler.getSkipped() : [];
   const payload = {
     status: statusLabel,
     deviceId: cfg && cfg.deviceId || '',
     bypass: !!(cfg && cfg.bypass),
     now,
     upcoming,
+    skipped,
     vlc: { state: vlc ? vlc.state : 'idle', rcReady: vlc ? vlc.ready : false, idleMode: vlc ? vlc.idleMode : false }
   };
   try {
@@ -404,6 +406,17 @@ ipcMain.handle('vlc-skip', async () => {
   if (scheduler) scheduler.skip();
   pushDashboard();
   return { ok: true };
+});
+
+ipcMain.handle('vlc-reactivate', async (_e, scheduleId) => {
+  if (!scheduler) return { ok: false, error: 'Scheduler not initialized' };
+  try {
+    scheduler.reactivate(scheduleId);
+    pushDashboard();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
 });
 
 ipcMain.handle('vlc-retry', async () => {
@@ -556,6 +569,11 @@ async function startRuntime() {
     pushDashboard();
   });
   scheduler.on('idle', () => {
+    nowSchedule = null;
+    refreshTray();
+    pushDashboard();
+  });
+  scheduler.on('finish', () => {
     nowSchedule = null;
     refreshTray();
     pushDashboard();

@@ -83,6 +83,8 @@ class Scheduler extends EventEmitter {
     this.currentDuration = null;
     this.tickHandle = null;
     this._idlePlaying = false;
+    this.finishedOccurrences = new Map();
+    this.manuallySkipped = new Set();
     this._startTick();
   }
 
@@ -96,16 +98,74 @@ class Scheduler extends EventEmitter {
     if (this.tickHandle) { clearInterval(this.tickHandle); this.tickHandle = null; }
   }
 
+  _isFinished(scheduleId, startMs) {
+    const set = this.finishedOccurrences.get(scheduleId);
+    return !!set && set.has(startMs);
+  }
+
+  _finishOccurrence(scheduleId, startMs, manual = false) {
+    if (!this.finishedOccurrences.has(scheduleId)) {
+      this.finishedOccurrences.set(scheduleId, new Set());
+    }
+    this.finishedOccurrences.get(scheduleId).add(startMs);
+    if (manual) this.manuallySkipped.add(scheduleId);
+  }
+
+  _nextUnfinishedOccurrence(sched, now = new Date()) {
+    for (let i = 0; i < 366; i++) {
+      const base = new Date(now.getTime() + i * MS.day);
+      const occ = nextOccurrenceStart(sched, base);
+      if (!occ) return null;
+      if (!this._isFinished(sched.id, occ.start.getTime())) return occ;
+    }
+    return null;
+  }
+
+  reactivate(scheduleId) {
+    this.finishedOccurrences.delete(scheduleId);
+    this.manuallySkipped.delete(scheduleId);
+    const schedule = this.schedules.find(s => s.id === scheduleId);
+    if (!schedule) return;
+    const occ = this._nextUnfinishedOccurrence(schedule, new Date());
+    if (!occ) return;
+    if (this.currentScheduleId && this.currentScheduleId !== scheduleId) {
+      const prevEndTimer = this.timers.get('end:' + this.currentScheduleId);
+      if (prevEndTimer) { clearTimeout(prevEndTimer); this.timers.delete('end:' + this.currentScheduleId); }
+      const prevStart = this.currentStart ? this.currentStart.getTime() : null;
+      if (prevStart) this._finishOccurrence(this.currentScheduleId, prevStart, false);
+      const prevSched = this.schedules.find(x => x.id === this.currentScheduleId);
+      if (prevSched) this.emit('finish', { schedule: prevSched });
+    }
+    this._setCurrent(null, null, null);
+    this._activate(schedule, occ.start, occ.duration);
+  }
+
+  getSkipped() {
+    const result = [];
+    for (const id of this.manuallySkipped) {
+      const s = this.schedules.find(x => x.id === id);
+      if (!s) continue;
+      result.push({
+        scheduleId: s.id,
+        title: s.title || s.id,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        files: s.files || []
+      });
+    }
+    return result;
+  }
+
   update(schedules) {
     this.clearTimers();
     this.schedules = Array.isArray(schedules) ? schedules.slice() : [];
     const now = new Date();
     let activeNow = null;
     for (const s of this.schedules) {
-      const occ = nextOccurrenceStart(s, now);
+      const occ = this._nextUnfinishedOccurrence(s, now);
       if (!occ) continue;
       if (occ.alreadyActive) {
-        if (!activeNow || new Date(s.startTime).getTime() < new Date(activeNow.startTime).getTime()) {
+        if (!activeNow || occ.start.getTime() > activeNow.start.getTime()) {
           activeNow = { schedule: s, start: occ.start, duration: occ.duration };
         }
       } else {
@@ -146,7 +206,7 @@ class Scheduler extends EventEmitter {
     const items = [];
     for (const s of this.schedules) {
       if (s.id === this.currentScheduleId) continue;
-      const occ = nextOccurrenceStart(s, now);
+      const occ = this._nextUnfinishedOccurrence(s, now);
       if (!occ || occ.alreadyActive) continue;
       items.push({
         scheduleId: s.id,
@@ -168,16 +228,19 @@ class Scheduler extends EventEmitter {
     if (startTimer) { clearTimeout(startTimer); this.timers.delete('start:' + id); }
     const endTimer = this.timers.get('end:' + id);
     if (endTimer) { clearTimeout(endTimer); this.timers.delete('end:' + id); }
+    if (startAt) {
+      this._finishOccurrence(id, startAt.getTime(), true);
+    }
     this._setCurrent(null, null, null);
     this.emit('expire', { schedule: this.schedules.find(x => x.id === id) });
     const now = new Date();
     let nextActive = null;
     for (const s of this.schedules) {
       if (s.id === id) continue;
-      const occ = nextOccurrenceStart(s, now);
+      const occ = this._nextUnfinishedOccurrence(s, now);
       if (!occ) continue;
       if (occ.alreadyActive) {
-        if (!nextActive || new Date(s.startTime).getTime() < new Date(nextActive.startTime).getTime()) {
+        if (!nextActive || occ.start.getTime() > nextActive.start.getTime()) {
           nextActive = { schedule: s, start: occ.start, duration: occ.duration };
         }
       }
@@ -234,7 +297,16 @@ class Scheduler extends EventEmitter {
 
   _activate(schedule, startAt, duration) {
     if (this._activatingId === schedule.id) return;
+    if (this._isFinished(schedule.id, startAt.getTime())) return;
     const alreadyActive = this.currentScheduleId === schedule.id;
+    if (this.currentScheduleId && this.currentScheduleId !== schedule.id) {
+      const prevEndTimer = this.timers.get('end:' + this.currentScheduleId);
+      if (prevEndTimer) { clearTimeout(prevEndTimer); this.timers.delete('end:' + this.currentScheduleId); }
+      const prevStart = this.currentStart ? this.currentStart.getTime() : null;
+      if (prevStart) this._finishOccurrence(this.currentScheduleId, prevStart, false);
+      const prevSched = this.schedules.find(x => x.id === this.currentScheduleId);
+      if (prevSched) this.emit('finish', { schedule: prevSched });
+    }
     this._activatingId = schedule.id;
     this._idlePlaying = false;
     this._setCurrent(schedule.id, startAt, duration);
@@ -258,6 +330,7 @@ class Scheduler extends EventEmitter {
 
   _expire(schedule, startAt, duration) {
     if (this.currentScheduleId === schedule.id) {
+      this._finishOccurrence(schedule.id, startAt.getTime(), false);
       this._idlePlaying = true;
       this.vlc.playIdle();
       this._setCurrent(null, null, null);
@@ -268,7 +341,7 @@ class Scheduler extends EventEmitter {
 
   _scheduleNext(schedule, startAt, duration) {
     if (!schedule.recurrence || !schedule.recurrence.freq) return;
-    const next = nextOccurrenceStart(schedule, new Date(startAt.getTime() + (duration || 0) + 1000));
+    const next = this._nextUnfinishedOccurrence(schedule, new Date(startAt.getTime() + (duration || 0) + 1000));
     if (!next) return;
     this._arm(schedule, next.start, next.duration);
   }

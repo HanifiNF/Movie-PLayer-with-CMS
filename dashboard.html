@@ -82,6 +82,15 @@
     .btn.danger:hover { background: #991b1b; }
     .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 
+    .skipped-panel { margin-top: 16px; }
+    .skipped-panel li { align-items: flex-start; }
+    .skipped-panel .details {
+      display: flex; flex-direction: column; flex: 1; min-width: 0;
+      color: #94a3b8; font-size: 12px;
+    }
+    .skipped-panel .details .ttl { color: #e2e8f0; font-size: 13px; margin-bottom: 2px; }
+    .skipped-panel .details .file { font-family: ui-monospace, Consolas, monospace; color: #64748b; word-break: break-all; }
+
     footer {
       display: flex; justify-content: space-between; align-items: center; gap: 10px;
       padding: 12px 22px; background: #0f172a; border-top: 1px solid #1e293b;
@@ -132,6 +141,11 @@
           </div>
         </section>
       </div>
+
+      <section class="panel skipped-panel">
+        <h2>Skipped</h2>
+        <ul id="skipped"></ul>
+      </section>
     </main>
 
     <footer>
@@ -187,7 +201,7 @@
       return status ? status.charAt(0).toUpperCase() + status.slice(1) : 'Offline';
     }
 
-    let state = { status: 'offline', deviceId: '', now: null, upcoming: [], vlc: { state: 'idle' }, bypass: false };
+    let state = { status: 'offline', deviceId: '', now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, bypass: false };
 
     ipcRenderer.on('dashboard:update', (_e, payload) => {
       state = Object.assign({}, state, payload);
@@ -243,6 +257,31 @@
                          `<span class="rec">${it.freqLabel || ''}</span>`;
           upEl.appendChild(li);
         }
+      }
+
+      const skEl = $('skipped');
+      skEl.innerHTML = '';
+      if (!state.skipped || !state.skipped.length) {
+        const li = document.createElement('li');
+        li.innerHTML = '<span class="empty">No skipped schedules</span>';
+        skEl.appendChild(li);
+      } else {
+        for (const it of state.skipped) {
+          const li = document.createElement('li');
+          const start = it.startTime ? fmtDate(new Date(it.startTime).getTime()) : '-';
+          const end = it.endTime ? fmtDate(new Date(it.endTime).getTime()) : '-';
+          const file = (it.files && it.files[0] && it.files[0].path) || '';
+          li.innerHTML = `<div class="details">` +
+                           `<span class="ttl" title="${it.title}">${it.title}</span>` +
+                           `<span>${start} → ${end}</span>` +
+                           `<span class="file">${file}</span>` +
+                         `</div>` +
+                         `<button class="btn primary" data-id="${it.scheduleId}">Reactivate</button>`;
+          skEl.appendChild(li);
+        }
+        skEl.querySelectorAll('button[data-id]').forEach((btn) => {
+          btn.onclick = () => ipcRenderer.invoke('vlc-reactivate', btn.dataset.id);
+        });
       }
     }
 
