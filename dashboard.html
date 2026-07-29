@@ -22,6 +22,10 @@
     header .brand .ver { font-size: 11px; color: #64748b; }
     header .right { display: flex; align-items: center; gap: 14px; font-size: 12px; color: #94a3b8; }
     header .device { font-family: ui-monospace, Consolas, monospace; }
+    header .clock {
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 14px; color: #38bdf8; font-variant-numeric: tabular-nums;
+    }
 
     .badge {
       padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 600;
@@ -106,6 +110,7 @@
         <span class="ver">v1.0.0</span>
       </div>
       <div class="right">
+        <span id="clock" class="clock">--:--:--</span>
         <span id="badge" class="badge offline">Offline</span>
         <span>Device: <span id="device" class="device">—</span></span>
       </div>
@@ -293,6 +298,14 @@
     $('btnConfig').onclick = () => ipcRenderer.invoke('open-config-folder');
     $('btnLogout').onclick = () => ipcRenderer.invoke('logout');
     $('btnQuit').onclick   = () => ipcRenderer.invoke('quit');
+
+    function updateClock() {
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      $('clock').textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
 
     render();
   </script>

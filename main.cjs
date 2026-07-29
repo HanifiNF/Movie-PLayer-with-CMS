@@ -452,11 +452,21 @@ ipcMain.handle('get-test-file', async () => {
   return CFG.TEST_FILE || '';
 });
 
-function parseTimeLocal(hhmm) {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
-  if (!m) return null;
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(m[1], 10), parseInt(m[2], 10), 0, 0);
+function parseStartDate(dateStr, timeStr) {
+  const dateParts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr || '').trim());
+  if (!dateParts) return null;
+  const year = parseInt(dateParts[1], 10);
+  const month = parseInt(dateParts[2], 10) - 1;
+  const day = parseInt(dateParts[3], 10);
+
+  const timeMatch = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(String(timeStr || '').trim());
+  if (!timeMatch) return null;
+  const hour = parseInt(timeMatch[1], 10);
+  const minute = parseInt(timeMatch[2], 10);
+  const second = timeMatch[3] ? parseInt(timeMatch[3], 10) : 0;
+
+  const start = new Date(year, month, day, hour, minute, second, 0);
+  if (isNaN(start.getTime())) return null;
   return start;
 }
 
@@ -466,32 +476,28 @@ ipcMain.handle('add-test-schedule', async (_e, payload) => {
     if (!payload) throw new Error('No payload');
     const title = String(payload.title || '').trim();
     const pathStr = String(payload.path || '').trim();
-    const startStr = String(payload.startTime || '').trim();
+    const dateStr = String(payload.startDate || '').trim();
+    const timeStr = String(payload.startTime || '').trim();
     const durationMinutes = parseInt(payload.durationMinutes, 10);
+    const durationSeconds = parseInt(payload.durationSeconds, 10);
     if (!title) throw new Error('Schedule name is required');
-    if (!startStr) throw new Error('Start time is required');
+    if (!dateStr) throw new Error('Start date is required');
+    if (!timeStr) throw new Error('Start time is required');
     if (!pathStr) throw new Error('Video path is required');
-    if (!Number.isFinite(durationMinutes) || durationMinutes < 1) throw new Error('Duration must be at least 1 minute');
+    if (!Number.isFinite(durationMinutes) || durationMinutes < 0) throw new Error('Duration minutes is invalid');
+    if (!Number.isFinite(durationSeconds) || durationSeconds < 0 || durationSeconds > 59) throw new Error('Duration seconds must be 0–59');
+    const durationMs = (durationMinutes * 60 + durationSeconds) * 1000;
+    if (durationMs <= 0) throw new Error('Duration must be greater than 0');
 
-    let start = parseTimeLocal(startStr);
-    if (!start) throw new Error('Start time must be HH:MM');
+    let start = parseStartDate(dateStr, timeStr);
+    if (!start) throw new Error('Start date/time is invalid');
 
     const now = new Date();
     if (start.getTime() <= now.getTime()) {
-      const parent = (scheduleAdderWin && !scheduleAdderWin.isDestroyed()) ? scheduleAdderWin : (dashboardWin && !dashboardWin.isDestroyed() ? dashboardWin : undefined);
-      const choice = await dialog.showMessageBox(parent, {
-        type: 'question',
-        buttons: ['Schedule tomorrow', 'Cancel'],
-        defaultId: 0,
-        cancelId: 1,
-        title: 'Start time has passed',
-        message: `The time ${startStr} has already passed today. Schedule it for tomorrow instead?`
-      });
-      if (choice.response === 1) return { ok: false, cancelled: true, error: 'Schedule cancelled' };
-      start.setTime(start.getTime() + 24 * 60 * 60 * 1000);
+      throw new Error('Start date/time has already passed');
     }
 
-    const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
+    const end = new Date(start.getTime() + durationMs);
     const newSchedule = {
       id: 'manual-' + Date.now(),
       title,

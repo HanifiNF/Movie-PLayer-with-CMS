@@ -20,7 +20,7 @@
     h1 { margin: 0 0 6px; font-size: 20px; color: #38bdf8; }
     .subtitle { margin: 0 0 22px; font-size: 12px; color: #94a3b8; }
     label { display: block; font-size: 12px; color: #94a3b8; margin: 14px 0 6px; }
-    input[type="text"], input[type="time"], input[type="number"] {
+    input[type="text"], input[type="date"], input[type="time"], input[type="number"] {
       width: 100%; padding: 10px 12px; border: 1px solid #334155;
       background: #0f172a; color: #e2e8f0; border-radius: 8px;
       font-size: 14px; outline: none;
@@ -63,13 +63,24 @@
 
     <div class="row">
       <div>
-        <label>Start time</label>
-        <input name="startTime" type="time" required />
+        <label>Start date</label>
+        <input name="startDate" type="date" required />
       </div>
       <div>
-        <label>Duration</label>
-        <input name="duration" type="number" min="1" value="60" required />
-        <div class="hint">minutes</div>
+        <label>Start time</label>
+        <input name="startTime" type="time" step="1" required />
+        <div class="hint">HH:MM:SS</div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>Duration minutes</label>
+        <input name="durationMinutes" type="number" min="0" value="60" required />
+      </div>
+      <div>
+        <label>Duration seconds</label>
+        <input name="durationSeconds" type="number" min="0" max="59" value="0" required />
       </div>
     </div>
 
@@ -93,6 +104,15 @@
       if (path) form.path.value = path;
     }).catch(() => {});
 
+    // Default date = today
+    try {
+      const today = new Date();
+      const yyyy = today.getFullYear();
+      const mm = String(today.getMonth() + 1).padStart(2, '0');
+      const dd = String(today.getDate()).padStart(2, '0');
+      form.startDate.value = `${yyyy}-${mm}-${dd}`;
+    } catch (_) {}
+
     function setBusy(busy) {
       btn.disabled = busy;
       btn.textContent = busy ? 'Saving...' : 'Save Schedule';
@@ -105,8 +125,10 @@
       const fd = new FormData(form);
       const payload = {
         title: fd.get('title'),
+        startDate: fd.get('startDate'),
         startTime: fd.get('startTime'),
-        durationMinutes: parseInt(fd.get('duration'), 10),
+        durationMinutes: parseInt(fd.get('durationMinutes'), 10),
+        durationSeconds: parseInt(fd.get('durationSeconds'), 10),
         path: fd.get('path')
       };
       try {
