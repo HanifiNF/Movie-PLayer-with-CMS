@@ -63,25 +63,32 @@
     }
     .check input { width: auto; }
     .status { color: #94a3b8; font-size: 12px; margin-top: 8px; }
+    .duration-status {
+      margin-top: 9px; padding: 9px 10px; border-radius: 7px;
+      background: #0f172a; color: #94a3b8; font-size: 12px;
+    }
+    .duration-status.ready { color: #86efac; }
+    .duration-status.warn { color: #fcd34d; }
+    .duration-status.error { color: #fca5a5; }
   </style>
 </head>
 <body>
   <form class="card" id="f">
     <h1>Add Test Schedule</h1>
-    <p class="subtitle">Choose a film from the local library or download a remote asset.</p>
+    <p class="subtitle">Reuse available media or import and verify a new remote asset.</p>
 
     <label>Media source</label>
     <select name="mediaSource" id="mediaSource">
-      <option value="library">Media Library (Folder A)</option>
-      <option value="remote">Remote Asset (URL + SHA-256)</option>
+      <option value="library">Available Media (Folder A + Downloads)</option>
+      <option value="remote">Import New Remote Asset</option>
     </select>
 
     <section class="source-panel" id="libraryPanel">
-      <label for="mediaSearch">Search film title</label>
+      <label for="mediaSearch">Search available media</label>
       <input id="mediaSearch" type="text" placeholder="Type a title or filename..." autocomplete="off" />
       <label for="mediaList">Film</label>
       <select id="mediaList" name="mediaId" size="5"></select>
-      <div class="status" id="libraryStatus">Scanning media library...</div>
+      <div class="status" id="libraryStatus">Scanning available media...</div>
       <div class="hint" id="libraryPath"></div>
       <div class="actions">
         <button type="button" id="btnRefresh" class="btn-secondary compact">Refresh</button>
@@ -103,7 +110,7 @@
       <label>SHA-256</label>
       <input name="sha256" type="text" minlength="64" maxlength="64"
              placeholder="64 hexadecimal characters" autocomplete="off" />
-      <div class="hint">The file is stored in the player's managed media folder after verification.</div>
+      <div class="hint">After verification this asset is stored once and appears under Available Media.</div>
     </section>
 
     <label>Schedule name</label>
@@ -131,6 +138,12 @@
         <input name="durationSeconds" type="number" min="0" max="59" value="0" required />
       </div>
     </div>
+    <div class="duration-status" id="durationStatus">
+      Select an available media item to detect its duration.
+    </div>
+    <button type="button" id="btnResetDuration" class="btn-secondary compact hidden">
+      Reset to Film Duration
+    </button>
 
     <div class="row">
       <div>
@@ -159,7 +172,13 @@
     const sourceEl = document.getElementById('mediaSource');
     const mediaList = document.getElementById('mediaList');
     const mediaSearch = document.getElementById('mediaSearch');
+    const durationStatus = document.getElementById('durationStatus');
+    const resetDurationButton = document.getElementById('btnResetDuration');
     let libraryItems = [];
+    let detectedDurationMs = 0;
+    let lastDetectedMediaId = null;
+    let detectionToken = 0;
+    let detectionTimer = null;
 
     function setSource(source) {
       const isLibrary = source === 'library';
@@ -169,6 +188,90 @@
       form.filename.required = !isLibrary;
       form.size.required = !isLibrary;
       form.sha256.required = !isLibrary;
+      if (isLibrary) {
+        scheduleDurationDetection();
+      } else {
+        detectionToken++;
+        detectedDurationMs = 0;
+        resetDurationButton.classList.add('hidden');
+        setDurationStatus(
+          'Duration for a new remote asset is detected after its first download. You can enter it manually now.',
+          'warn'
+        );
+      }
+    }
+
+    function formatDuration(durationMs) {
+      const totalSeconds = Math.ceil(durationMs / 1000);
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      return [hours, minutes, seconds].map(value => String(value).padStart(2, '0')).join(':');
+    }
+
+    function setDurationStatus(message, state = '') {
+      durationStatus.textContent = message;
+      durationStatus.className = `duration-status ${state}`.trim();
+    }
+
+    function applyDetectedDuration(durationMs, source) {
+      detectedDurationMs = durationMs;
+      const totalSeconds = Math.ceil(durationMs / 1000);
+      form.durationMinutes.value = Math.floor(totalSeconds / 60);
+      form.durationSeconds.value = totalSeconds % 60;
+      resetDurationButton.classList.remove('hidden');
+      const sourceLabel = source === 'asset-metadata'
+        ? 'saved asset metadata'
+        : (source === 'cache' ? 'duration cache' : source);
+      setDurationStatus(
+        `Detected film duration: ${formatDuration(durationMs)} (${sourceLabel}). You can edit it.`,
+        'ready'
+      );
+    }
+
+    async function detectSelectedDuration() {
+      if (sourceEl.value !== 'library') return;
+      const selected = libraryItems.find(item => item.id === mediaList.value);
+      if (!selected) {
+        detectedDurationMs = 0;
+        resetDurationButton.classList.add('hidden');
+        setDurationStatus('Select an available media item to detect its duration.');
+        return;
+      }
+      if (selected.id === lastDetectedMediaId && detectedDurationMs > 0) return;
+      lastDetectedMediaId = selected.id;
+
+      const token = ++detectionToken;
+      if (Number(selected.durationMs) > 0) {
+        applyDetectedDuration(Number(selected.durationMs), 'asset-metadata');
+        return;
+      }
+
+      resetDurationButton.classList.add('hidden');
+      setDurationStatus('Detecting media duration...');
+      const result = await ipcRenderer.invoke('get-media-duration', { mediaId: selected.id });
+      if (token !== detectionToken) return;
+      if (!result || !result.ok || !(Number(result.durationMs) > 0)) {
+        detectedDurationMs = 0;
+        setDurationStatus(
+          result && result.error
+            ? `Duration could not be detected: ${result.error}. Enter it manually.`
+            : 'Duration could not be detected. Enter it manually.',
+          'error'
+        );
+        return;
+      }
+      selected.durationMs = Number(result.durationMs);
+      applyDetectedDuration(selected.durationMs, result.source);
+    }
+
+    function scheduleDurationDetection() {
+      if (detectionTimer) clearTimeout(detectionTimer);
+      detectionTimer = setTimeout(() => {
+        detectSelectedDuration().catch(error => {
+          setDurationStatus(`Duration could not be detected: ${error.message}`, 'error');
+        });
+      }, 150);
     }
 
     function renderLibrary() {
@@ -177,14 +280,20 @@
       const visible = libraryItems.filter(item => (
         item.title.toLowerCase().includes(query) ||
         item.filename.toLowerCase().includes(query) ||
-        item.relativePath.toLowerCase().includes(query)
+        item.relativePath.toLowerCase().includes(query) ||
+        String(item.sourceLabel || '').toLowerCase().includes(query) ||
+        String(item.status || '').toLowerCase().includes(query)
       ));
       mediaList.innerHTML = '';
       for (const item of visible) {
         const option = document.createElement('option');
         option.value = item.id;
         const megabytes = (item.size / 1024 / 1024).toFixed(1);
-        option.textContent = `${item.title} — ${item.relativePath} (${megabytes} MB)`;
+        const status = item.status === 'missing'
+          ? 'missing — will re-download'
+          : (item.status === 'invalid' ? 'invalid — will re-download' : item.status);
+        option.textContent =
+          `${item.title} — [${item.sourceLabel}: ${status}] ${item.relativePath} (${megabytes} MB)`;
         mediaList.appendChild(option);
       }
       if ([...mediaList.options].some(option => option.value === selectedId)) {
@@ -193,14 +302,16 @@
         mediaList.selectedIndex = 0;
       }
       document.getElementById('libraryStatus').textContent =
-        `${visible.length} of ${libraryItems.length} film(s) shown`;
+        `${visible.length} of ${libraryItems.length} available item(s) shown`;
+      scheduleDurationDetection();
     }
 
     async function loadLibrary() {
-      document.getElementById('libraryStatus').textContent = 'Scanning media library...';
+      document.getElementById('libraryStatus').textContent = 'Scanning available media...';
       const result = await ipcRenderer.invoke('list-local-media');
-      if (!result || !result.ok) throw new Error(result && result.error || 'Failed to scan Media Library');
+      if (!result || !result.ok) throw new Error(result && result.error || 'Failed to scan available media');
       libraryItems = result.items || [];
+      lastDetectedMediaId = null;
       document.getElementById('libraryPath').textContent = result.directory || '';
       renderLibrary();
     }
@@ -210,6 +321,10 @@
     mediaList.onchange = () => {
       const selected = libraryItems.find(item => item.id === mediaList.value);
       if (selected && !form.title.value.trim()) form.title.value = selected.title;
+      scheduleDurationDetection();
+    };
+    resetDurationButton.onclick = () => {
+      if (detectedDurationMs > 0) applyDetectedDuration(detectedDurationMs, 'detected media');
     };
     document.getElementById('btnRefresh').onclick = () => {
       loadLibrary().catch(showError);
@@ -245,7 +360,7 @@
       errEl.classList.remove('show');
       const fd = new FormData(form);
       if (sourceEl.value === 'library' && !mediaList.value) {
-        showError(new Error('Select a film from the Media Library'));
+        showError(new Error('Select an item from Available Media'));
         return;
       }
       setBusy(true);

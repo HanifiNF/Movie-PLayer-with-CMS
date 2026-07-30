@@ -106,11 +106,23 @@ validation, legacy compatibility, and verified local media download.
 
 Test Mode can create a schedule from either:
 
-- **Media Library** — films preloaded under
-  `C:\Users\Public\Videos\WirPlayer` (recursive, searchable by title/path).
-- **Remote Asset** — an HTTP(S) URL, filename, byte size, and SHA-256 digest.
-  Verified downloads are stored under Electron's managed `userData/media`
-  directory.
+- **Available Media** — a combined, searchable list containing films preloaded
+  under `C:\Users\Public\Videos\WirPlayer` and assets previously downloaded by
+  the player. Downloaded assets retain their `assetId` and can be scheduled
+  again without re-entering URL, size, or SHA-256.
+- **Import New Remote Asset** — an HTTP(S) URL, filename, byte size, and
+  SHA-256 digest. Verified downloads are stored under Electron's managed
+  `userData/media` directory and then become Available Media.
+
+If a registered downloaded asset is missing or has the wrong byte size,
+selecting it triggers verification and re-download from its saved URL.
+
+Selecting an Available Media item automatically detects its playback duration
+and fills the schedule duration fields. Operators can edit the result or use
+**Reset to Film Duration**. Detection prefers saved asset metadata, then a
+size/modified-time cache, then `ffprobe`. MP4/MOV/M4V files also have an
+internal metadata fallback when ffprobe is unavailable. Set `FFPROBE_PATH` to
+an explicit executable path when needed.
 
 Set `PLAYER_MEDIA_LIBRARY` before launching the app to override the Media
 Library path. The configured value is also available as `MEDIA_LIBRARY_DIR`

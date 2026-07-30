@@ -35,6 +35,7 @@
       "contracts.cjs",
       "mediaManager.cjs",
       "mediaLibrary.cjs",
+      "mediaProbe.cjs",
       "config.cjs",
       "login.html",
       "dashboard.html",

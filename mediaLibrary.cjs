@@ -39,12 +39,15 @@ function scanMediaLibrary(rootDir, options = {}) {
       const stat = fs.statSync(absolutePath);
       items.push({
         id: makeLocalMediaId(relativePath),
+        source: 'library',
+        sourceLabel: 'Folder A',
         title: path.basename(entry.name, extension),
         filename: entry.name,
         relativePath,
         path: absolutePath,
         size: stat.size,
-        modifiedAt: stat.mtime.toISOString()
+        modifiedAt: stat.mtime.toISOString(),
+        status: 'available'
       });
     }
   }
@@ -57,4 +60,38 @@ function scanMediaLibrary(rootDir, options = {}) {
   return items;
 }
 
-module.exports = { MEDIA_EXTENSIONS, makeLocalMediaId, scanMediaLibrary };
+function listManagedAssets(assets, getAssetPath) {
+  return (Array.isArray(assets) ? assets : []).map(asset => {
+    const localPath = getAssetPath(asset);
+    let status = 'missing';
+    try {
+      if (fs.existsSync(localPath)) {
+        status = fs.statSync(localPath).size === asset.size ? 'downloaded' : 'invalid';
+      }
+    } catch (_) {
+      status = 'invalid';
+    }
+    const extension = path.extname(asset.filename || '');
+    return {
+      id: `asset:${asset.id}`,
+      source: 'managed',
+      sourceLabel: 'Downloaded',
+      assetId: asset.id,
+      title: path.basename(asset.filename || asset.id, extension),
+      filename: asset.filename || asset.id,
+      relativePath: asset.filename || asset.id,
+      path: localPath,
+      size: asset.size,
+      durationMs: Number(asset.durationMs) || 0,
+      modifiedAt: null,
+      status
+    };
+  });
+}
+
+module.exports = {
+  MEDIA_EXTENSIONS,
+  listManagedAssets,
+  makeLocalMediaId,
+  scanMediaLibrary
+};

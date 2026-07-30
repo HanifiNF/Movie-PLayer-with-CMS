@@ -13,7 +13,8 @@ const {
   normalizeSyncPayload
 } = require('./contracts.cjs');
 const { MediaManager } = require('./mediaManager.cjs');
-const { scanMediaLibrary } = require('./mediaLibrary.cjs');
+const { listManagedAssets, scanMediaLibrary } = require('./mediaLibrary.cjs');
+const { MediaProbe } = require('./mediaProbe.cjs');
 const CFG = require('./config.cjs');
 
 if (process.env.PLAYER_USER_DATA) {
@@ -22,6 +23,7 @@ if (process.env.PLAYER_USER_DATA) {
 const DATA_DIR = app.getPath('userData');
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 const CACHE_PATH = path.join(DATA_DIR, 'schedules.json');
+const DURATION_CACHE_PATH = path.join(DATA_DIR, 'media-durations.json');
 
 let tray = null;
 let loginWin = null;
@@ -39,6 +41,7 @@ let secondDisplay = null;
 let transitionWin = null;
 let isShuttingDown = false;
 let mediaManager = null;
+let mediaProbe = null;
 let syncQueue = Promise.resolve();
 
 function readJson(file, fallback) {
@@ -57,6 +60,20 @@ function writeJson(file, data) {
   } catch (e) {
     console.error('writeJson failed', file, e);
   }
+}
+
+function resetTestCachePreservingAssets() {
+  const existing = readJson(CACHE_PATH, { assets: [] });
+  const testAssets = Array.isArray(existing.assets)
+    ? existing.assets.filter(asset => String(asset.id || '').startsWith('test-'))
+    : [];
+  writeJson(CACHE_PATH, {
+    revision: 0,
+    updatedAt: new Date().toISOString(),
+    schedules: [],
+    assets: testAssets,
+    mock: true
+  });
 }
 
 function saveConfig(c, persist = true) {
@@ -390,7 +407,7 @@ ipcMain.handle('login-bypass', async () => {
       bypass: true
     };
     saveConfig(next, false);
-    if (fs.existsSync(CACHE_PATH)) fs.unlinkSync(CACHE_PATH);
+    resetTestCachePreservingAssets();
     await startRuntime();
     createDashboardWindow();
     if (loginWin && !loginWin.isDestroyed()) loginWin.hide();
@@ -462,10 +479,73 @@ ipcMain.handle('list-local-media', async () => {
   if (!cfg || !cfg.bypass) return { ok: false, error: 'Only available in Test Mode' };
   try {
     fs.mkdirSync(CFG.MEDIA_LIBRARY_DIR, { recursive: true });
+    const cached = normalizeSyncPayload(
+      readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] })
+    );
+    const libraryItems = scanMediaLibrary(CFG.MEDIA_LIBRARY_DIR);
+    const managedItems = mediaManager
+      ? listManagedAssets(cached.assets, asset => mediaManager.getAssetPath(asset))
+      : [];
+    const items = [...libraryItems, ...managedItems].sort((a, b) => (
+      a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }) ||
+      a.sourceLabel.localeCompare(b.sourceLabel) ||
+      a.relativePath.localeCompare(b.relativePath)
+    ));
     return {
       ok: true,
       directory: CFG.MEDIA_LIBRARY_DIR,
-      items: scanMediaLibrary(CFG.MEDIA_LIBRARY_DIR)
+      items
+    };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('get-media-duration', async (_event, payload) => {
+  if (!cfg || !cfg.bypass) return { ok: false, error: 'Only available in Test Mode' };
+  try {
+    if (!mediaProbe) throw new Error('Media duration probe is not initialized');
+    const mediaId = String(payload && payload.mediaId || '').trim();
+    if (!mediaId) throw new Error('Select a media item first');
+
+    let filePath;
+    let hintedDurationMs = 0;
+    let assetId = null;
+    let cache = null;
+
+    if (mediaId.startsWith('asset:')) {
+      assetId = mediaId.slice('asset:'.length);
+      cache = normalizeSyncPayload(
+        readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] })
+      );
+      const asset = cache.assets.find(item => item.id === assetId);
+      if (!asset) throw new Error('Downloaded asset metadata was not found');
+      filePath = mediaManager.getAssetPath(asset);
+      hintedDurationMs = Number(asset.durationMs) || 0;
+    } else {
+      const selected = scanMediaLibrary(CFG.MEDIA_LIBRARY_DIR)
+        .find(item => item.id === mediaId);
+      if (!selected) throw new Error('Selected film is no longer available in Folder A');
+      filePath = selected.path;
+    }
+
+    const result = await mediaProbe.probe(filePath, hintedDurationMs);
+    if (assetId && cache && !hintedDurationMs) {
+      const assets = cache.assets.map(asset => (
+        asset.id === assetId ? { ...asset, durationMs: result.durationMs } : asset
+      ));
+      writeJson(CACHE_PATH, {
+        revision: cache.revision,
+        updatedAt: new Date().toISOString(),
+        schedules: cache.schedules,
+        assets,
+        mock: true
+      });
+    }
+    return {
+      ok: true,
+      durationMs: result.durationMs,
+      source: result.source
     };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
@@ -530,17 +610,52 @@ ipcMain.handle('add-test-schedule', async (_e, payload) => {
 
     if (mediaSource === 'library') {
       const mediaId = String(payload.mediaId || '').trim();
-      const selected = scanMediaLibrary(CFG.MEDIA_LIBRARY_DIR)
-        .find(item => item.id === mediaId);
-      if (!selected) {
-        throw new Error('Selected film is no longer available in the Media Library. Refresh the list.');
+      if (mediaId.startsWith('asset:')) {
+        const assetId = mediaId.slice('asset:'.length);
+        const managedCache = normalizeSyncPayload(
+          readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] })
+        );
+        const asset = managedCache.assets.find(item => item.id === assetId);
+        if (!asset) {
+          throw new Error('Selected downloaded asset is no longer registered. Refresh the list.');
+        }
+        if (!mediaManager) throw new Error('Media manager is not initialized');
+        const localPath = await mediaManager.prepareAsset(asset);
+        if (!asset.durationMs && mediaProbe) {
+          try {
+            const duration = await mediaProbe.probe(localPath);
+            asset.durationMs = duration.durationMs;
+            writeJson(CACHE_PATH, {
+              revision: managedCache.revision,
+              updatedAt: new Date().toISOString(),
+              schedules: managedCache.schedules,
+              assets: managedCache.assets.map(item => item.id === asset.id ? asset : item),
+              mock: true
+            });
+          } catch (error) {
+            appendVlcLog(`[media-duration] ${asset.id}: ${error.message}`);
+          }
+        }
+        playlistItem = {
+          assetId: asset.id,
+          localPath,
+          path: localPath,
+          title: path.basename(asset.filename, path.extname(asset.filename)),
+          order: 0
+        };
+      } else {
+        const selected = scanMediaLibrary(CFG.MEDIA_LIBRARY_DIR)
+          .find(item => item.id === mediaId);
+        if (!selected) {
+          throw new Error('Selected film is no longer available in Folder A. Refresh the list.');
+        }
+        playlistItem = {
+          localPath: selected.path,
+          path: selected.path,
+          title: selected.title,
+          order: 0
+        };
       }
-      playlistItem = {
-        localPath: selected.path,
-        path: selected.path,
-        title: selected.title,
-        order: 0
-      };
     } else if (mediaSource === 'remote') {
       newAsset = normalizeAsset({
         id: `test-${String(payload.sha256 || '').trim().toLowerCase().slice(0, 24)}`,
@@ -552,6 +667,14 @@ ipcMain.handle('add-test-schedule', async (_e, payload) => {
       });
       if (!mediaManager) throw new Error('Media manager is not initialized');
       const localPath = await mediaManager.prepareAsset(newAsset);
+      if (mediaProbe) {
+        try {
+          const duration = await mediaProbe.probe(localPath);
+          newAsset.durationMs = duration.durationMs;
+        } catch (error) {
+          appendVlcLog(`[media-duration] ${newAsset.id}: ${error.message}`);
+        }
+      }
       playlistItem = {
         assetId: newAsset.id,
         localPath,
@@ -612,6 +735,7 @@ async function startRuntime() {
     mediaDir: path.join(DATA_DIR, 'media'),
     concurrency: 2
   });
+  mediaProbe = new MediaProbe({ cachePath: DURATION_CACHE_PATH });
   mediaManager.on('download-start', ({ asset }) => {
     appendVlcLog(`[media] downloading ${asset.id}`);
   });
@@ -847,13 +971,15 @@ function mergeAssets(current, incoming) {
 
 function logout() {
   isShuttingDown = true;
+  const wasBypass = Boolean(cfg && cfg.bypass);
   try { if (socket) socket.disconnect(); } catch (_) {}
   socket = null;
   if (broadcastHandle) { clearInterval(broadcastHandle); broadcastHandle = null; }
   if (scheduler) { scheduler.clear(); scheduler = null; }
   if (vlc) { vlc.quit(); vlc = null; }
   destroyTransitionOverlay();
-  if (fs.existsSync(CACHE_PATH)) fs.unlinkSync(CACHE_PATH);
+  if (wasBypass) resetTestCachePreservingAssets();
+  else if (fs.existsSync(CACHE_PATH)) fs.unlinkSync(CACHE_PATH);
   saveConfig(null);
   nowSchedule = null;
   setStatus('offline');
