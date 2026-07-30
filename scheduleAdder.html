@@ -12,7 +12,7 @@
       min-height: 100vh;
     }
     .card {
-      width: 100%; max-width: 500px; margin: 0 auto;
+      width: 100%; max-width: 680px; margin: 0 auto;
       background: #1e293b; padding: 28px; border-radius: 12px;
       box-shadow: 0 10px 30px rgba(0,0,0,.4);
     }
@@ -78,6 +78,27 @@
     .duration-status.ready { color: #86efac; }
     .duration-status.warn { color: #fcd34d; }
     .duration-status.error { color: #fca5a5; }
+    .playlist {
+      margin: 8px 0 0; padding: 0; list-style: none;
+      border: 1px solid #334155; border-radius: 9px; overflow: hidden;
+    }
+    .playlist-empty { padding: 14px; color: #64748b; font-size: 12px; text-align: center; }
+    .playlist-item {
+      display: grid; grid-template-columns: 30px minmax(0, 1fr) auto;
+      gap: 9px; align-items: center; padding: 10px;
+      background: #0f172a; border-bottom: 1px solid #334155;
+    }
+    .playlist-item:last-child { border-bottom: 0; }
+    .playlist-order { color: #38bdf8; font-weight: 700; text-align: center; }
+    .playlist-title { font-size: 13px; color: #e2e8f0; overflow-wrap: anywhere; }
+    .playlist-meta { margin-top: 3px; font-size: 11px; color: #64748b; }
+    .playlist-actions { display: flex; gap: 5px; }
+    .playlist-actions button {
+      width: auto; margin: 0; padding: 6px 8px; font-size: 11px;
+      background: transparent; color: #cbd5e1; border: 1px solid #334155;
+    }
+    .playlist-actions button:hover { color: #38bdf8; border-color: #38bdf8; }
+    .playlist-actions .remove:hover { color: #fca5a5; border-color: #ef4444; }
   </style>
 </head>
 <body>
@@ -99,6 +120,7 @@
       <div class="status" id="libraryStatus">Scanning available media...</div>
       <div class="hint" id="libraryPath"></div>
       <div class="actions">
+        <button type="button" id="btnAddMedia" class="compact">Add to Playlist</button>
         <button type="button" id="btnRefresh" class="btn-secondary compact">Refresh</button>
         <button type="button" id="btnOpenLibrary" class="btn-secondary compact">Open Folder</button>
       </div>
@@ -119,7 +141,13 @@
       <input name="sha256" type="text" minlength="64" maxlength="64"
              placeholder="64 hexadecimal characters" autocomplete="off" />
       <div class="hint">After verification this asset is stored once and appears under Available Media.</div>
+      <button type="button" id="btnImportAsset" class="compact">Import &amp; Add to Playlist</button>
+      <div class="status" id="importStatus"></div>
     </section>
+
+    <label>Playback playlist</label>
+    <ul class="playlist" id="playlist"></ul>
+    <div class="duration-status" id="playlistTotal">Playlist is empty.</div>
 
     <label>Schedule name</label>
     <input name="title" type="text" placeholder="e.g. Morning Ad" required autocomplete="off" />
@@ -166,10 +194,10 @@
       </div>
     </div>
     <div class="duration-status" id="durationStatus">
-      Select an available media item to detect its duration.
+      Playlist duration will be applied automatically. You can still edit the window manually.
     </div>
     <button type="button" id="btnResetDuration" class="btn-secondary compact hidden">
-      Reset to Film Duration
+      Use Playlist Duration
     </button>
 
     <div class="row">
@@ -201,12 +229,14 @@
     const mediaSearch = document.getElementById('mediaSearch');
     const durationStatus = document.getElementById('durationStatus');
     const resetDurationButton = document.getElementById('btnResetDuration');
+    const playlistEl = document.getElementById('playlist');
+    const playlistTotalEl = document.getElementById('playlistTotal');
     const recurrenceEl = document.getElementById('recurrenceFreq');
     const scheduleId = new URLSearchParams(location.search).get('scheduleId') || '';
     let libraryItems = [];
-    let detectedDurationMs = 0;
+    let playlistItems = [];
+    let useAutomaticDuration = true;
     let lastDetectedMediaId = null;
-    let preserveDurationOnNextDetection = false;
     let detectionToken = 0;
     let detectionTimer = null;
 
@@ -214,18 +244,12 @@
       const isLibrary = source === 'library';
       document.getElementById('libraryPanel').classList.toggle('hidden', !isLibrary);
       document.getElementById('remotePanel').classList.toggle('hidden', isLibrary);
-      form.downloadUrl.required = !isLibrary;
-      form.filename.required = !isLibrary;
-      form.size.required = !isLibrary;
-      form.sha256.required = !isLibrary;
       if (isLibrary) {
         scheduleDurationDetection();
       } else {
         detectionToken++;
-        detectedDurationMs = 0;
-        resetDurationButton.classList.add('hidden');
         setDurationStatus(
-          'Duration for a new remote asset is detected after its first download. You can enter it manually now.',
+          'Import verifies and downloads the remote asset before adding it to the playlist.',
           'warn'
         );
       }
@@ -248,19 +272,18 @@
       durationStatus.className = `duration-status ${state}`.trim();
     }
 
-    function applyDetectedDuration(durationMs, source, fillFields = true) {
-      detectedDurationMs = durationMs;
+    function fillScheduleDuration(durationMs) {
       const totalSeconds = Math.ceil(durationMs / 1000);
-      if (fillFields) {
-        form.durationMinutes.value = Math.floor(totalSeconds / 60);
-        form.durationSeconds.value = totalSeconds % 60;
-      }
-      resetDurationButton.classList.remove('hidden');
+      form.durationMinutes.value = Math.floor(totalSeconds / 60);
+      form.durationSeconds.value = totalSeconds % 60;
+    }
+
+    function showDetectedDuration(durationMs, source) {
       const sourceLabel = source === 'asset-metadata'
         ? 'saved asset metadata'
         : (source === 'cache' ? 'duration cache' : source);
       setDurationStatus(
-        `Detected film duration: ${formatDuration(durationMs)} (${sourceLabel}). You can edit it.`,
+        `Selected media duration: ${formatDuration(durationMs)} (${sourceLabel}). Add it to the playlist to include it.`,
         'ready'
       );
     }
@@ -269,29 +292,22 @@
       if (sourceEl.value !== 'library') return;
       const selected = libraryItems.find(item => item.id === mediaList.value);
       if (!selected) {
-        detectedDurationMs = 0;
-        resetDurationButton.classList.add('hidden');
         setDurationStatus('Select an available media item to detect its duration.');
         return;
       }
-      if (selected.id === lastDetectedMediaId && detectedDurationMs > 0) return;
+      if (selected.id === lastDetectedMediaId && Number(selected.durationMs) > 0) return;
       lastDetectedMediaId = selected.id;
 
       const token = ++detectionToken;
       if (Number(selected.durationMs) > 0) {
-        const shouldFill = !preserveDurationOnNextDetection;
-        preserveDurationOnNextDetection = false;
-        applyDetectedDuration(Number(selected.durationMs), 'asset-metadata', shouldFill);
+        showDetectedDuration(Number(selected.durationMs), 'asset-metadata');
         return;
       }
 
-      resetDurationButton.classList.add('hidden');
       setDurationStatus('Detecting media duration...');
       const result = await ipcRenderer.invoke('get-media-duration', { mediaId: selected.id });
       if (token !== detectionToken) return;
       if (!result || !result.ok || !(Number(result.durationMs) > 0)) {
-        detectedDurationMs = 0;
-        preserveDurationOnNextDetection = false;
         setDurationStatus(
           result && result.error
             ? `Duration could not be detected: ${result.error}. Enter it manually.`
@@ -301,9 +317,12 @@
         return;
       }
       selected.durationMs = Number(result.durationMs);
-      const shouldFill = !preserveDurationOnNextDetection;
-      preserveDurationOnNextDetection = false;
-      applyDetectedDuration(selected.durationMs, result.source, shouldFill);
+      showDetectedDuration(selected.durationMs, result.source);
+      const queued = playlistItems.find(item => item.id === selected.id);
+      if (queued) {
+        queued.durationMs = selected.durationMs;
+        renderPlaylist();
+      }
     }
 
     function scheduleDurationDetection() {
@@ -314,6 +333,115 @@
         });
       }, 150);
     }
+
+    function playlistDurationMs() {
+      return playlistItems.reduce((total, item) => total + (Number(item.durationMs) || 0), 0);
+    }
+
+    function renderPlaylist() {
+      playlistEl.innerHTML = '';
+      if (!playlistItems.length) {
+        const empty = document.createElement('li');
+        empty.className = 'playlist-empty';
+        empty.textContent = 'No media added yet.';
+        playlistEl.appendChild(empty);
+        playlistTotalEl.textContent = 'Playlist is empty.';
+        playlistTotalEl.className = 'duration-status';
+        resetDurationButton.classList.add('hidden');
+        return;
+      }
+
+      playlistItems.forEach((item, index) => {
+        const row = document.createElement('li');
+        row.className = 'playlist-item';
+        const order = document.createElement('div');
+        order.className = 'playlist-order';
+        order.textContent = String(index + 1);
+        const info = document.createElement('div');
+        const title = document.createElement('div');
+        title.className = 'playlist-title';
+        title.textContent = item.title;
+        const meta = document.createElement('div');
+        meta.className = 'playlist-meta';
+        meta.textContent = `${item.sourceLabel || 'Media'} · ${
+          Number(item.durationMs) > 0 ? formatDuration(item.durationMs) : 'duration unavailable'
+        }`;
+        info.append(title, meta);
+        const actions = document.createElement('div');
+        actions.className = 'playlist-actions';
+        for (const [label, action, disabled] of [
+          ['↑', 'up', index === 0],
+          ['↓', 'down', index === playlistItems.length - 1],
+          ['Remove', 'remove', false]
+        ]) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = label;
+          button.dataset.action = action;
+          button.dataset.index = String(index);
+          button.disabled = disabled;
+          if (action === 'remove') button.className = 'remove';
+          actions.appendChild(button);
+        }
+        row.append(order, info, actions);
+        playlistEl.appendChild(row);
+      });
+
+      const total = playlistDurationMs();
+      const allKnown = playlistItems.every(item => Number(item.durationMs) > 0);
+      playlistTotalEl.textContent = allKnown
+        ? `Total playlist duration: ${formatDuration(total)} (${playlistItems.length} item(s))`
+        : `Known playlist duration: ${formatDuration(total)}. Some durations are unavailable.`;
+      playlistTotalEl.className = `duration-status ${allKnown ? 'ready' : 'warn'}`;
+      resetDurationButton.classList.toggle('hidden', !allKnown);
+      if (allKnown && useAutomaticDuration) {
+        fillScheduleDuration(total);
+        setDurationStatus(
+          `Schedule window follows the playlist total (${formatDuration(total)}). You can edit it manually.`,
+          'ready'
+        );
+      } else if (!allKnown) {
+        useAutomaticDuration = false;
+        setDurationStatus('Enter the schedule window manually because a playlist duration is unavailable.', 'warn');
+      }
+    }
+
+    async function addMediaToPlaylist(item) {
+      if (!item) throw new Error('Select an item from Available Media');
+      if (playlistItems.some(queued => queued.id === item.id)) {
+        throw new Error('That media item is already in the playlist');
+      }
+      if (!(Number(item.durationMs) > 0)) {
+        setDurationStatus(`Detecting duration for ${item.title}...`);
+        const result = await ipcRenderer.invoke('get-media-duration', { mediaId: item.id });
+        if (result && result.ok && Number(result.durationMs) > 0) {
+          item.durationMs = Number(result.durationMs);
+        }
+      }
+      playlistItems.push({
+        id: item.id,
+        title: item.title,
+        sourceLabel: item.sourceLabel,
+        durationMs: Number(item.durationMs) || 0
+      });
+      if (playlistItems.length === 1 && !form.title.value.trim()) form.title.value = item.title;
+      renderPlaylist();
+    }
+
+    playlistEl.onclick = event => {
+      const button = event.target.closest('button[data-action]');
+      if (!button) return;
+      const index = Number(button.dataset.index);
+      if (!Number.isInteger(index) || !playlistItems[index]) return;
+      if (button.dataset.action === 'remove') {
+        playlistItems.splice(index, 1);
+      } else {
+        const target = button.dataset.action === 'up' ? index - 1 : index + 1;
+        if (target < 0 || target >= playlistItems.length) return;
+        [playlistItems[index], playlistItems[target]] = [playlistItems[target], playlistItems[index]];
+      }
+      renderPlaylist();
+    };
 
     function renderLibrary() {
       const query = mediaSearch.value.trim().toLowerCase();
@@ -362,18 +490,71 @@
     mediaSearch.oninput = renderLibrary;
     mediaList.onchange = () => {
       const selected = libraryItems.find(item => item.id === mediaList.value);
-      if (selected && !form.title.value.trim()) form.title.value = selected.title;
       scheduleDurationDetection();
     };
-    resetDurationButton.onclick = () => {
-      if (detectedDurationMs > 0) applyDetectedDuration(detectedDurationMs, 'detected media');
+    document.getElementById('btnAddMedia').onclick = () => {
+      const selected = libraryItems.find(item => item.id === mediaList.value);
+      addMediaToPlaylist(selected).catch(showError);
     };
+    resetDurationButton.onclick = () => {
+      const total = playlistDurationMs();
+      if (total > 0 && playlistItems.every(item => Number(item.durationMs) > 0)) {
+        useAutomaticDuration = true;
+        fillScheduleDuration(total);
+        renderPlaylist();
+      }
+    };
+    form.durationMinutes.addEventListener('input', () => {
+      useAutomaticDuration = false;
+      setDurationStatus('Manual schedule window is active. Use Playlist Duration to restore the total.', 'warn');
+    });
+    form.durationSeconds.addEventListener('input', () => {
+      useAutomaticDuration = false;
+      setDurationStatus('Manual schedule window is active. Use Playlist Duration to restore the total.', 'warn');
+    });
     document.getElementById('btnRefresh').onclick = () => {
       loadLibrary().catch(showError);
     };
     document.getElementById('btnOpenLibrary').onclick = async () => {
       const result = await ipcRenderer.invoke('open-media-library');
       if (!result || !result.ok) showError(new Error(result && result.error || 'Failed to open folder'));
+    };
+    document.getElementById('btnImportAsset').onclick = async () => {
+      errEl.classList.remove('show');
+      const importButton = document.getElementById('btnImportAsset');
+      const importStatus = document.getElementById('importStatus');
+      const payload = {
+        downloadUrl: form.downloadUrl.value.trim(),
+        filename: form.filename.value.trim(),
+        size: Number(form.size.value),
+        sha256: form.sha256.value.trim()
+      };
+      if (!payload.downloadUrl || !payload.filename || !(payload.size > 0) ||
+          !/^[a-f0-9]{64}$/i.test(payload.sha256)) {
+        showError(new Error('Complete URL, filename, file size, and a valid 64-character SHA-256'));
+        return;
+      }
+      importButton.disabled = true;
+      importButton.textContent = 'Downloading & Verifying...';
+      importStatus.textContent = 'The asset is being downloaded and verified.';
+      try {
+        const result = await ipcRenderer.invoke('import-test-asset', payload);
+        if (!result || !result.ok) throw new Error(result && result.error || 'Asset import failed');
+        await loadLibrary();
+        const imported = libraryItems.find(item => item.id === result.mediaId);
+        if (!imported) throw new Error('Imported asset did not appear in Available Media');
+        await addMediaToPlaylist(imported);
+        importStatus.textContent = `${imported.title} was verified and added to the playlist.`;
+        sourceEl.value = 'library';
+        setSource('library');
+        mediaList.value = imported.id;
+      } catch (error) {
+        showError(error);
+        importStatus.textContent = '';
+      } finally {
+        importButton.disabled = false;
+        importButton.textContent = 'Import & Add to Playlist';
+      }
     };
 
     try {
@@ -386,9 +567,7 @@
 
     function setBusy(busy) {
       btn.disabled = busy;
-      btn.textContent = busy
-        ? (sourceEl.value === 'remote' ? 'Downloading & Saving...' : 'Saving...')
-        : 'Save Schedule';
+      btn.textContent = busy ? 'Saving...' : (scheduleId ? 'Update Schedule' : 'Save Schedule');
     }
 
     function showError(error) {
@@ -432,22 +611,42 @@
         input.checked = days.includes(Number(input.value));
       });
 
-      const firstFile = schedule.files && schedule.files[0];
-      const wantedId = firstFile && firstFile.assetId
-        ? `asset:${firstFile.assetId}`
-        : null;
-      const selected = libraryItems.find(item => (
-        wantedId ? item.id === wantedId : (
-          firstFile && item.path &&
-          item.path.toLowerCase() === String(firstFile.path || '').toLowerCase()
-        )
-      ));
-      if (!selected) throw new Error('The scheduled media is no longer available');
+      const files = Array.isArray(schedule.files) ? schedule.files : [];
+      const resolvedItems = files.map(file => {
+        const wantedId = file.assetId ? `asset:${file.assetId}` : null;
+        return libraryItems.find(item => (
+          wantedId ? item.id === wantedId : (
+            item.path && item.path.toLowerCase() === String(file.path || '').toLowerCase()
+          )
+        ));
+      });
+      if (!resolvedItems.length || resolvedItems.some(item => !item)) {
+        throw new Error('One or more scheduled media items are no longer available');
+      }
+      for (const item of resolvedItems) {
+        if (!(Number(item.durationMs) > 0)) {
+          const durationResult = await ipcRenderer.invoke('get-media-duration', { mediaId: item.id });
+          if (durationResult && durationResult.ok && Number(durationResult.durationMs) > 0) {
+            item.durationMs = Number(durationResult.durationMs);
+          }
+        }
+      }
+      playlistItems = resolvedItems.map(item => ({
+        id: item.id,
+        title: item.title,
+        sourceLabel: item.sourceLabel,
+        durationMs: Number(item.durationMs) || 0
+      }));
       sourceEl.value = 'library';
-      preserveDurationOnNextDetection = true;
       setSource('library');
-      mediaList.value = selected.id;
+      mediaList.value = resolvedItems[0].id;
       lastDetectedMediaId = null;
+      useAutomaticDuration = false;
+      renderPlaylist();
+      setDurationStatus(
+        `Existing manual window: ${formatDuration(durationSeconds * 1000)}. Use Playlist Duration to replace it.`,
+        'warn'
+      );
       scheduleDurationDetection();
     }
 
@@ -455,19 +654,15 @@
       event.preventDefault();
       errEl.classList.remove('show');
       const fd = new FormData(form);
-      if (sourceEl.value === 'library' && !mediaList.value) {
-        showError(new Error('Select an item from Available Media'));
+      if (!playlistItems.length) {
+        showError(new Error('Add at least one media item to the playlist'));
         return;
       }
       setBusy(true);
       const payload = {
         scheduleId,
-        mediaSource: sourceEl.value,
-        mediaId: mediaList.value,
-        downloadUrl: fd.get('downloadUrl'),
-        filename: fd.get('filename'),
-        size: Number(fd.get('size')),
-        sha256: fd.get('sha256'),
+        mediaSource: 'library',
+        mediaIds: playlistItems.map(item => item.id),
         title: fd.get('title'),
         startDate: fd.get('startDate'),
         startTime: fd.get('startTime'),
@@ -489,6 +684,7 @@
     };
 
     document.getElementById('btnCancel').onclick = () => window.close();
+    renderPlaylist();
     setSource(sourceEl.value);
     setRecurrence(recurrenceEl.value);
     (async () => {

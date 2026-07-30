@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+  Scheduler,
   nextOccurrenceStart,
   selectActiveOccurrence
 } = require('../scheduler.cjs');
@@ -82,4 +83,37 @@ test('overlap resolution selects priority, then latest start time', () => {
     })
   ], now);
   assert.equal(winner.schedule.id, 'emergency');
+});
+
+test('scheduler sends every playlist item to VLC in order', () => {
+  let received = null;
+  const vlc = {
+    replacePlaylist(files, options) {
+      received = { files, options };
+    },
+    playIdle() {},
+    clear() {}
+  };
+  const scheduler = new Scheduler(vlc);
+  const active = schedule({
+    id: 'playlist',
+    loop: false,
+    files: [
+      { path: 'C:\\media\\opening.mp4' },
+      { localPath: 'C:\\media\\feature.mp4' },
+      { path: 'C:\\media\\closing.mp4' }
+    ]
+  });
+
+  scheduler._activate(active, new Date(active.startTime), 3600000);
+  scheduler.clear();
+
+  assert.deepEqual(received, {
+    files: [
+      'C:\\media\\opening.mp4',
+      'C:\\media\\feature.mp4',
+      'C:\\media\\closing.mp4'
+    ],
+    options: { loop: false }
+  });
 });

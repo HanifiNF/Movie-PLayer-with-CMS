@@ -726,6 +726,105 @@ function parseStartDate(dateStr, timeStr) {
   return start;
 }
 
+async function resolveTestMediaItem(mediaId, order = 0) {
+  const normalizedId = String(mediaId || '').trim();
+  if (!normalizedId) throw new Error('Playlist contains an invalid media item');
+
+  if (normalizedId.startsWith('asset:')) {
+    const assetId = normalizedId.slice('asset:'.length);
+    const cache = normalizeSyncPayload(
+      readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] })
+    );
+    const asset = cache.assets.find(item => item.id === assetId);
+    if (!asset) {
+      throw new Error('A downloaded playlist item is no longer registered. Refresh the list.');
+    }
+    if (!mediaManager) throw new Error('Media manager is not initialized');
+    const localPath = await mediaManager.prepareAsset(asset);
+    if (!asset.durationMs && mediaProbe) {
+      try {
+        const duration = await mediaProbe.probe(localPath);
+        asset.durationMs = duration.durationMs;
+        writeJson(CACHE_PATH, {
+          revision: cache.revision,
+          updatedAt: new Date().toISOString(),
+          schedules: cache.schedules,
+          assets: cache.assets.map(item => item.id === asset.id ? asset : item),
+          mock: true
+        });
+      } catch (error) {
+        appendVlcLog(`[media-duration] ${asset.id}: ${error.message}`);
+      }
+    }
+    return {
+      assetId: asset.id,
+      localPath,
+      path: localPath,
+      title: path.basename(asset.filename, path.extname(asset.filename)),
+      order
+    };
+  }
+
+  const selected = scanMediaLibrary(CFG.MEDIA_LIBRARY_DIR)
+    .find(item => item.id === normalizedId);
+  if (!selected) {
+    throw new Error('A playlist item is no longer available in Folder A. Refresh the list.');
+  }
+  return {
+    localPath: selected.path,
+    path: selected.path,
+    title: selected.title,
+    order
+  };
+}
+
+async function importTestRemoteAsset(payload) {
+  if (!mediaManager) throw new Error('Media manager is not initialized');
+  const sha256 = String(payload && payload.sha256 || '').trim().toLowerCase();
+  const asset = normalizeAsset({
+    id: `test-${sha256.slice(0, 24)}`,
+    filename: payload && payload.filename,
+    downloadUrl: payload && payload.downloadUrl,
+    size: Number(payload && payload.size),
+    sha256,
+    mimeType: 'video/mp4'
+  });
+  const localPath = await mediaManager.prepareAsset(asset);
+  if (mediaProbe) {
+    try {
+      const duration = await mediaProbe.probe(localPath);
+      asset.durationMs = duration.durationMs;
+    } catch (error) {
+      appendVlcLog(`[media-duration] ${asset.id}: ${error.message}`);
+    }
+  }
+
+  const cache = normalizeSyncPayload(
+    readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] })
+  );
+  writeJson(CACHE_PATH, {
+    revision: cache.revision,
+    updatedAt: new Date().toISOString(),
+    schedules: cache.schedules,
+    assets: mergeAssets(cache.assets, [asset]),
+    mock: true
+  });
+  return {
+    mediaId: `asset:${asset.id}`,
+    asset,
+    localPath
+  };
+}
+
+ipcMain.handle('import-test-asset', async (_event, payload) => {
+  try {
+    if (!cfg || !cfg.bypass) throw new Error('Only available in Test Mode');
+    return { ok: true, ...(await importTestRemoteAsset(payload)) };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
 ipcMain.handle('add-test-schedule', async (_e, payload) => {
   try {
     if (!cfg || !cfg.bypass) throw new Error('Only available in Test Mode');
@@ -759,85 +858,25 @@ ipcMain.handle('add-test-schedule', async (_e, payload) => {
     }
 
     const end = new Date(start.getTime() + durationMs);
-    let playlistItem;
-    let newAsset = null;
+    let mediaIds = Array.isArray(payload.mediaIds)
+      ? payload.mediaIds.map(item => String(item || '').trim()).filter(Boolean)
+      : [];
 
-    if (mediaSource === 'library') {
-      const mediaId = String(payload.mediaId || '').trim();
-      if (mediaId.startsWith('asset:')) {
-        const assetId = mediaId.slice('asset:'.length);
-        const managedCache = normalizeSyncPayload(
-          readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] })
-        );
-        const asset = managedCache.assets.find(item => item.id === assetId);
-        if (!asset) {
-          throw new Error('Selected downloaded asset is no longer registered. Refresh the list.');
-        }
-        if (!mediaManager) throw new Error('Media manager is not initialized');
-        const localPath = await mediaManager.prepareAsset(asset);
-        if (!asset.durationMs && mediaProbe) {
-          try {
-            const duration = await mediaProbe.probe(localPath);
-            asset.durationMs = duration.durationMs;
-            writeJson(CACHE_PATH, {
-              revision: managedCache.revision,
-              updatedAt: new Date().toISOString(),
-              schedules: managedCache.schedules,
-              assets: managedCache.assets.map(item => item.id === asset.id ? asset : item),
-              mock: true
-            });
-          } catch (error) {
-            appendVlcLog(`[media-duration] ${asset.id}: ${error.message}`);
-          }
-        }
-        playlistItem = {
-          assetId: asset.id,
-          localPath,
-          path: localPath,
-          title: path.basename(asset.filename, path.extname(asset.filename)),
-          order: 0
-        };
-      } else {
-        const selected = scanMediaLibrary(CFG.MEDIA_LIBRARY_DIR)
-          .find(item => item.id === mediaId);
-        if (!selected) {
-          throw new Error('Selected film is no longer available in Folder A. Refresh the list.');
-        }
-        playlistItem = {
-          localPath: selected.path,
-          path: selected.path,
-          title: selected.title,
-          order: 0
-        };
-      }
-    } else if (mediaSource === 'remote') {
-      newAsset = normalizeAsset({
-        id: `test-${String(payload.sha256 || '').trim().toLowerCase().slice(0, 24)}`,
-        filename: payload.filename,
-        downloadUrl: payload.downloadUrl,
-        size: Number(payload.size),
-        sha256: payload.sha256,
-        mimeType: 'video/mp4'
-      });
-      if (!mediaManager) throw new Error('Media manager is not initialized');
-      const localPath = await mediaManager.prepareAsset(newAsset);
-      if (mediaProbe) {
-        try {
-          const duration = await mediaProbe.probe(localPath);
-          newAsset.durationMs = duration.durationMs;
-        } catch (error) {
-          appendVlcLog(`[media-duration] ${newAsset.id}: ${error.message}`);
-        }
-      }
-      playlistItem = {
-        assetId: newAsset.id,
-        localPath,
-        path: localPath,
-        title: path.basename(newAsset.filename, path.extname(newAsset.filename)),
-        order: 0
-      };
-    } else {
-      throw new Error('Unknown media source');
+    // Compatibility with schedules submitted by the previous single-media form.
+    if (!mediaIds.length && mediaSource === 'library') {
+      const legacyMediaId = String(payload.mediaId || '').trim();
+      if (legacyMediaId) mediaIds = [legacyMediaId];
+    } else if (!mediaIds.length && mediaSource === 'remote') {
+      const imported = await importTestRemoteAsset(payload);
+      mediaIds = [imported.mediaId];
+    }
+    if (!mediaIds.length) throw new Error('Add at least one media item to the playlist');
+    if (new Set(mediaIds).size !== mediaIds.length) {
+      throw new Error('The same media item cannot appear twice in a playlist');
+    }
+    const playlist = [];
+    for (let index = 0; index < mediaIds.length; index += 1) {
+      playlist.push(await resolveTestMediaItem(mediaIds[index], index));
     }
 
     const cache = normalizeSyncPayload(
@@ -864,18 +903,17 @@ ipcMain.handle('add-test-schedule', async (_e, payload) => {
       endTime: end.toISOString(),
       recurrence,
       loop: payload.loop !== false,
-      playlist: [playlistItem]
+      playlist
     });
 
     const schedules = existing
       ? cache.schedules.map(schedule => schedule.id === existing.id ? newSchedule : schedule)
       : [...cache.schedules, newSchedule];
-    const assets = newAsset ? mergeAssets(cache.assets, [newAsset]) : cache.assets;
     writeJson(CACHE_PATH, {
       revision: cache.revision,
       updatedAt: new Date().toISOString(),
       schedules,
-      assets,
+      assets: cache.assets,
       mock: true
     });
     if (scheduler) {

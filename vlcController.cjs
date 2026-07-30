@@ -268,9 +268,12 @@ class VlcController extends EventEmitter {
     }
     this.send('clear');
     await sleep(200);
+    // RC "add" starts the newly added item immediately, so repeatedly using it
+    // makes the last playlist item win. Enqueue everything first, then issue one
+    // play command so VLC starts from the first item in the requested order.
     for (const p of filePaths) {
       const mrl = this._toMrl(p);
-      this.send('add ' + mrl);
+      this.send('enqueue ' + mrl);
       await sleep(100);
     }
     this.send(`loop ${shouldLoop ? 'on' : 'off'}`);

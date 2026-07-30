@@ -225,7 +225,10 @@
       if (now) {
         $('nowTitle').textContent = now.title || now.scheduleId;
         $('nowTitle').classList.remove('empty');
-        $('nowFile').textContent = (now.files && now.files[0] && now.files[0].path) || '';
+        $('nowFile').textContent = (now.files || [])
+          .map(file => file.title || file.path || file.assetId)
+          .filter(Boolean)
+          .join(' â†’ ');
         const remaining = now.endMs ? (now.endMs - Date.now()) : null;
         $('nowCountdown').textContent = fmtCountdown(remaining);
       } else {
@@ -277,7 +280,10 @@
           const li = document.createElement('li');
           const start = it.startTime ? fmtDate(new Date(it.startTime).getTime()) : '-';
           const end = it.endTime ? fmtDate(new Date(it.endTime).getTime()) : '-';
-          const file = (it.files && it.files[0] && it.files[0].path) || '';
+          const file = (it.files || [])
+            .map(item => item.title || item.path || item.assetId)
+            .filter(Boolean)
+            .join(' â†’ ');
           li.innerHTML = `<div class="details">` +
                            `<span class="ttl" title="${it.title}">${it.title}</span>` +
                            `<span>${start} → ${end}</span>` +

@@ -54,6 +54,28 @@ test('canonical payload accepts asset references and catalog metadata', () => {
   assert.equal(payload.assets[0].sha256.length, 64);
 });
 
+test('multi-item playlists preserve their explicit playback order', () => {
+  const result = normalizeSchedule({
+    id: 'playlist-1',
+    startTime: '2026-08-01T10:00:00+07:00',
+    endTime: '2026-08-01T12:00:00+07:00',
+    playlist: [
+      { path: 'D:\\media\\closing.mp4', title: 'Closing', order: 2 },
+      { assetId: 'asset-opening', title: 'Opening', order: 0 },
+      { path: 'D:\\media\\feature.mp4', title: 'Feature', order: 1 }
+    ]
+  });
+
+  assert.deepEqual(
+    result.playlist.map(item => item.title),
+    ['Opening', 'Feature', 'Closing']
+  );
+  assert.deepEqual(
+    result.files.map(item => item.order),
+    [0, 1, 2]
+  );
+});
+
 test('invalid payload is rejected before reaching the scheduler', () => {
   assert.throws(() => normalizeSyncPayload({
     schedules: [{
