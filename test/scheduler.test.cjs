@@ -62,6 +62,14 @@ test('one-shot schedules expire after their end time', () => {
   assert.equal(occurrence, null);
 });
 
+test('disabled schedules never produce an occurrence', () => {
+  const occurrence = nextOccurrenceStart(
+    schedule({ enabled: false }),
+    new Date('2026-07-30T03:30:00.000Z')
+  );
+  assert.equal(occurrence, null);
+});
+
 test('overlap resolution selects priority, then latest start time', () => {
   const now = new Date('2026-07-30T03:45:00.000Z');
   const winner = selectActiveOccurrence([

@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const { io } = require('socket.io-client');
 const { VlcController } = require('./vlcController.cjs');
-const { Scheduler } = require('./scheduler.cjs');
+const { Scheduler, nextOccurrenceStart } = require('./scheduler.cjs');
 const {
   normalizeAsset,
   normalizeSchedule,
@@ -29,6 +29,7 @@ let tray = null;
 let loginWin = null;
 let dashboardWin = null;
 let scheduleAdderWin = null;
+let scheduleManagerWin = null;
 let socket = null;
 let vlc = null;
 let scheduler = null;
@@ -64,13 +65,16 @@ function writeJson(file, data) {
 
 function resetTestCachePreservingAssets() {
   const existing = readJson(CACHE_PATH, { assets: [] });
+  const testSchedules = existing.mock && Array.isArray(existing.schedules)
+    ? existing.schedules
+    : [];
   const testAssets = Array.isArray(existing.assets)
     ? existing.assets.filter(asset => String(asset.id || '').startsWith('test-'))
     : [];
   writeJson(CACHE_PATH, {
     revision: 0,
     updatedAt: new Date().toISOString(),
-    schedules: [],
+    schedules: testSchedules,
     assets: testAssets,
     mock: true
   });
@@ -229,11 +233,10 @@ function showDashboard() {
   }
 }
 
-function createScheduleAdderWindow() {
+function createScheduleAdderWindow(scheduleId = '') {
   if (scheduleAdderWin && !scheduleAdderWin.isDestroyed()) {
-    scheduleAdderWin.show();
-    scheduleAdderWin.focus();
-    return;
+    scheduleAdderWin.destroy();
+    scheduleAdderWin = null;
   }
   const parent = (dashboardWin && !dashboardWin.isDestroyed()) ? dashboardWin : undefined;
   scheduleAdderWin = new BrowserWindow({
@@ -254,8 +257,34 @@ function createScheduleAdderWindow() {
     }
   });
   scheduleAdderWin.removeMenu();
-  scheduleAdderWin.loadFile(path.join(__dirname, 'scheduleAdder.html'));
+  scheduleAdderWin.loadFile(path.join(__dirname, 'scheduleAdder.html'), {
+    query: scheduleId ? { scheduleId } : {}
+  });
   scheduleAdderWin.on('closed', () => { scheduleAdderWin = null; });
+}
+
+function createScheduleManagerWindow() {
+  if (scheduleManagerWin && !scheduleManagerWin.isDestroyed()) {
+    scheduleManagerWin.show();
+    scheduleManagerWin.focus();
+    return;
+  }
+  scheduleManagerWin = new BrowserWindow({
+    width: 1040,
+    height: 720,
+    minWidth: 820,
+    minHeight: 560,
+    title: 'Player — Schedule Manager',
+    autoHideMenuBar: true,
+    background: '#0b1220',
+    webPreferences: {
+      contextIsolation: false,
+      nodeIntegration: true
+    }
+  });
+  scheduleManagerWin.removeMenu();
+  scheduleManagerWin.loadFile(path.join(__dirname, 'scheduleManager.html'));
+  scheduleManagerWin.on('closed', () => { scheduleManagerWin = null; });
 }
 
 function createTransitionWindow() {
@@ -469,10 +498,130 @@ ipcMain.handle('open-config-folder', async () => {
   return { ok: true };
 });
 
-ipcMain.handle('open-schedule-adder', async () => {
+ipcMain.handle('open-schedule-adder', async (_event, scheduleId) => {
   if (!cfg || !cfg.bypass) return { ok: false, error: 'Only available in Test Mode' };
-  createScheduleAdderWindow();
+  createScheduleAdderWindow(String(scheduleId || ''));
   return { ok: true };
+});
+
+ipcMain.handle('open-schedule-manager', async () => {
+  if (!cfg || !cfg.bypass) return { ok: false, error: 'Only available in Test Mode' };
+  createScheduleManagerWindow();
+  return { ok: true };
+});
+
+function getTestCache() {
+  return normalizeSyncPayload(
+    readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] })
+  );
+}
+
+function persistTestSchedules(cache, schedules) {
+  writeJson(CACHE_PATH, {
+    revision: cache.revision,
+    updatedAt: new Date().toISOString(),
+    schedules,
+    assets: cache.assets,
+    mock: true
+  });
+  if (scheduler) scheduler.update(schedules);
+  pushDashboard();
+}
+
+function getTestScheduleStatus(schedule) {
+  if (schedule.enabled === false) return 'disabled';
+  if (scheduler && scheduler.currentScheduleId === schedule.id) return 'active';
+  const now = new Date();
+  const occurrence = nextOccurrenceStart(schedule, now);
+  if (!occurrence) return 'completed';
+  return occurrence.alreadyActive ? 'ready' : 'upcoming';
+}
+
+ipcMain.handle('list-test-schedules', async () => {
+  if (!cfg || !cfg.bypass) return { ok: false, error: 'Only available in Test Mode' };
+  try {
+    const cache = getTestCache();
+    return {
+      ok: true,
+      schedules: cache.schedules.map(schedule => ({
+        ...schedule,
+        status: getTestScheduleStatus(schedule)
+      }))
+    };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('get-test-schedule', async (_event, scheduleId) => {
+  if (!cfg || !cfg.bypass) return { ok: false, error: 'Only available in Test Mode' };
+  try {
+    const schedule = getTestCache().schedules.find(item => item.id === scheduleId);
+    return schedule
+      ? { ok: true, schedule }
+      : { ok: false, error: 'Schedule not found' };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('delete-test-schedule', async (_event, scheduleId) => {
+  if (!cfg || !cfg.bypass) return { ok: false, error: 'Only available in Test Mode' };
+  try {
+    const cache = getTestCache();
+    const schedules = cache.schedules.filter(item => item.id !== scheduleId);
+    if (schedules.length === cache.schedules.length) throw new Error('Schedule not found');
+    persistTestSchedules(cache, schedules);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('toggle-test-schedule', async (_event, scheduleId) => {
+  if (!cfg || !cfg.bypass) return { ok: false, error: 'Only available in Test Mode' };
+  try {
+    const cache = getTestCache();
+    let nextEnabled = false;
+    let found = false;
+    const schedules = cache.schedules.map(schedule => {
+      if (schedule.id !== scheduleId) return schedule;
+      found = true;
+      nextEnabled = schedule.enabled === false;
+      return { ...schedule, enabled: nextEnabled, revision: schedule.revision + 1 };
+    });
+    if (!found) throw new Error('Schedule not found');
+    persistTestSchedules(cache, schedules);
+    if (nextEnabled && scheduler) scheduler.reactivate(scheduleId);
+    return { ok: true, enabled: nextEnabled };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('duplicate-test-schedule', async (_event, scheduleId) => {
+  if (!cfg || !cfg.bypass) return { ok: false, error: 'Only available in Test Mode' };
+  try {
+    const cache = getTestCache();
+    const source = cache.schedules.find(item => item.id === scheduleId);
+    if (!source) throw new Error('Schedule not found');
+    const originalDuration = new Date(source.endTime).getTime() - new Date(source.startTime).getTime();
+    const start = new Date(Date.now() + 5 * 60000);
+    const duplicate = normalizeSchedule({
+      ...source,
+      id: `manual-${Date.now()}`,
+      title: `${source.title} (Copy)`,
+      revision: 0,
+      enabled: true,
+      startTime: start.toISOString(),
+      endTime: new Date(start.getTime() + originalDuration).toISOString()
+    });
+    const schedules = [...cache.schedules, duplicate];
+    persistTestSchedules(cache, schedules);
+    return { ok: true, schedule: duplicate };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
 });
 
 ipcMain.handle('list-local-media', async () => {
@@ -581,6 +730,7 @@ ipcMain.handle('add-test-schedule', async (_e, payload) => {
   try {
     if (!cfg || !cfg.bypass) throw new Error('Only available in Test Mode');
     if (!payload) throw new Error('No payload');
+    const scheduleId = String(payload.scheduleId || '').trim();
     const title = String(payload.title || '').trim();
     const mediaSource = String(payload.mediaSource || 'library');
     const dateStr = String(payload.startDate || '').trim();
@@ -588,6 +738,10 @@ ipcMain.handle('add-test-schedule', async (_e, payload) => {
     const durationMinutes = parseInt(payload.durationMinutes, 10);
     const durationSeconds = parseInt(payload.durationSeconds, 10);
     const priority = Number(payload.priority) || 0;
+    const recurrenceFreq = String(payload.recurrenceFreq || 'one-time');
+    const recurrenceDays = Array.isArray(payload.daysOfWeek)
+      ? payload.daysOfWeek.map(Number)
+      : [];
     if (!title) throw new Error('Schedule name is required');
     if (!dateStr) throw new Error('Start date is required');
     if (!timeStr) throw new Error('Start time is required');
@@ -600,7 +754,7 @@ ipcMain.handle('add-test-schedule', async (_e, payload) => {
     if (!start) throw new Error('Start date/time is invalid');
 
     const now = new Date();
-    if (start.getTime() <= now.getTime()) {
+    if (recurrenceFreq === 'one-time' && start.getTime() <= now.getTime()) {
       throw new Error('Start date/time has already passed');
     }
 
@@ -686,22 +840,36 @@ ipcMain.handle('add-test-schedule', async (_e, payload) => {
       throw new Error('Unknown media source');
     }
 
+    const cache = normalizeSyncPayload(
+      readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] })
+    );
+    const existing = scheduleId
+      ? cache.schedules.find(schedule => schedule.id === scheduleId)
+      : null;
+    if (scheduleId && !existing) throw new Error('Schedule to edit was not found');
+
+    const recurrence = recurrenceFreq === 'one-time'
+      ? null
+      : {
+          freq: recurrenceFreq,
+          daysOfWeek: recurrenceFreq === 'weekly' ? recurrenceDays : []
+        };
     const newSchedule = normalizeSchedule({
-      id: 'manual-' + Date.now(),
+      id: scheduleId || ('manual-' + Date.now()),
       title,
       priority,
+      revision: existing ? existing.revision + 1 : 0,
+      enabled: existing ? existing.enabled : true,
       startTime: start.toISOString(),
       endTime: end.toISOString(),
-      recurrence: null,
+      recurrence,
       loop: payload.loop !== false,
       playlist: [playlistItem]
     });
 
-    const cache = normalizeSyncPayload(
-      readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] })
-    );
-    const schedules = cache.schedules.slice();
-    schedules.push(newSchedule);
+    const schedules = existing
+      ? cache.schedules.map(schedule => schedule.id === existing.id ? newSchedule : schedule)
+      : [...cache.schedules, newSchedule];
     const assets = newAsset ? mergeAssets(cache.assets, [newAsset]) : cache.assets;
     writeJson(CACHE_PATH, {
       revision: cache.revision,
@@ -710,7 +878,10 @@ ipcMain.handle('add-test-schedule', async (_e, payload) => {
       assets,
       mock: true
     });
-    if (scheduler) scheduler.update(schedules);
+    if (scheduler) {
+      scheduler.update(schedules);
+      if (existing) scheduler.reactivate(existing.id);
+    }
     pushDashboard();
     return { ok: true, schedule: newSchedule };
   } catch (e) {
@@ -977,6 +1148,8 @@ function logout() {
   if (broadcastHandle) { clearInterval(broadcastHandle); broadcastHandle = null; }
   if (scheduler) { scheduler.clear(); scheduler = null; }
   if (vlc) { vlc.quit(); vlc = null; }
+  if (scheduleAdderWin && !scheduleAdderWin.isDestroyed()) scheduleAdderWin.destroy();
+  if (scheduleManagerWin && !scheduleManagerWin.isDestroyed()) scheduleManagerWin.destroy();
   destroyTransitionOverlay();
   if (wasBypass) resetTestCachePreservingAssets();
   else if (fs.existsSync(CACHE_PATH)) fs.unlinkSync(CACHE_PATH);

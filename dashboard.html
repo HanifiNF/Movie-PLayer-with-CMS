@@ -143,6 +143,7 @@
           <div class="btn-row">
             <button id="btnRetry" class="btn primary">Retry VLC</button>
             <button id="btnAddSchedule" class="btn" style="display:none;">Add Schedule</button>
+            <button id="btnManageSchedules" class="btn" style="display:none;">Manage Schedules</button>
           </div>
         </section>
       </div>
@@ -218,6 +219,7 @@
       $('badge').textContent = badgeLabel(state.status);
       $('device').textContent = state.deviceId || '—';
       $('btnAddSchedule').style.display = state.bypass ? 'inline-block' : 'none';
+      $('btnManageSchedules').style.display = state.bypass ? 'inline-block' : 'none';
 
       const now = state.now;
       if (now) {
@@ -295,6 +297,7 @@
     $('btnSkip').onclick   = () => ipcRenderer.invoke('vlc-skip');
     $('btnRetry').onclick  = () => ipcRenderer.invoke('vlc-retry');
     $('btnAddSchedule').onclick = () => ipcRenderer.invoke('open-schedule-adder');
+    $('btnManageSchedules').onclick = () => ipcRenderer.invoke('open-schedule-manager');
     $('btnConfig').onclick = () => ipcRenderer.invoke('open-config-folder');
     $('btnLogout').onclick = () => ipcRenderer.invoke('logout');
     $('btnQuit').onclick   = () => ipcRenderer.invoke('quit');

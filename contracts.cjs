@@ -113,6 +113,7 @@ function normalizeSchedule(value) {
     startTime,
     endTime,
     recurrence,
+    enabled: schedule.enabled !== false,
     loop: schedule.loop !== false,
     playlist,
     // Preserve the old property until every CMS/player deployment uses playlist.

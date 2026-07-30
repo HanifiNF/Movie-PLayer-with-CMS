@@ -13,6 +13,9 @@ Socket.IO from the CMS and plays local media files fullscreen through VLC.
 - Versioned schedule/media contract with payload validation
 - Resumable media download to local storage with size + SHA-256 verification
 - Searchable local Media Library for preloaded films in Test Mode
+- Persistent Test Mode Schedule Manager with edit, duplicate, enable/disable,
+  delete, search, and status filters
+- One-time, daily, and weekly schedule creation from the local UI
 - Offline-resilient: plays the last known cached schedule when CMS is unreachable
 - Auto-start with Windows on login
 - Tray icon with status, device id, reconnect, logout, quit
@@ -127,6 +130,21 @@ an explicit executable path when needed.
 Set `PLAYER_MEDIA_LIBRARY` before launching the app to override the Media
 Library path. The configured value is also available as `MEDIA_LIBRARY_DIR`
 in `config.cjs`.
+
+## Test Mode Schedule Manager
+
+Use **Manage Schedules** on the dashboard to inspect all local schedules.
+Schedules persist across Test Mode restarts and can be edited, duplicated,
+enabled/disabled, or deleted. The Add/Edit form supports:
+
+- one-time schedules;
+- daily recurrence;
+- weekly recurrence with Monday–Sunday selection;
+- playback priority and playlist looping;
+- automatic media-duration filling with manual override.
+
+Duplicating a schedule creates an enabled copy starting five minutes from the
+current time while retaining its duration, media, recurrence, and priority.
 
 ## Build
 

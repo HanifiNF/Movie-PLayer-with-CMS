@@ -17,6 +17,18 @@ test('legacy files[].path schedules remain compatible', () => {
   });
   assert.equal(result.files[0].path, 'D:\\media\\promo.mp4');
   assert.equal(result.startTime, '2026-08-01T10:00:00+07:00');
+  assert.equal(result.enabled, true);
+});
+
+test('disabled state is preserved by schedule normalization', () => {
+  const result = normalizeSchedule({
+    id: 'disabled-1',
+    enabled: false,
+    startTime: '2026-08-01T10:00:00+07:00',
+    endTime: '2026-08-01T11:00:00+07:00',
+    files: [{ path: 'D:\\media\\promo.mp4' }]
+  });
+  assert.equal(result.enabled, false);
 });
 
 test('canonical payload accepts asset references and catalog metadata', () => {

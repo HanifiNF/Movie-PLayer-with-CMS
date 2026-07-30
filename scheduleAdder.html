@@ -63,6 +63,14 @@
     }
     .check input { width: auto; }
     .status { color: #94a3b8; font-size: 12px; margin-top: 8px; }
+    .weekday-grid {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px;
+      margin-top: 8px;
+    }
+    .weekday {
+      display: flex; align-items: center; gap: 6px; margin: 0;
+      padding: 8px; background: #0f172a; border-radius: 7px; color: #cbd5e1;
+    }
     .duration-status {
       margin-top: 9px; padding: 9px 10px; border-radius: 7px;
       background: #0f172a; color: #94a3b8; font-size: 12px;
@@ -74,7 +82,7 @@
 </head>
 <body>
   <form class="card" id="f">
-    <h1>Add Test Schedule</h1>
+    <h1 id="formTitle">Add Test Schedule</h1>
     <p class="subtitle">Reuse available media or import and verify a new remote asset.</p>
 
     <label>Media source</label>
@@ -115,6 +123,25 @@
 
     <label>Schedule name</label>
     <input name="title" type="text" placeholder="e.g. Morning Ad" required autocomplete="off" />
+
+    <label>Schedule type</label>
+    <select name="recurrenceFreq" id="recurrenceFreq">
+      <option value="one-time">One-time</option>
+      <option value="daily">Daily</option>
+      <option value="weekly">Weekly</option>
+    </select>
+    <section class="source-panel hidden" id="weeklyPanel">
+      <div class="hint">Select one or more playback days.</div>
+      <div class="weekday-grid">
+        <label class="weekday"><input type="checkbox" name="weekday" value="1" /> Mon</label>
+        <label class="weekday"><input type="checkbox" name="weekday" value="2" /> Tue</label>
+        <label class="weekday"><input type="checkbox" name="weekday" value="3" /> Wed</label>
+        <label class="weekday"><input type="checkbox" name="weekday" value="4" /> Thu</label>
+        <label class="weekday"><input type="checkbox" name="weekday" value="5" /> Fri</label>
+        <label class="weekday"><input type="checkbox" name="weekday" value="6" /> Sat</label>
+        <label class="weekday"><input type="checkbox" name="weekday" value="7" /> Sun</label>
+      </div>
+    </section>
 
     <div class="row">
       <div>
@@ -174,9 +201,12 @@
     const mediaSearch = document.getElementById('mediaSearch');
     const durationStatus = document.getElementById('durationStatus');
     const resetDurationButton = document.getElementById('btnResetDuration');
+    const recurrenceEl = document.getElementById('recurrenceFreq');
+    const scheduleId = new URLSearchParams(location.search).get('scheduleId') || '';
     let libraryItems = [];
     let detectedDurationMs = 0;
     let lastDetectedMediaId = null;
+    let preserveDurationOnNextDetection = false;
     let detectionToken = 0;
     let detectionTimer = null;
 
@@ -201,6 +231,10 @@
       }
     }
 
+    function setRecurrence(freq) {
+      document.getElementById('weeklyPanel').classList.toggle('hidden', freq !== 'weekly');
+    }
+
     function formatDuration(durationMs) {
       const totalSeconds = Math.ceil(durationMs / 1000);
       const hours = Math.floor(totalSeconds / 3600);
@@ -214,11 +248,13 @@
       durationStatus.className = `duration-status ${state}`.trim();
     }
 
-    function applyDetectedDuration(durationMs, source) {
+    function applyDetectedDuration(durationMs, source, fillFields = true) {
       detectedDurationMs = durationMs;
       const totalSeconds = Math.ceil(durationMs / 1000);
-      form.durationMinutes.value = Math.floor(totalSeconds / 60);
-      form.durationSeconds.value = totalSeconds % 60;
+      if (fillFields) {
+        form.durationMinutes.value = Math.floor(totalSeconds / 60);
+        form.durationSeconds.value = totalSeconds % 60;
+      }
       resetDurationButton.classList.remove('hidden');
       const sourceLabel = source === 'asset-metadata'
         ? 'saved asset metadata'
@@ -243,7 +279,9 @@
 
       const token = ++detectionToken;
       if (Number(selected.durationMs) > 0) {
-        applyDetectedDuration(Number(selected.durationMs), 'asset-metadata');
+        const shouldFill = !preserveDurationOnNextDetection;
+        preserveDurationOnNextDetection = false;
+        applyDetectedDuration(Number(selected.durationMs), 'asset-metadata', shouldFill);
         return;
       }
 
@@ -253,6 +291,7 @@
       if (token !== detectionToken) return;
       if (!result || !result.ok || !(Number(result.durationMs) > 0)) {
         detectedDurationMs = 0;
+        preserveDurationOnNextDetection = false;
         setDurationStatus(
           result && result.error
             ? `Duration could not be detected: ${result.error}. Enter it manually.`
@@ -262,7 +301,9 @@
         return;
       }
       selected.durationMs = Number(result.durationMs);
-      applyDetectedDuration(selected.durationMs, result.source);
+      const shouldFill = !preserveDurationOnNextDetection;
+      preserveDurationOnNextDetection = false;
+      applyDetectedDuration(selected.durationMs, result.source, shouldFill);
     }
 
     function scheduleDurationDetection() {
@@ -317,6 +358,7 @@
     }
 
     sourceEl.onchange = () => setSource(sourceEl.value);
+    recurrenceEl.onchange = () => setRecurrence(recurrenceEl.value);
     mediaSearch.oninput = renderLibrary;
     mediaList.onchange = () => {
       const selected = libraryItems.find(item => item.id === mediaList.value);
@@ -355,6 +397,60 @@
       setBusy(false);
     }
 
+    function setLocalDateTime(iso) {
+      const value = new Date(iso);
+      const pad = number => String(number).padStart(2, '0');
+      form.startDate.value =
+        `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+      form.startTime.value =
+        `${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`;
+    }
+
+    async function loadScheduleForEdit() {
+      if (!scheduleId) return;
+      const result = await ipcRenderer.invoke('get-test-schedule', scheduleId);
+      if (!result || !result.ok) throw new Error(result && result.error || 'Schedule not found');
+      const schedule = result.schedule;
+      document.getElementById('formTitle').textContent = 'Edit Test Schedule';
+      btn.textContent = 'Update Schedule';
+      form.title.value = schedule.title || '';
+      form.priority.value = Number(schedule.priority) || 0;
+      form.loop.checked = schedule.loop !== false;
+      setLocalDateTime(schedule.startTime);
+      const durationSeconds = Math.max(
+        1,
+        Math.ceil((new Date(schedule.endTime).getTime() - new Date(schedule.startTime).getTime()) / 1000)
+      );
+      form.durationMinutes.value = Math.floor(durationSeconds / 60);
+      form.durationSeconds.value = durationSeconds % 60;
+
+      const recurrence = schedule.recurrence || {};
+      recurrenceEl.value = recurrence.freq || 'one-time';
+      setRecurrence(recurrenceEl.value);
+      const days = Array.isArray(recurrence.daysOfWeek) ? recurrence.daysOfWeek : [];
+      document.querySelectorAll('input[name="weekday"]').forEach(input => {
+        input.checked = days.includes(Number(input.value));
+      });
+
+      const firstFile = schedule.files && schedule.files[0];
+      const wantedId = firstFile && firstFile.assetId
+        ? `asset:${firstFile.assetId}`
+        : null;
+      const selected = libraryItems.find(item => (
+        wantedId ? item.id === wantedId : (
+          firstFile && item.path &&
+          item.path.toLowerCase() === String(firstFile.path || '').toLowerCase()
+        )
+      ));
+      if (!selected) throw new Error('The scheduled media is no longer available');
+      sourceEl.value = 'library';
+      preserveDurationOnNextDetection = true;
+      setSource('library');
+      mediaList.value = selected.id;
+      lastDetectedMediaId = null;
+      scheduleDurationDetection();
+    }
+
     form.onsubmit = async event => {
       event.preventDefault();
       errEl.classList.remove('show');
@@ -365,6 +461,7 @@
       }
       setBusy(true);
       const payload = {
+        scheduleId,
         mediaSource: sourceEl.value,
         mediaId: mediaList.value,
         downloadUrl: fd.get('downloadUrl'),
@@ -377,6 +474,9 @@
         durationMinutes: parseInt(fd.get('durationMinutes'), 10),
         durationSeconds: parseInt(fd.get('durationSeconds'), 10),
         priority: Number(fd.get('priority')) || 0,
+        recurrenceFreq: fd.get('recurrenceFreq'),
+        daysOfWeek: [...document.querySelectorAll('input[name="weekday"]:checked')]
+          .map(input => Number(input.value)),
         loop: fd.get('loop') === 'on'
       };
       try {
@@ -390,7 +490,11 @@
 
     document.getElementById('btnCancel').onclick = () => window.close();
     setSource(sourceEl.value);
-    loadLibrary().catch(showError);
+    setRecurrence(recurrenceEl.value);
+    (async () => {
+      await loadLibrary();
+      await loadScheduleForEdit();
+    })().catch(showError);
   </script>
 </body>
 </html>

@@ -61,7 +61,7 @@ function occurrenceForDay(day, startParts, offset, duration, nowMs, firstMs) {
  * independent from the Windows timezone configured on the player.
  */
 function nextOccurrenceStart(sched, now = new Date()) {
-  if (!sched || !sched.startTime) return null;
+  if (!sched || sched.enabled === false || !sched.startTime) return null;
   const first = new Date(sched.startTime);
   if (Number.isNaN(first.getTime())) return null;
 
