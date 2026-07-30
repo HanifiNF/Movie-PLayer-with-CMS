@@ -9,54 +9,102 @@
       margin: 0; padding: 24px;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background: #0f172a; color: #e2e8f0;
-      display: flex; align-items: center; justify-content: center;
       min-height: 100vh;
     }
     .card {
-      width: 100%; max-width: 420px;
+      width: 100%; max-width: 500px; margin: 0 auto;
       background: #1e293b; padding: 28px; border-radius: 12px;
       box-shadow: 0 10px 30px rgba(0,0,0,.4);
     }
     h1 { margin: 0 0 6px; font-size: 20px; color: #38bdf8; }
-    .subtitle { margin: 0 0 22px; font-size: 12px; color: #94a3b8; }
+    .subtitle { margin: 0 0 20px; font-size: 12px; color: #94a3b8; }
     label { display: block; font-size: 12px; color: #94a3b8; margin: 14px 0 6px; }
-    input[type="text"], input[type="date"], input[type="time"], input[type="number"] {
+    input[type="text"], input[type="url"], input[type="date"], input[type="time"],
+    input[type="number"], select {
       width: 100%; padding: 10px 12px; border: 1px solid #334155;
       background: #0f172a; color: #e2e8f0; border-radius: 8px;
       font-size: 14px; outline: none;
     }
-    input:focus { border-color: #38bdf8; }
+    input:focus, select:focus { border-color: #38bdf8; }
     input:invalid { border-color: #f87171; }
+    select[size] { padding: 4px; min-height: 132px; }
+    select[size] option { padding: 8px; border-radius: 5px; }
     .row { display: flex; gap: 12px; }
-    .row > div { flex: 1; }
+    .row > div { flex: 1; min-width: 0; }
+    .actions { display: flex; gap: 10px; }
     button {
-      width: 100%; margin-top: 22px; padding: 12px;
+      width: 100%; margin-top: 20px; padding: 11px;
       background: #38bdf8; color: #0f172a; border: none;
-      border-radius: 8px; font-size: 14px; font-weight: 600;
+      border-radius: 8px; font-size: 13px; font-weight: 600;
       cursor: pointer;
     }
     button:hover { background: #0ea5e9; }
     button:disabled { background: #475569; cursor: not-allowed; }
     .btn-secondary {
-      margin-top: 10px;
-      background: transparent;
-      color: #38bdf8;
-      border: 1px solid #334155;
-      font-weight: 500;
+      background: transparent; color: #38bdf8;
+      border: 1px solid #334155; font-weight: 500;
     }
     .btn-secondary:hover { background: #0f172a; border-color: #38bdf8; }
+    .compact { width: auto; margin: 8px 0 0; padding: 7px 10px; }
     .err {
       margin-top: 14px; padding: 10px 12px; border-radius: 6px;
       background: #7f1d1d; color: #fecaca; font-size: 12px; display: none;
     }
     .err.show { display: block; }
-    .hint { font-size: 11px; color: #64748b; margin-top: 4px; }
+    .hint { font-size: 11px; color: #64748b; margin-top: 5px; word-break: break-all; }
+    .source-panel {
+      margin-top: 10px; padding: 12px; border: 1px solid #334155;
+      border-radius: 9px; background: rgba(15, 23, 42, .45);
+    }
+    .hidden { display: none; }
+    .check {
+      display: flex; gap: 8px; align-items: center; margin-top: 28px;
+      color: #cbd5e1; font-size: 13px;
+    }
+    .check input { width: auto; }
+    .status { color: #94a3b8; font-size: 12px; margin-top: 8px; }
   </style>
 </head>
 <body>
   <form class="card" id="f">
     <h1>Add Test Schedule</h1>
-    <p class="subtitle">Create a one-time local schedule for Test Mode.</p>
+    <p class="subtitle">Choose a film from the local library or download a remote asset.</p>
+
+    <label>Media source</label>
+    <select name="mediaSource" id="mediaSource">
+      <option value="library">Media Library (Folder A)</option>
+      <option value="remote">Remote Asset (URL + SHA-256)</option>
+    </select>
+
+    <section class="source-panel" id="libraryPanel">
+      <label for="mediaSearch">Search film title</label>
+      <input id="mediaSearch" type="text" placeholder="Type a title or filename..." autocomplete="off" />
+      <label for="mediaList">Film</label>
+      <select id="mediaList" name="mediaId" size="5"></select>
+      <div class="status" id="libraryStatus">Scanning media library...</div>
+      <div class="hint" id="libraryPath"></div>
+      <div class="actions">
+        <button type="button" id="btnRefresh" class="btn-secondary compact">Refresh</button>
+        <button type="button" id="btnOpenLibrary" class="btn-secondary compact">Open Folder</button>
+      </div>
+    </section>
+
+    <section class="source-panel hidden" id="remotePanel">
+      <label>Download URL</label>
+      <input name="downloadUrl" type="url" placeholder="https://cdn.example.com/film.mp4" />
+      <label>Filename</label>
+      <input name="filename" type="text" placeholder="film.mp4" autocomplete="off" />
+      <div class="row">
+        <div>
+          <label>File size (bytes)</label>
+          <input name="size" type="number" min="1" placeholder="482971200" />
+        </div>
+      </div>
+      <label>SHA-256</label>
+      <input name="sha256" type="text" minlength="64" maxlength="64"
+             placeholder="64 hexadecimal characters" autocomplete="off" />
+      <div class="hint">The file is stored in the player's managed media folder after verification.</div>
+    </section>
 
     <label>Schedule name</label>
     <input name="title" type="text" placeholder="e.g. Morning Ad" required autocomplete="off" />
@@ -84,13 +132,22 @@
       </div>
     </div>
 
-    <label>Video path</label>
-    <input name="path" type="text" placeholder="C:\\Users\\...\\video.mp4" required autocomplete="off" />
-    <div class="hint">Full absolute path to local video file.</div>
+    <div class="row">
+      <div>
+        <label>Priority</label>
+        <input name="priority" type="number" value="0" />
+        <div class="hint">Higher priority wins overlaps.</div>
+      </div>
+      <div>
+        <label class="check">
+          <input name="loop" type="checkbox" checked />
+          Loop playlist
+        </label>
+      </div>
+    </div>
 
     <button type="submit" id="btnSave">Save Schedule</button>
     <button type="button" id="btnCancel" class="btn-secondary">Cancel</button>
-
     <div class="err" id="err"></div>
   </form>
 
@@ -99,12 +156,69 @@
     const form = document.getElementById('f');
     const btn = document.getElementById('btnSave');
     const errEl = document.getElementById('err');
+    const sourceEl = document.getElementById('mediaSource');
+    const mediaList = document.getElementById('mediaList');
+    const mediaSearch = document.getElementById('mediaSearch');
+    let libraryItems = [];
 
-    ipcRenderer.invoke('get-test-file').then((path) => {
-      if (path) form.path.value = path;
-    }).catch(() => {});
+    function setSource(source) {
+      const isLibrary = source === 'library';
+      document.getElementById('libraryPanel').classList.toggle('hidden', !isLibrary);
+      document.getElementById('remotePanel').classList.toggle('hidden', isLibrary);
+      form.downloadUrl.required = !isLibrary;
+      form.filename.required = !isLibrary;
+      form.size.required = !isLibrary;
+      form.sha256.required = !isLibrary;
+    }
 
-    // Default date = today
+    function renderLibrary() {
+      const query = mediaSearch.value.trim().toLowerCase();
+      const selectedId = mediaList.value;
+      const visible = libraryItems.filter(item => (
+        item.title.toLowerCase().includes(query) ||
+        item.filename.toLowerCase().includes(query) ||
+        item.relativePath.toLowerCase().includes(query)
+      ));
+      mediaList.innerHTML = '';
+      for (const item of visible) {
+        const option = document.createElement('option');
+        option.value = item.id;
+        const megabytes = (item.size / 1024 / 1024).toFixed(1);
+        option.textContent = `${item.title} — ${item.relativePath} (${megabytes} MB)`;
+        mediaList.appendChild(option);
+      }
+      if ([...mediaList.options].some(option => option.value === selectedId)) {
+        mediaList.value = selectedId;
+      } else if (mediaList.options.length) {
+        mediaList.selectedIndex = 0;
+      }
+      document.getElementById('libraryStatus').textContent =
+        `${visible.length} of ${libraryItems.length} film(s) shown`;
+    }
+
+    async function loadLibrary() {
+      document.getElementById('libraryStatus').textContent = 'Scanning media library...';
+      const result = await ipcRenderer.invoke('list-local-media');
+      if (!result || !result.ok) throw new Error(result && result.error || 'Failed to scan Media Library');
+      libraryItems = result.items || [];
+      document.getElementById('libraryPath').textContent = result.directory || '';
+      renderLibrary();
+    }
+
+    sourceEl.onchange = () => setSource(sourceEl.value);
+    mediaSearch.oninput = renderLibrary;
+    mediaList.onchange = () => {
+      const selected = libraryItems.find(item => item.id === mediaList.value);
+      if (selected && !form.title.value.trim()) form.title.value = selected.title;
+    };
+    document.getElementById('btnRefresh').onclick = () => {
+      loadLibrary().catch(showError);
+    };
+    document.getElementById('btnOpenLibrary').onclick = async () => {
+      const result = await ipcRenderer.invoke('open-media-library');
+      if (!result || !result.ok) showError(new Error(result && result.error || 'Failed to open folder'));
+    };
+
     try {
       const today = new Date();
       const yyyy = today.getFullYear();
@@ -115,34 +229,53 @@
 
     function setBusy(busy) {
       btn.disabled = busy;
-      btn.textContent = busy ? 'Saving...' : 'Save Schedule';
+      btn.textContent = busy
+        ? (sourceEl.value === 'remote' ? 'Downloading & Saving...' : 'Saving...')
+        : 'Save Schedule';
     }
 
-    form.onsubmit = async (e) => {
-      e.preventDefault();
+    function showError(error) {
+      errEl.textContent = error.message || String(error);
+      errEl.classList.add('show');
+      setBusy(false);
+    }
+
+    form.onsubmit = async event => {
+      event.preventDefault();
       errEl.classList.remove('show');
-      setBusy(true);
       const fd = new FormData(form);
+      if (sourceEl.value === 'library' && !mediaList.value) {
+        showError(new Error('Select a film from the Media Library'));
+        return;
+      }
+      setBusy(true);
       const payload = {
+        mediaSource: sourceEl.value,
+        mediaId: mediaList.value,
+        downloadUrl: fd.get('downloadUrl'),
+        filename: fd.get('filename'),
+        size: Number(fd.get('size')),
+        sha256: fd.get('sha256'),
         title: fd.get('title'),
         startDate: fd.get('startDate'),
         startTime: fd.get('startTime'),
         durationMinutes: parseInt(fd.get('durationMinutes'), 10),
         durationSeconds: parseInt(fd.get('durationSeconds'), 10),
-        path: fd.get('path')
+        priority: Number(fd.get('priority')) || 0,
+        loop: fd.get('loop') === 'on'
       };
       try {
         const result = await ipcRenderer.invoke('add-test-schedule', payload);
         if (!result || !result.ok) throw new Error(result && result.error || 'Failed to add schedule');
         window.close();
-      } catch (err) {
-        errEl.textContent = err.message || String(err);
-        errEl.classList.add('show');
-        setBusy(false);
+      } catch (error) {
+        showError(error);
       }
     };
 
     document.getElementById('btnCancel').onclick = () => window.close();
+    setSource(sourceEl.value);
+    loadLibrary().catch(showError);
   </script>
 </body>
 </html>

@@ -1,5 +1,7 @@
 'use strict';
 
+const path = require('path');
+
 // Centralized configuration - edit values here, not in the login form.
 module.exports = {
   // CMS server URL. Hardcoded; the login form no longer asks for it.
@@ -19,5 +21,13 @@ module.exports = {
   //   'C:\\Users\\Public\\Videos\\sample.mp4'
   TEST_FILE: 'C:\\laragon\\www\\Netflix-clone\\storage\\app\\video\\9sbXNTj4uHvgIgIIt9Xptg8qpSBJTyjTYdoT7QwR.mp4',
 
-  VLC_MONITOR: 2
+  VLC_MONITOR: 2,
+
+  // "Folder A": files placed here are discovered by Test Mode and shown in
+  // the searchable Media Library picker. Override with PLAYER_MEDIA_LIBRARY.
+  MEDIA_LIBRARY_DIR: process.env.PLAYER_MEDIA_LIBRARY || path.join(
+    process.env.PUBLIC || 'C:\\Users\\Public',
+    'Videos',
+    'WirPlayer'
+  )
 };

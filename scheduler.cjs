@@ -2,105 +2,188 @@
 
 const { EventEmitter } = require('events');
 
-const MS = { day: 86400000, hour: 3600000, minute: 60000, second: 1000 };
+const MS = { day: 86400000, second: 1000 };
 
 function getZonedParts(date, offsetMinutes) {
-  const t = new Date(date.getTime() + offsetMinutes * 60000);
+  const shifted = new Date(date.getTime() + offsetMinutes * 60000);
   return {
-    year: t.getUTCFullYear(),
-    month: t.getUTCMonth(),
-    day: t.getUTCDate(),
-    hour: t.getUTCHours(),
-    minute: t.getUTCMinutes(),
-    second: t.getUTCSeconds(),
-    weekday: t.getUTCDay()
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth(),
+    day: shifted.getUTCDate(),
+    hour: shifted.getUTCHours(),
+    minute: shifted.getUTCMinutes(),
+    second: shifted.getUTCSeconds(),
+    weekday: shifted.getUTCDay() || 7
   };
 }
 
 function buildDateAt(year, month, day, hour, minute, second, offsetMinutes) {
-  const utcMs = Date.UTC(year, month, day, hour, minute, second);
-  return new Date(utcMs - offsetMinutes * 60000);
+  return new Date(Date.UTC(year, month, day, hour, minute, second) - offsetMinutes * 60000);
 }
 
 function parseOffsetMinutes(iso) {
-  const m = /([+-])(\d{2}):?(\d{2})$/.exec(iso);
-  if (!m) return 0;
-  const sign = m[1] === '-' ? -1 : 1;
-  return sign * (parseInt(m[2], 10) * 60 + parseInt(m[3], 10));
+  if (/Z$/i.test(String(iso))) return 0;
+  const match = /([+-])(\d{2}):?(\d{2})$/.exec(String(iso));
+  if (!match) return -new Date(iso).getTimezoneOffset();
+  const sign = match[1] === '-' ? -1 : 1;
+  return sign * (parseInt(match[2], 10) * 60 + parseInt(match[3], 10));
 }
 
+function getDuration(sched, first) {
+  if (!sched.endTime) return 0;
+  const end = new Date(sched.endTime);
+  if (Number.isNaN(end.getTime())) return 0;
+  return Math.max(0, end.getTime() - first.getTime());
+}
+
+function occurrenceForDay(day, startParts, offset, duration, nowMs, firstMs) {
+  const start = buildDateAt(
+    day.year,
+    day.month,
+    day.day,
+    startParts.hour,
+    startParts.minute,
+    startParts.second,
+    offset
+  );
+  const startMs = start.getTime();
+  if (startMs < firstMs) return null;
+  if (startMs <= nowMs && duration > 0 && nowMs < startMs + duration) {
+    return { start, duration, alreadyActive: true };
+  }
+  if (startMs > nowMs) return { start, duration, alreadyActive: false };
+  return null;
+}
+
+/**
+ * Returns the active occurrence at `now`, or the next future occurrence.
+ * Recurrence uses the fixed UTC offset encoded in startTime, so the result is
+ * independent from the Windows timezone configured on the player.
+ */
 function nextOccurrenceStart(sched, now = new Date()) {
-  const startIso = sched.startTime;
-  const rec = sched.recurrence;
-  if (!startIso) return null;
-  const offset = parseOffsetMinutes(startIso);
-  const first = new Date(startIso);
-  if (isNaN(first.getTime())) return null;
-  const p = getZonedParts(first, offset);
-  const duration = (() => {
-    if (!sched.endTime) return 0;
-    const e = new Date(sched.endTime);
-    return isNaN(e.getTime()) ? 0 : (e.getTime() - first.getTime());
-  })();
-  if (!rec || !rec.freq) {
-    if (now.getTime() < first.getTime()) return { start: first, duration };
-    if (duration > 0 && now.getTime() < first.getTime() + duration) {
+  if (!sched || !sched.startTime) return null;
+  const first = new Date(sched.startTime);
+  if (Number.isNaN(first.getTime())) return null;
+
+  const duration = getDuration(sched, first);
+  const recurrence = sched.recurrence;
+  const nowMs = now.getTime();
+
+  if (!recurrence || !recurrence.freq) {
+    if (nowMs < first.getTime()) return { start: first, duration, alreadyActive: false };
+    if (duration > 0 && nowMs < first.getTime() + duration) {
       return { start: first, duration, alreadyActive: true };
     }
     return null;
   }
-  if (rec.freq === 'daily') {
-    let candidate = buildDateAt(p.year, p.month, p.day, p.hour, p.minute, p.second, offset);
-    if (candidate.getTime() <= now.getTime()) {
-      candidate = new Date(candidate.getTime() + MS.day);
+
+  const offset = parseOffsetMinutes(sched.startTime);
+  const startParts = getZonedParts(first, offset);
+  const lookbackDays = Math.max(1, Math.ceil(duration / MS.day));
+  const candidates = [];
+
+  // Search backwards first so long-running occurrences are still recognized.
+  for (let delta = -lookbackDays; delta <= 14; delta++) {
+    const dayDate = new Date(nowMs + delta * MS.day);
+    const day = getZonedParts(dayDate, offset);
+
+    if (recurrence.freq === 'weekly') {
+      const configuredDays = Array.isArray(recurrence.daysOfWeek) && recurrence.daysOfWeek.length
+        ? recurrence.daysOfWeek
+        : [startParts.weekday];
+      if (!configuredDays.includes(day.weekday)) continue;
+    } else if (recurrence.freq !== 'daily') {
+      return null;
     }
-    return { start: candidate, duration };
+
+    const occurrence = occurrenceForDay(
+      day,
+      startParts,
+      offset,
+      duration,
+      nowMs,
+      first.getTime()
+    );
+    if (occurrence) candidates.push(occurrence);
   }
-  if (rec.freq === 'weekly') {
-    const days = Array.isArray(rec.daysOfWeek) && rec.daysOfWeek.length
-      ? rec.daysOfWeek.slice().sort((a, b) => a - b)
-      : [((p.weekday || 0) || 7)];
-    for (let i = 0; i < 14; i++) {
-      const base = new Date(now.getTime() + i * MS.day);
-      const parts = getZonedParts(base, offset);
-      if (!days.includes(parts.weekday || 0) && !days.includes(((parts.weekday || 0) || 7))) continue;
-      const cand = buildDateAt(parts.year, parts.month, parts.day, p.hour, p.minute, p.second, offset);
-      if (cand.getTime() > now.getTime()) return { start: cand, duration };
-    }
-    return null;
+
+  const active = candidates
+    .filter(item => item.alreadyActive)
+    .sort((a, b) => b.start.getTime() - a.start.getTime())[0];
+  if (active) return active;
+
+  return candidates
+    .filter(item => !item.alreadyActive)
+    .sort((a, b) => a.start.getTime() - b.start.getTime())[0] || null;
+}
+
+function compareOccurrences(a, b) {
+  const priorityA = Number.isFinite(Number(a.schedule.priority)) ? Number(a.schedule.priority) : 0;
+  const priorityB = Number.isFinite(Number(b.schedule.priority)) ? Number(b.schedule.priority) : 0;
+  if (priorityA !== priorityB) return priorityB - priorityA;
+
+  const startDifference = b.start.getTime() - a.start.getTime();
+  if (startDifference !== 0) return startDifference;
+
+  return String(a.schedule.id).localeCompare(String(b.schedule.id));
+}
+
+function selectActiveOccurrence(schedules, now = new Date(), isFinished = () => false) {
+  const active = [];
+  for (const schedule of Array.isArray(schedules) ? schedules : []) {
+    const occurrence = nextOccurrenceStart(schedule, now);
+    if (!occurrence || !occurrence.alreadyActive) continue;
+    if (isFinished(schedule.id, occurrence.start.getTime())) continue;
+    active.push({ schedule, ...occurrence });
   }
-  return null;
+  active.sort(compareOccurrences);
+  return active[0] || null;
 }
 
 class Scheduler extends EventEmitter {
-  constructor(vlc) {
+  constructor(vlc, options = {}) {
     super();
     this.vlc = vlc;
     this.schedules = [];
-    this.timers = new Map();
     this.currentScheduleId = null;
     this.currentStart = null;
     this.currentDuration = null;
+    this.currentOccurrenceKey = null;
     this.tickHandle = null;
     this._idlePlaying = false;
+    this._reconciling = false;
     this.finishedOccurrences = new Map();
     this.manuallySkipped = new Set();
+    this.tickMs = options.tickMs || MS.second;
     this._startTick();
   }
 
   _startTick() {
     if (this.tickHandle) return;
-    this.tickHandle = setInterval(() => this.emit('tick'), 1000);
+    this.tickHandle = setInterval(() => {
+      this._reconcile(new Date());
+      this.emit('tick');
+    }, this.tickMs);
     if (this.tickHandle.unref) this.tickHandle.unref();
   }
 
   _stopTick() {
-    if (this.tickHandle) { clearInterval(this.tickHandle); this.tickHandle = null; }
+    if (this.tickHandle) {
+      clearInterval(this.tickHandle);
+      this.tickHandle = null;
+    }
+  }
+
+  _occurrenceKey(schedule, startMs) {
+    const mediaFingerprint = (schedule.files || [])
+      .map(file => `${file.assetId || ''}:${file.localPath || file.path || ''}`)
+      .join('|');
+    return `${schedule.id}:${startMs}:${Number(schedule.revision) || 0}:${mediaFingerprint}`;
   }
 
   _isFinished(scheduleId, startMs) {
     const set = this.finishedOccurrences.get(scheduleId);
-    return !!set && set.has(startMs);
+    return Boolean(set && set.has(startMs));
   }
 
   _finishOccurrence(scheduleId, startMs, manual = false) {
@@ -111,251 +194,198 @@ class Scheduler extends EventEmitter {
     if (manual) this.manuallySkipped.add(scheduleId);
   }
 
-  _nextUnfinishedOccurrence(sched, now = new Date()) {
-    for (let i = 0; i < 366; i++) {
-      const base = new Date(now.getTime() + i * MS.day);
-      const occ = nextOccurrenceStart(sched, base);
-      if (!occ) return null;
-      if (!this._isFinished(sched.id, occ.start.getTime())) return occ;
+  _nextUnfinishedOccurrence(schedule, now = new Date()) {
+    let cursor = new Date(now);
+    for (let attempt = 0; attempt < 370; attempt++) {
+      const occurrence = nextOccurrenceStart(schedule, cursor);
+      if (!occurrence) return null;
+      const startMs = occurrence.start.getTime();
+      if (!this._isFinished(schedule.id, startMs)) return occurrence;
+      cursor = new Date(startMs + Math.max(occurrence.duration, 0) + 1);
     }
     return null;
+  }
+
+  update(schedules) {
+    this.schedules = Array.isArray(schedules) ? schedules.slice() : [];
+    const validIds = new Set(this.schedules.map(schedule => schedule.id));
+    for (const id of this.finishedOccurrences.keys()) {
+      if (!validIds.has(id)) this.finishedOccurrences.delete(id);
+    }
+    for (const id of this.manuallySkipped) {
+      if (!validIds.has(id)) this.manuallySkipped.delete(id);
+    }
+    this._reconcile(new Date());
+  }
+
+  _reconcile(now) {
+    if (this._reconciling) return;
+    this._reconciling = true;
+    try {
+      const active = selectActiveOccurrence(
+        this.schedules,
+        now,
+        (scheduleId, startMs) => this._isFinished(scheduleId, startMs)
+      );
+
+      if (!active) {
+        if (this.currentScheduleId) {
+          const previous = this.schedules.find(item => item.id === this.currentScheduleId);
+          if (previous) this.emit('expire', { schedule: previous });
+        }
+        this._setCurrent(null, null, null);
+        if (!this._idlePlaying) {
+          this._idlePlaying = true;
+          Promise.resolve(this.vlc.playIdle()).catch(error => this.emit('error', error));
+          this.emit('idle');
+        }
+        return;
+      }
+
+      const nextKey = this._occurrenceKey(active.schedule, active.start.getTime());
+      if (this.currentOccurrenceKey === nextKey) return;
+
+      const previous = this.schedules.find(item => item.id === this.currentScheduleId);
+      if (previous) this.emit('finish', { schedule: previous });
+      this._activate(active.schedule, active.start, active.duration);
+    } finally {
+      this._reconciling = false;
+    }
+  }
+
+  _activate(schedule, startAt, duration) {
+    this._idlePlaying = false;
+    this._setCurrent(
+      schedule.id,
+      startAt,
+      duration,
+      this._occurrenceKey(schedule, startAt.getTime())
+    );
+    const files = (schedule.files || [])
+      .map(file => file.localPath || file.path)
+      .filter(Boolean);
+
+    if (files.length) {
+      Promise.resolve(this.vlc.replacePlaylist(files, { loop: schedule.loop !== false }))
+        .catch(error => this.emit('error', error));
+    } else {
+      Promise.resolve(this.vlc.clear()).catch(error => this.emit('error', error));
+      this.emit('error', new Error(`Schedule ${schedule.id} has no ready media files`));
+    }
+    this.emit('activate', { schedule, start: startAt, duration });
   }
 
   reactivate(scheduleId) {
     this.finishedOccurrences.delete(scheduleId);
     this.manuallySkipped.delete(scheduleId);
-    const schedule = this.schedules.find(s => s.id === scheduleId);
-    if (!schedule) return;
-    const occ = this._nextUnfinishedOccurrence(schedule, new Date());
-    if (!occ) return;
-    if (this.currentScheduleId && this.currentScheduleId !== scheduleId) {
-      const prevEndTimer = this.timers.get('end:' + this.currentScheduleId);
-      if (prevEndTimer) { clearTimeout(prevEndTimer); this.timers.delete('end:' + this.currentScheduleId); }
-      const prevStart = this.currentStart ? this.currentStart.getTime() : null;
-      if (prevStart) this._finishOccurrence(this.currentScheduleId, prevStart, false);
-      const prevSched = this.schedules.find(x => x.id === this.currentScheduleId);
-      if (prevSched) this.emit('finish', { schedule: prevSched });
-    }
     this._setCurrent(null, null, null);
-    this._activate(schedule, occ.start, occ.duration);
+    this._reconcile(new Date());
+  }
+
+  skip() {
+    if (!this.currentScheduleId || !this.currentStart) return;
+    const scheduleId = this.currentScheduleId;
+    this._finishOccurrence(scheduleId, this.currentStart.getTime(), true);
+    const schedule = this.schedules.find(item => item.id === scheduleId);
+    this._setCurrent(null, null, null);
+    if (schedule) this.emit('expire', { schedule });
+    this._reconcile(new Date());
+  }
+
+  getNow() {
+    if (!this.currentScheduleId) return null;
+    const schedule = this.schedules.find(item => item.id === this.currentScheduleId);
+    if (!schedule) return null;
+    return {
+      scheduleId: schedule.id,
+      title: schedule.title || schedule.id,
+      files: schedule.files || [],
+      startTime: this.currentStart ? this.currentStart.toISOString() : null,
+      endMs: this.currentStart && this.currentDuration
+        ? this.currentStart.getTime() + this.currentDuration
+        : null,
+      priority: Number(schedule.priority) || 0,
+      loop: schedule.loop !== false
+    };
+  }
+
+  getUpcoming(limit = 6) {
+    const now = new Date();
+    const items = [];
+    for (const schedule of this.schedules) {
+      const occurrence = this._nextUnfinishedOccurrence(schedule, now);
+      if (!occurrence || occurrence.alreadyActive) continue;
+      items.push({
+        scheduleId: schedule.id,
+        title: schedule.title || schedule.id,
+        startMs: occurrence.start.getTime(),
+        priority: Number(schedule.priority) || 0,
+        freqLabel: describeRecurrence(schedule)
+      });
+    }
+    items.sort((a, b) => a.startMs - b.startMs || b.priority - a.priority);
+    return items.slice(0, limit);
   }
 
   getSkipped() {
     const result = [];
     for (const id of this.manuallySkipped) {
-      const s = this.schedules.find(x => x.id === id);
-      if (!s) continue;
+      const schedule = this.schedules.find(item => item.id === id);
+      if (!schedule) continue;
       result.push({
-        scheduleId: s.id,
-        title: s.title || s.id,
-        startTime: s.startTime,
-        endTime: s.endTime,
-        files: s.files || []
+        scheduleId: schedule.id,
+        title: schedule.title || schedule.id,
+        startTime: schedule.startTime,
+        endTime: schedule.endTime,
+        files: schedule.files || []
       });
     }
     return result;
   }
 
-  update(schedules) {
-    this.clearTimers();
-    this.schedules = Array.isArray(schedules) ? schedules.slice() : [];
-    const now = new Date();
-    let activeNow = null;
-    for (const s of this.schedules) {
-      const occ = this._nextUnfinishedOccurrence(s, now);
-      if (!occ) continue;
-      if (occ.alreadyActive) {
-        if (!activeNow || occ.start.getTime() > activeNow.start.getTime()) {
-          activeNow = { schedule: s, start: occ.start, duration: occ.duration };
-        }
-      } else {
-        this._arm(s, occ.start, occ.duration);
-      }
-    }
-    if (activeNow) {
-      this._activate(activeNow.schedule, activeNow.start, activeNow.duration);
-    } else {
-      this._setCurrent(null, null, null);
-      if (!this._idlePlaying) {
-        this._idlePlaying = true;
-        this.vlc.playIdle().catch(err => this.emit('error', err));
-      }
-      this.emit('idle');
-    }
-  }
-
-  getNow() {
-    if (!this.currentScheduleId) return null;
-    const s = this.schedules.find(x => x.id === this.currentScheduleId);
-    if (!s) return null;
-    const endMs = this.currentStart && this.currentDuration
-      ? this.currentStart.getTime() + this.currentDuration
-      : null;
-    return {
-      scheduleId: s.id,
-      title: s.title || s.id,
-      files: s.files || [],
-      startTime: this.currentStart ? this.currentStart.toISOString() : null,
-      endMs,
-      loop: !!s.loop
-    };
-  }
-
-  getUpcoming(n = 6) {
-    const now = new Date();
-    const items = [];
-    for (const s of this.schedules) {
-      if (s.id === this.currentScheduleId) continue;
-      const occ = this._nextUnfinishedOccurrence(s, now);
-      if (!occ || occ.alreadyActive) continue;
-      items.push({
-        scheduleId: s.id,
-        title: s.title || s.id,
-        startMs: occ.start.getTime(),
-        freqLabel: describeRecurrence(s)
-      });
-    }
-    items.sort((a, b) => a.startMs - b.startMs);
-    return items.slice(0, n);
-  }
-
-  skip() {
-    if (!this.currentScheduleId) return;
-    const id = this.currentScheduleId;
-    const startAt = this.currentStart;
-    const duration = this.currentDuration;
-    const startTimer = this.timers.get('start:' + id);
-    if (startTimer) { clearTimeout(startTimer); this.timers.delete('start:' + id); }
-    const endTimer = this.timers.get('end:' + id);
-    if (endTimer) { clearTimeout(endTimer); this.timers.delete('end:' + id); }
-    if (startAt) {
-      this._finishOccurrence(id, startAt.getTime(), true);
-    }
-    this._setCurrent(null, null, null);
-    this.emit('expire', { schedule: this.schedules.find(x => x.id === id) });
-    const now = new Date();
-    let nextActive = null;
-    for (const s of this.schedules) {
-      if (s.id === id) continue;
-      const occ = this._nextUnfinishedOccurrence(s, now);
-      if (!occ) continue;
-      if (occ.alreadyActive) {
-        if (!nextActive || occ.start.getTime() > nextActive.start.getTime()) {
-          nextActive = { schedule: s, start: occ.start, duration: occ.duration };
-        }
-      }
-    }
-    if (nextActive) {
-      this._activate(nextActive.schedule, nextActive.start, nextActive.duration);
-    } else {
-      this._idlePlaying = true;
-      this.vlc.playIdle();
-      this.emit('idle');
-    }
-    if (startAt && duration) {
-      const skippedSched = this.schedules.find(x => x.id === id);
-      if (skippedSched) this._scheduleNext(skippedSched, startAt, duration);
-    }
-  }
-
-  clear() {
-    this.clearTimers();
-    this._setCurrent(null, null, null);
-    this.schedules = [];
-  }
-
-  recover(schedules) {
-    this.clearTimers();
-    this._setCurrent(null, null, null);
-    this._idlePlaying = false;
-    this.update(schedules || []);
-  }
-
-  clearTimers() {
-    for (const t of this.timers.values()) {
-      clearTimeout(t);
-    }
-    this.timers.clear();
-  }
-
-  _setCurrent(id, start, duration) {
+  _setCurrent(id, start, duration, occurrenceKey = null) {
     this.currentScheduleId = id;
     this.currentStart = start;
     this.currentDuration = duration;
+    this.currentOccurrenceKey = id && start ? occurrenceKey : null;
   }
 
-  _arm(schedule, startAt, duration) {
-    const id = schedule.id;
-    const delay = startAt.getTime() - Date.now();
-    if (delay <= 0) {
-      this._activate(schedule, startAt, duration);
-      return;
-    }
-    const startTimer = setTimeout(() => this._activate(schedule, startAt, duration), delay);
-    this.timers.set('start:' + id, startTimer);
+  clearTimers() {
+    // Kept for compatibility with older callers. Scheduling is reconciled on a
+    // short interval instead of relying on long-lived setTimeout instances.
   }
 
-  _activate(schedule, startAt, duration) {
-    if (this._activatingId === schedule.id) return;
-    if (this._isFinished(schedule.id, startAt.getTime())) return;
-    const alreadyActive = this.currentScheduleId === schedule.id;
-    if (this.currentScheduleId && this.currentScheduleId !== schedule.id) {
-      const prevEndTimer = this.timers.get('end:' + this.currentScheduleId);
-      if (prevEndTimer) { clearTimeout(prevEndTimer); this.timers.delete('end:' + this.currentScheduleId); }
-      const prevStart = this.currentStart ? this.currentStart.getTime() : null;
-      if (prevStart) this._finishOccurrence(this.currentScheduleId, prevStart, false);
-      const prevSched = this.schedules.find(x => x.id === this.currentScheduleId);
-      if (prevSched) this.emit('finish', { schedule: prevSched });
-    }
-    this._activatingId = schedule.id;
+  clear() {
+    this._stopTick();
+    this._setCurrent(null, null, null);
+    this.schedules = [];
     this._idlePlaying = false;
-    this._setCurrent(schedule.id, startAt, duration);
-    if (!alreadyActive) {
-      const files = (schedule.files || []).map(f => f.path).filter(Boolean);
-      if (files.length) {
-        this.vlc.replacePlaylist(files).catch(err => this.emit('error', err));
-      } else {
-        this.vlc.clear();
-      }
-      this.emit('activate', { schedule, start: startAt, duration });
-    }
-    if (duration && duration > 0) {
-      const delay = Math.max(0, startAt.getTime() + duration - Date.now());
-      const endTimer = setTimeout(() => this._expire(schedule, startAt, duration), delay);
-      this.timers.set('end:' + schedule.id, endTimer);
-    }
-    this._scheduleNext(schedule, startAt, duration);
-    this._activatingId = null;
   }
 
-  _expire(schedule, startAt, duration) {
-    if (this.currentScheduleId === schedule.id) {
-      this._finishOccurrence(schedule.id, startAt.getTime(), false);
-      this._idlePlaying = true;
-      this.vlc.playIdle();
-      this._setCurrent(null, null, null);
-      this.emit('expire', { schedule });
-    }
-    this.timers.delete('end:' + schedule.id);
-  }
-
-  _scheduleNext(schedule, startAt, duration) {
-    if (!schedule.recurrence || !schedule.recurrence.freq) return;
-    const next = this._nextUnfinishedOccurrence(schedule, new Date(startAt.getTime() + (duration || 0) + 1000));
-    if (!next) return;
-    this._arm(schedule, next.start, next.duration);
+  recover(schedules) {
+    this._setCurrent(null, null, null);
+    this._idlePlaying = false;
+    this.update(schedules || []);
+    this._startTick();
   }
 }
 
-function describeRecurrence(s) {
-  if (!s.recurrence || !s.recurrence.freq) return 'one-shot';
-  if (s.recurrence.freq === 'daily') return 'daily';
-  if (s.recurrence.freq === 'weekly') {
-    const names = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-    const days = Array.isArray(s.recurrence.daysOfWeek) ? s.recurrence.daysOfWeek : [];
-    return 'weekly ' + days.map(d => names[(d - 1) % 7]).join(',');
+function describeRecurrence(schedule) {
+  if (!schedule.recurrence || !schedule.recurrence.freq) return 'one-shot';
+  if (schedule.recurrence.freq === 'daily') return 'daily';
+  if (schedule.recurrence.freq === 'weekly') {
+    const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const days = Array.isArray(schedule.recurrence.daysOfWeek)
+      ? schedule.recurrence.daysOfWeek
+      : [];
+    return `weekly ${days.map(day => names[day - 1]).filter(Boolean).join(',')}`;
   }
-  return s.recurrence.freq;
+  return schedule.recurrence.freq;
 }
 
-module.exports = { Scheduler, nextOccurrenceStart };
+module.exports = {
+  Scheduler,
+  compareOccurrences,
+  nextOccurrenceStart,
+  selectActiveOccurrence
+};

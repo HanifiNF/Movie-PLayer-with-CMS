@@ -7,6 +7,13 @@ const os = require('os');
 const { io } = require('socket.io-client');
 const { VlcController } = require('./vlcController.cjs');
 const { Scheduler } = require('./scheduler.cjs');
+const {
+  normalizeAsset,
+  normalizeSchedule,
+  normalizeSyncPayload
+} = require('./contracts.cjs');
+const { MediaManager } = require('./mediaManager.cjs');
+const { scanMediaLibrary } = require('./mediaLibrary.cjs');
 const CFG = require('./config.cjs');
 
 if (process.env.PLAYER_USER_DATA) {
@@ -31,6 +38,8 @@ let broadcastHandle = null;
 let secondDisplay = null;
 let transitionWin = null;
 let isShuttingDown = false;
+let mediaManager = null;
+let syncQueue = Promise.resolve();
 
 function readJson(file, fallback) {
   try {
@@ -211,9 +220,10 @@ function createScheduleAdderWindow() {
   }
   const parent = (dashboardWin && !dashboardWin.isDestroyed()) ? dashboardWin : undefined;
   scheduleAdderWin = new BrowserWindow({
-    width: 480,
-    height: 540,
-    resizable: false,
+    width: 560,
+    height: 760,
+    minHeight: 620,
+    resizable: true,
     minimizable: false,
     maximizable: false,
     parent,
@@ -448,8 +458,25 @@ ipcMain.handle('open-schedule-adder', async () => {
   return { ok: true };
 });
 
-ipcMain.handle('get-test-file', async () => {
-  return CFG.TEST_FILE || '';
+ipcMain.handle('list-local-media', async () => {
+  if (!cfg || !cfg.bypass) return { ok: false, error: 'Only available in Test Mode' };
+  try {
+    fs.mkdirSync(CFG.MEDIA_LIBRARY_DIR, { recursive: true });
+    return {
+      ok: true,
+      directory: CFG.MEDIA_LIBRARY_DIR,
+      items: scanMediaLibrary(CFG.MEDIA_LIBRARY_DIR)
+    };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('open-media-library', async () => {
+  if (!cfg || !cfg.bypass) return { ok: false, error: 'Only available in Test Mode' };
+  fs.mkdirSync(CFG.MEDIA_LIBRARY_DIR, { recursive: true });
+  const error = await shell.openPath(CFG.MEDIA_LIBRARY_DIR);
+  return error ? { ok: false, error } : { ok: true };
 });
 
 function parseStartDate(dateStr, timeStr) {
@@ -475,15 +502,15 @@ ipcMain.handle('add-test-schedule', async (_e, payload) => {
     if (!cfg || !cfg.bypass) throw new Error('Only available in Test Mode');
     if (!payload) throw new Error('No payload');
     const title = String(payload.title || '').trim();
-    const pathStr = String(payload.path || '').trim();
+    const mediaSource = String(payload.mediaSource || 'library');
     const dateStr = String(payload.startDate || '').trim();
     const timeStr = String(payload.startTime || '').trim();
     const durationMinutes = parseInt(payload.durationMinutes, 10);
     const durationSeconds = parseInt(payload.durationSeconds, 10);
+    const priority = Number(payload.priority) || 0;
     if (!title) throw new Error('Schedule name is required');
     if (!dateStr) throw new Error('Start date is required');
     if (!timeStr) throw new Error('Start time is required');
-    if (!pathStr) throw new Error('Video path is required');
     if (!Number.isFinite(durationMinutes) || durationMinutes < 0) throw new Error('Duration minutes is invalid');
     if (!Number.isFinite(durationSeconds) || durationSeconds < 0 || durationSeconds > 59) throw new Error('Duration seconds must be 0–59');
     const durationMs = (durationMinutes * 60 + durationSeconds) * 1000;
@@ -498,20 +525,68 @@ ipcMain.handle('add-test-schedule', async (_e, payload) => {
     }
 
     const end = new Date(start.getTime() + durationMs);
-    const newSchedule = {
+    let playlistItem;
+    let newAsset = null;
+
+    if (mediaSource === 'library') {
+      const mediaId = String(payload.mediaId || '').trim();
+      const selected = scanMediaLibrary(CFG.MEDIA_LIBRARY_DIR)
+        .find(item => item.id === mediaId);
+      if (!selected) {
+        throw new Error('Selected film is no longer available in the Media Library. Refresh the list.');
+      }
+      playlistItem = {
+        localPath: selected.path,
+        path: selected.path,
+        title: selected.title,
+        order: 0
+      };
+    } else if (mediaSource === 'remote') {
+      newAsset = normalizeAsset({
+        id: `test-${String(payload.sha256 || '').trim().toLowerCase().slice(0, 24)}`,
+        filename: payload.filename,
+        downloadUrl: payload.downloadUrl,
+        size: Number(payload.size),
+        sha256: payload.sha256,
+        mimeType: 'video/mp4'
+      });
+      if (!mediaManager) throw new Error('Media manager is not initialized');
+      const localPath = await mediaManager.prepareAsset(newAsset);
+      playlistItem = {
+        assetId: newAsset.id,
+        localPath,
+        path: localPath,
+        title: path.basename(newAsset.filename, path.extname(newAsset.filename)),
+        order: 0
+      };
+    } else {
+      throw new Error('Unknown media source');
+    }
+
+    const newSchedule = normalizeSchedule({
       id: 'manual-' + Date.now(),
       title,
+      priority,
       startTime: start.toISOString(),
       endTime: end.toISOString(),
       recurrence: null,
-      loop: true,
-      files: [{ path: pathStr, title: path.basename(pathStr) }]
-    };
+      loop: payload.loop !== false,
+      playlist: [playlistItem]
+    });
 
-    const cache = readJson(CACHE_PATH, { schedules: [] });
-    const schedules = Array.isArray(cache.schedules) ? cache.schedules.slice() : [];
+    const cache = normalizeSyncPayload(
+      readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] })
+    );
+    const schedules = cache.schedules.slice();
     schedules.push(newSchedule);
-    writeJson(CACHE_PATH, { updatedAt: new Date().toISOString(), schedules, mock: true });
+    const assets = newAsset ? mergeAssets(cache.assets, [newAsset]) : cache.assets;
+    writeJson(CACHE_PATH, {
+      revision: cache.revision,
+      updatedAt: new Date().toISOString(),
+      schedules,
+      assets,
+      mock: true
+    });
     if (scheduler) scheduler.update(schedules);
     pushDashboard();
     return { ok: true, schedule: newSchedule };
@@ -533,6 +608,20 @@ ipcMain.handle('quit', async () => {
 async function startRuntime() {
   if (!cfg || !cfg.token) return;
   if (vlc) vlc.quit();
+  mediaManager = new MediaManager({
+    mediaDir: path.join(DATA_DIR, 'media'),
+    concurrency: 2
+  });
+  mediaManager.on('download-start', ({ asset }) => {
+    appendVlcLog(`[media] downloading ${asset.id}`);
+  });
+  mediaManager.on('ready', ({ asset, cached }) => {
+    appendVlcLog(`[media] ready ${asset.id} (${cached ? 'cached' : 'downloaded'})`);
+  });
+  mediaManager.on('download-error', ({ asset, error }) => {
+    appendVlcLog(`[media] failed ${asset.id}: ${error.message}`);
+    console.error('Media download failed', asset.id, error);
+  });
   createTransitionWindow();
   vlc = new VlcController({
     display: secondDisplay,
@@ -587,6 +676,10 @@ async function startRuntime() {
   scheduler.on('tick', () => {
     pushDashboard();
   });
+  scheduler.on('error', (error) => {
+    appendVlcLog(`[scheduler] ${error.message}`);
+    console.error('Scheduler error', error);
+  });
 
   try {
         await vlc.start();
@@ -596,10 +689,16 @@ async function startRuntime() {
         return;
     }
 
-  const cache = readJson(CACHE_PATH, null);
-  if (cache && Array.isArray(cache.schedules) && cache.schedules.length) {
-    scheduler.update(cache.schedules);
-  } else {
+  const cache = readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] });
+  try {
+    const normalizedCache = normalizeSyncPayload(cache);
+    const prepared = await mediaManager.prepareSchedules(
+      normalizedCache.schedules,
+      normalizedCache.assets
+    );
+    scheduler.update(prepared);
+  } catch (error) {
+    appendVlcLog(`[cache] invalid: ${error.message}`);
     scheduler.update([]);
   }
 
@@ -607,6 +706,79 @@ async function startRuntime() {
 
   connectSocket();
   refreshTray();
+}
+
+async function applySyncPayload(payload, mode = 'replace') {
+  if (!scheduler || !mediaManager) return { applied: false, revision: 0 };
+  const incoming = normalizeSyncPayload(payload);
+  const currentRaw = readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] });
+  const current = normalizeSyncPayload(currentRaw);
+
+  if (incoming.revision && current.revision > incoming.revision) {
+    return { applied: false, stale: true, revision: current.revision };
+  }
+
+  const schedules = mode === 'merge'
+    ? mergeSchedules(current.schedules, incoming.schedules)
+    : incoming.schedules;
+  const assets = mergeAssets(current.assets, incoming.assets);
+  const prepared = await mediaManager.prepareSchedules(schedules, assets);
+  const revision = incoming.revision || current.revision;
+
+  writeJson(CACHE_PATH, {
+    revision,
+    updatedAt: new Date().toISOString(),
+    schedules: prepared,
+    assets
+  });
+  scheduler.update(prepared);
+  pushDashboard();
+  return { applied: true, revision };
+}
+
+async function applyClearPayload(payload) {
+  const currentRaw = readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] });
+  const current = normalizeSyncPayload(currentRaw);
+  const ids = payload && Array.isArray(payload.ids) ? payload.ids : [];
+  const revision = Math.max(current.revision, Number(payload && payload.revision) || 0);
+  const remaining = current.schedules.filter(schedule => !ids.includes(schedule.id));
+  const prepared = await mediaManager.prepareSchedules(remaining, current.assets);
+  writeJson(CACHE_PATH, {
+    revision,
+    updatedAt: new Date().toISOString(),
+    schedules: prepared,
+    assets: current.assets
+  });
+  scheduler.update(prepared);
+  pushDashboard();
+  return { applied: true, revision };
+}
+
+function queueSync(operation, acknowledgement) {
+  syncQueue = syncQueue
+    .then(operation)
+    .then(result => {
+      if (socket && socket.connected && result && result.applied) {
+        socket.emit('sync:applied', {
+          deviceId: cfg.deviceId,
+          revision: result.revision,
+          appliedAt: new Date().toISOString()
+        });
+      }
+      if (typeof acknowledgement === 'function') acknowledgement({ ok: true, ...result });
+      return result;
+    })
+    .catch(error => {
+      console.error('Schedule synchronization failed', error);
+      appendVlcLog(`[sync] ${error.message}`);
+      if (typeof acknowledgement === 'function') {
+        acknowledgement({
+          ok: false,
+          error: error.message,
+          details: error.details || []
+        });
+      }
+    });
 }
 
 function connectSocket() {
@@ -631,7 +803,12 @@ function connectSocket() {
   socket.on('connect', () => {
     connecting = false;
     setStatus('online');
-    socket.emit('register', { deviceId: cfg.deviceId });
+    const cache = readJson(CACHE_PATH, { revision: 0 });
+    socket.emit('register', {
+      deviceId: cfg.deviceId,
+      revision: Number(cache.revision) || 0,
+      appVersion: app.getVersion()
+    });
   });
   socket.on('disconnect', () => {
     if (connecting) setStatus('connecting');
@@ -641,25 +818,17 @@ function connectSocket() {
     console.error('socket connect_error', err && err.message);
     setStatus('offline');
   });
-  socket.on('sync:initial', (schedules) => {
-    writeJson(CACHE_PATH, { updatedAt: new Date().toISOString(), schedules: schedules || [] });
-    scheduler.update(schedules || []);
+  socket.on('sync:initial', (payload, acknowledgement) => {
+    queueSync(() => applySyncPayload(payload, 'replace'), acknowledgement);
   });
-  socket.on('schedule:set', (payload) => {
-    const merged = mergeSchedules(readJson(CACHE_PATH, { schedules: [] }).schedules, payload);
-    writeJson(CACHE_PATH, { updatedAt: new Date().toISOString(), schedules: merged });
-    scheduler.update(merged);
+  socket.on('schedule:set', (payload, acknowledgement) => {
+    queueSync(() => applySyncPayload(payload, 'merge'), acknowledgement);
   });
-  socket.on('schedule:clear', (payload) => {
-    const cur = readJson(CACHE_PATH, { schedules: [] }).schedules;
-    const ids = payload && Array.isArray(payload.ids) ? payload.ids : [];
-    const remaining = cur.filter(s => !ids.includes(s.id));
-    writeJson(CACHE_PATH, { updatedAt: new Date().toISOString(), schedules: remaining });
-    scheduler.update(remaining);
+  socket.on('schedule:clear', (payload, acknowledgement) => {
+    queueSync(() => applyClearPayload(payload), acknowledgement);
   });
-  socket.on('schedule:replaceAll', (schedules) => {
-    writeJson(CACHE_PATH, { updatedAt: new Date().toISOString(), schedules: schedules || [] });
-    scheduler.update(schedules || []);
+  socket.on('schedule:replaceAll', (payload, acknowledgement) => {
+    queueSync(() => applySyncPayload(payload, 'replace'), acknowledgement);
   });
 }
 
@@ -667,6 +836,12 @@ function mergeSchedules(current, incoming) {
   if (!incoming) return current;
   const byId = new Map((current || []).map(s => [s.id, s]));
   for (const s of incoming) byId.set(s.id, s);
+  return Array.from(byId.values());
+}
+
+function mergeAssets(current, incoming) {
+  const byId = new Map((current || []).map(asset => [asset.id, asset]));
+  for (const asset of incoming || []) byId.set(asset.id, asset);
   return Array.from(byId.values());
 }
 

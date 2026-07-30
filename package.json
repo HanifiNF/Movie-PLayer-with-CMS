@@ -5,6 +5,7 @@
   "main": "main.cjs",
   "scripts": {
     "start": "electron .",
+    "test": "node --test test/*.test.cjs",
     "pack": "electron-builder --dir",
     "build": "electron-builder --win nsis portable"
   },
@@ -31,6 +32,9 @@
       "main.cjs",
       "vlcController.cjs",
       "scheduler.cjs",
+      "contracts.cjs",
+      "mediaManager.cjs",
+      "mediaLibrary.cjs",
       "config.cjs",
       "login.html",
       "dashboard.html",

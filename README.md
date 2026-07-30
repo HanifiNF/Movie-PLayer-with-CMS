@@ -9,6 +9,10 @@ Socket.IO from the CMS and plays local media files fullscreen through VLC.
 - Login with `username + password`; server returns token + deviceId
 - Single persistent VLC instance, fullscreen, playlist swap without restart
 - Supports recurring schedules (daily / weekly) and one-shot
+- Deterministic overlap handling with schedule priority
+- Versioned schedule/media contract with payload validation
+- Resumable media download to local storage with size + SHA-256 verification
+- Searchable local Media Library for preloaded films in Test Mode
 - Offline-resilient: plays the last known cached schedule when CMS is unreachable
 - Auto-start with Windows on login
 - Tray icon with status, device id, reconnect, logout, quit
@@ -63,7 +67,12 @@ Server pushes to that client (room `device:<deviceId>`):
 - `schedule:replaceAll` → `Schedule[]` (full replace)
 - `schedule:clear` → `{ ids: string[] }` (remove from cache)
 
-`Schedule`:
+The recommended CMS contract is documented in `CMS_CONTRACT.md`. The player
+accepts a versioned envelope containing schedules plus an asset catalog. Media
+is downloaded and verified before VLC receives a local path.
+
+The original local-path `Schedule` remains supported for Test Mode and older
+CMS integrations:
 ```json
 {
   "id": "sch-001",
@@ -79,6 +88,33 @@ Server pushes to that client (room `device:<deviceId>`):
 uses 1..7 (Mon..Sun). `path` is an absolute local path on the player PC.
 `startTime`/`endTime` are ISO 8601 with timezone offset; the player
 compares in epoch ms so the player device clock must be roughly correct.
+
+For schedule overlap, the largest `priority` wins. If priorities are equal,
+the occurrence with the latest start time wins. A lower-priority occurrence
+can resume if it is still within its active window after the winner ends.
+
+## Tests
+
+```text
+npm test
+```
+
+Tests cover recurrence, active-window detection, overlap priority, payload
+validation, legacy compatibility, and verified local media download.
+
+## Test Mode media sources
+
+Test Mode can create a schedule from either:
+
+- **Media Library** — films preloaded under
+  `C:\Users\Public\Videos\WirPlayer` (recursive, searchable by title/path).
+- **Remote Asset** — an HTTP(S) URL, filename, byte size, and SHA-256 digest.
+  Verified downloads are stored under Electron's managed `userData/media`
+  directory.
+
+Set `PLAYER_MEDIA_LIBRARY` before launching the app to override the Media
+Library path. The configured value is also available as `MEDIA_LIBRARY_DIR`
+in `config.cjs`.
 
 ## Build
 

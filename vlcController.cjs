@@ -248,6 +248,7 @@ class VlcController extends EventEmitter {
     if (!Array.isArray(filePaths)) filePaths = [];
     this.currentPlaylist = filePaths.slice();
     this.idleMode = !!options.idle;
+    const shouldLoop = options.loop !== false;
 
     const useTransition = this.transitionDuration > 0;
     if (useTransition && this.onTransitionStart) {
@@ -272,6 +273,7 @@ class VlcController extends EventEmitter {
       this.send('add ' + mrl);
       await sleep(100);
     }
+    this.send(`loop ${shouldLoop ? 'on' : 'off'}`);
     if (filePaths.length) this.send('play');
     await sleep(300);
     this.send('status');
