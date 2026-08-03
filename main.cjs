@@ -15,6 +15,7 @@ const {
 const { MediaManager } = require('./mediaManager.cjs');
 const { listManagedAssets, scanMediaLibrary } = require('./mediaLibrary.cjs');
 const { MediaProbe } = require('./mediaProbe.cjs');
+const { PlaybackWatchdog } = require('./playbackWatchdog.cjs');
 const CFG = require('./config.cjs');
 
 if (process.env.PLAYER_USER_DATA) {
@@ -43,6 +44,7 @@ let transitionWin = null;
 let isShuttingDown = false;
 let mediaManager = null;
 let mediaProbe = null;
+let playbackWatchdog = null;
 let syncQueue = Promise.resolve();
 
 function readJson(file, fallback) {
@@ -359,6 +361,28 @@ function appendVlcLog(line) {
   }
 }
 
+function getRuntimeStatus() {
+  if (cfg && cfg.bypass) return 'test-mode (no server)';
+  return socket && socket.connected ? 'online' : 'offline';
+}
+
+function isVlcPlaybackHealthy() {
+  if (!vlc || !vlc.ready || vlc.state === 'error') return false;
+  const playbackExpected = Boolean(scheduler && scheduler.getNow());
+  if (!playbackExpected) return true;
+  return !vlc.idleMode && (vlc.state === 'playing' || vlc.state === 'paused');
+}
+
+async function waitForVlcRecovery(timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (isShuttingDown) throw new Error('Player is shutting down');
+    if (isVlcPlaybackHealthy()) return;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  throw new Error('VLC did not return to a healthy playback state in time');
+}
+
 function pushDashboard() {
   if (!dashboardWin || dashboardWin.isDestroyed() || !dashboardWin.webContents) return;
   const now = scheduler ? scheduler.getNow() : null;
@@ -371,7 +395,8 @@ function pushDashboard() {
     now,
     upcoming,
     skipped,
-    vlc: { state: vlc ? vlc.state : 'idle', rcReady: vlc ? vlc.ready : false, idleMode: vlc ? vlc.idleMode : false }
+    vlc: { state: vlc ? vlc.state : 'idle', rcReady: vlc ? vlc.ready : false, idleMode: vlc ? vlc.idleMode : false },
+    watchdog: playbackWatchdog ? playbackWatchdog.getStatus() : { state: 'idle', attempts: 0 }
   };
   try {
     dashboardWin.webContents.send('dashboard:update', payload);
@@ -478,12 +503,13 @@ ipcMain.handle('vlc-reactivate', async (_e, scheduleId) => {
 ipcMain.handle('vlc-retry', async () => {
   if (!vlc) return { ok: false, error: 'VLC controller not initialized' };
   try {
-    await vlc.start();
-    if (scheduler) {
-      const cache = readJson(CACHE_PATH, { schedules: [] });
-      scheduler.recover(cache.schedules);
+    if (playbackWatchdog) {
+      const result = await playbackWatchdog.recoverNow();
+      if (result.state !== 'healthy') throw new Error(result.lastError || 'VLC recovery failed');
+    } else {
+      await vlc.start();
     }
-    setStatus(cfg && cfg.bypass ? 'test-mode (no server)' : (socket && socket.connected ? 'online' : 'offline'));
+    setStatus(getRuntimeStatus());
     pushDashboard();
     return { ok: true };
   } catch (e) {
@@ -939,6 +965,8 @@ ipcMain.handle('quit', async () => {
 
 async function startRuntime() {
   if (!cfg || !cfg.token) return;
+  if (playbackWatchdog) playbackWatchdog.stop();
+  playbackWatchdog = null;
   if (vlc) vlc.quit();
   mediaManager = new MediaManager({
     mediaDir: path.join(DATA_DIR, 'media'),
@@ -958,7 +986,7 @@ async function startRuntime() {
   createTransitionWindow();
   vlc = new VlcController({
     display: secondDisplay,
-    transitionDuration: 1000,
+    transitionDuration: 500,
     onTransitionStart: () => showTransitionOverlay(),
     onTransitionEnd: () => hideTransitionOverlay()
   });
@@ -1014,12 +1042,49 @@ async function startRuntime() {
     console.error('Scheduler error', error);
   });
 
+  playbackWatchdog = new PlaybackWatchdog({
+    intervalMs: 3000,
+    failureThreshold: 2,
+    maxAttempts: 5,
+    backoffMs: [0, 2000, 5000, 15000, 30000],
+    isPlaybackExpected: () => Boolean(scheduler && scheduler.getNow()),
+    isHealthy: () => isVlcPlaybackHealthy(),
+    recover: async ({ attempt, maxAttempts }) => {
+      appendVlcLog(`[watchdog] recovery attempt ${attempt}/${maxAttempts}`);
+      await vlc.start();
+      if (scheduler) {
+        const schedules = scheduler.schedules.slice();
+        scheduler.recover(schedules);
+      }
+      await waitForVlcRecovery();
+    }
+  });
+  playbackWatchdog.on('attempt', ({ attempt, maxAttempts }) => {
+    appendVlcLog(`[watchdog] attempting automatic recovery ${attempt}/${maxAttempts}`);
+    setStatus('vlc-recovering');
+  });
+  playbackWatchdog.on('failed-attempt', status => {
+    appendVlcLog(`[watchdog] attempt ${status.attempts} failed: ${status.lastError}`);
+    setStatus('vlc-recovering');
+  });
+  playbackWatchdog.on('recovered', status => {
+    appendVlcLog(`[watchdog] playback recovered at ${status.lastRecoveredAt}`);
+    setStatus(getRuntimeStatus());
+  });
+  playbackWatchdog.on('exhausted', status => {
+    appendVlcLog(`[watchdog] stopped after ${status.attempts} attempts: ${status.lastError}`);
+    setStatus('vlc-error');
+  });
+  playbackWatchdog.on('state-change', () => pushDashboard());
+  playbackWatchdog.on('internal-error', error => {
+    appendVlcLog(`[watchdog] internal error: ${error.message}`);
+  });
+
   try {
         await vlc.start();
     } catch (e) {
         console.error("VLC start failed", e);
         setStatus("vlc-error");
-        return;
     }
 
   const cache = readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] });
@@ -1037,6 +1102,7 @@ async function startRuntime() {
 
   app.setLoginItemSettings({ openAtLogin: true, path: process.execPath });
 
+  playbackWatchdog.start();
   connectSocket();
   refreshTray();
 }
@@ -1184,6 +1250,7 @@ function logout() {
   try { if (socket) socket.disconnect(); } catch (_) {}
   socket = null;
   if (broadcastHandle) { clearInterval(broadcastHandle); broadcastHandle = null; }
+  if (playbackWatchdog) { playbackWatchdog.stop(); playbackWatchdog = null; }
   if (scheduler) { scheduler.clear(); scheduler = null; }
   if (vlc) { vlc.quit(); vlc = null; }
   if (scheduleAdderWin && !scheduleAdderWin.isDestroyed()) scheduleAdderWin.destroy();
@@ -1202,6 +1269,7 @@ function quitApp() {
   isShuttingDown = true;
   try { if (socket) socket.disconnect(); } catch (_) {}
   if (broadcastHandle) { clearInterval(broadcastHandle); broadcastHandle = null; }
+  if (playbackWatchdog) { playbackWatchdog.stop(); playbackWatchdog = null; }
   if (scheduler) scheduler.clear();
   if (vlc) vlc.quit();
   destroyTransitionOverlay();
@@ -1250,6 +1318,7 @@ app.on('window-all-closed', (e) => {
 app.on('before-quit', () => {
   isShuttingDown = true;
   try { if (socket) socket.disconnect(); } catch (_) {}
+  if (playbackWatchdog) { playbackWatchdog.stop(); playbackWatchdog = null; }
   if (scheduler) scheduler.clear();
   if (vlc) vlc.quit();
   destroyTransitionOverlay();
@@ -1258,6 +1327,7 @@ app.on('before-quit', () => {
 app.on('will-quit', () => {
   isShuttingDown = true;
   try { if (socket) socket.disconnect(); } catch (_) {}
+  if (playbackWatchdog) { playbackWatchdog.stop(); playbackWatchdog = null; }
   if (scheduler) scheduler.clear();
   if (vlc) vlc.quit();
   destroyTransitionOverlay();

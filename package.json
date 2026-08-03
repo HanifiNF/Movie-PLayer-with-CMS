@@ -36,6 +36,7 @@
       "mediaManager.cjs",
       "mediaLibrary.cjs",
       "mediaProbe.cjs",
+      "playbackWatchdog.cjs",
       "config.cjs",
       "login.html",
       "dashboard.html",

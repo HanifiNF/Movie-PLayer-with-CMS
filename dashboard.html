@@ -36,6 +36,7 @@
     .badge.connecting { background: #1e1b4b; color: #a5b4fc; }
     .badge.test-mode { background: #1e293b; color: #fbbf24; border: 1px solid #475569; }
     .badge.vlc-error { background: #450a0a; color: #fca5a5; }
+    .badge.vlc-recovering { background: #422006; color: #fcd34d; }
 
     main { flex: 1; padding: 18px 22px; overflow: auto; display: grid; grid-template-rows: auto 1fr; gap: 16px; }
 
@@ -198,16 +199,23 @@
       if (status === 'connecting') return 'badge connecting';
       if (status && status.indexOf('test-mode') === 0) return 'badge test-mode';
       if (status === 'vlc-error') return 'badge vlc-error';
+      if (status === 'vlc-recovering') return 'badge vlc-recovering';
       return 'badge offline';
     }
 
     function badgeLabel(status) {
       if (status && status.indexOf('test-mode') === 0) return 'Test Mode';
       if (status === 'vlc-error') return 'VLC Error';
+      if (status === 'vlc-recovering') return 'VLC Recovering';
       return status ? status.charAt(0).toUpperCase() + status.slice(1) : 'Offline';
     }
 
-    let state = { status: 'offline', deviceId: '', now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, bypass: false };
+    let state = {
+      status: 'offline', deviceId: '', now: null, upcoming: [], skipped: [],
+      vlc: { state: 'idle' },
+      watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 },
+      bypass: false
+    };
 
     ipcRenderer.on('dashboard:update', (_e, payload) => {
       state = Object.assign({}, state, payload);
@@ -243,7 +251,28 @@
       const displayState = (vlc.state === 'playing' && vlc.idleMode) ? 'idle' : (vlc.state || 'idle');
       vlcEl.className = 'vlc-state ' + displayState;
       vlcEl.textContent = displayState;
-      $('vlcNote').textContent = (vlc.state === 'error') ? 'VLC not found — drop vlc.exe in vlc-portable/ then click Retry.' : '';
+      const watchdog = state.watchdog || {};
+      if (watchdog.state === 'recovering') {
+        $('vlcNote').textContent =
+          `Automatic recovery attempt ${watchdog.attempts}/${watchdog.maxAttempts} is running...`;
+      } else if (watchdog.state === 'waiting') {
+        const seconds = watchdog.nextRetryAt
+          ? Math.max(0, Math.ceil((watchdog.nextRetryAt - Date.now()) / 1000))
+          : 0;
+        $('vlcNote').textContent =
+          `Recovery attempt ${watchdog.attempts}/${watchdog.maxAttempts} failed. Retrying in ${seconds}s.` +
+          (watchdog.lastError ? ` ${watchdog.lastError}` : '');
+      } else if (watchdog.state === 'exhausted') {
+        $('vlcNote').textContent =
+          `Automatic recovery stopped after ${watchdog.attempts} attempts. Click Retry VLC.` +
+          (watchdog.lastError ? ` ${watchdog.lastError}` : '');
+      } else if (watchdog.state === 'degraded') {
+        $('vlcNote').textContent = 'Playback health check failed. Waiting for confirmation before recovery.';
+      } else {
+        $('vlcNote').textContent = (vlc.state === 'error')
+          ? 'VLC is unavailable. Automatic recovery will run while a schedule is active.'
+          : '';
+      }
 
       const hasNow = !!now;
       const isIdleMode = !!vlc.idleMode;
