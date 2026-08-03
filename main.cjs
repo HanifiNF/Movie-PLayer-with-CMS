@@ -16,6 +16,7 @@ const { MediaManager } = require('./mediaManager.cjs');
 const { listManagedAssets, scanMediaLibrary } = require('./mediaLibrary.cjs');
 const { MediaProbe } = require('./mediaProbe.cjs');
 const { PlaybackWatchdog } = require('./playbackWatchdog.cjs');
+const { resolveResumeTarget } = require('./playbackResume.cjs');
 const CFG = require('./config.cjs');
 
 if (process.env.PLAYER_USER_DATA) {
@@ -45,6 +46,8 @@ let isShuttingDown = false;
 let mediaManager = null;
 let mediaProbe = null;
 let playbackWatchdog = null;
+let playbackCheckpoint = null;
+let lastResumeInfo = null;
 let syncQueue = Promise.resolve();
 
 function readJson(file, fallback) {
@@ -401,7 +404,8 @@ function pushDashboard() {
       idleMode: vlc ? vlc.idleMode : false,
       playback: vlc ? vlc.getPlaybackStatus() : null
     },
-    watchdog: playbackWatchdog ? playbackWatchdog.getStatus() : { state: 'idle', attempts: 0 }
+    watchdog: playbackWatchdog ? playbackWatchdog.getStatus() : { state: 'idle', attempts: 0 },
+    recoveryResume: lastResumeInfo
   };
   try {
     dashboardWin.webContents.send('dashboard:update', payload);
@@ -970,6 +974,8 @@ ipcMain.handle('quit', async () => {
 
 async function startRuntime() {
   if (!cfg || !cfg.token) return;
+  playbackCheckpoint = null;
+  lastResumeInfo = null;
   if (playbackWatchdog) playbackWatchdog.stop();
   playbackWatchdog = null;
   if (vlc) vlc.quit();
@@ -1007,7 +1013,25 @@ async function startRuntime() {
   vlc.on('vlc-log', (line) => {
     appendVlcLog(line);
   });
-  vlc.on('playback-progress', () => pushDashboard());
+  vlc.on('playback-progress', playback => {
+    const active = scheduler ? scheduler.getNow() : null;
+    if (
+      active && !vlc.idleMode &&
+      (vlc.state === 'playing' || vlc.state === 'paused') &&
+      playback && Number.isInteger(playback.currentIndex) && playback.currentIndex >= 0
+    ) {
+      playbackCheckpoint = {
+        scheduleId: active.scheduleId,
+        occurrenceStart: active.startTime,
+        currentIndex: playback.currentIndex,
+        currentPath: playback.currentPath,
+        positionSeconds: Math.max(0, Number(playback.positionSeconds) || 0),
+        lengthSeconds: Math.max(0, Number(playback.lengthSeconds) || 0),
+        capturedAt: new Date().toISOString()
+      };
+    }
+    pushDashboard();
+  });
   vlc.on('exit', (code) => {
     appendVlcLog(`[VLC exit] code=${code} at ${new Date().toISOString()}`);
     if (!isShuttingDown) {
@@ -1022,6 +1046,13 @@ async function startRuntime() {
   scheduler = new Scheduler(vlc);
   scheduler.on('activate', (info) => {
     nowSchedule = info.schedule;
+    const active = scheduler.getNow();
+    if (!playbackCheckpoint || !active ||
+        playbackCheckpoint.scheduleId !== active.scheduleId ||
+        playbackCheckpoint.occurrenceStart !== active.startTime) {
+      playbackCheckpoint = null;
+    }
+    lastResumeInfo = null;
     refreshTray();
     pushDashboard();
   });
@@ -1057,12 +1088,31 @@ async function startRuntime() {
     isHealthy: () => isVlcPlaybackHealthy(),
     recover: async ({ attempt, maxAttempts }) => {
       appendVlcLog(`[watchdog] recovery attempt ${attempt}/${maxAttempts}`);
+      const checkpoint = playbackCheckpoint ? { ...playbackCheckpoint } : null;
       await vlc.start();
       if (scheduler) {
         const schedules = scheduler.schedules.slice();
         scheduler.recover(schedules);
       }
       await waitForVlcRecovery();
+      const active = scheduler ? scheduler.getNow() : null;
+      const resumeTarget = resolveResumeTarget(checkpoint, active);
+      if (resumeTarget) {
+        await vlc.resumePlaylistAt(resumeTarget.currentIndex, resumeTarget.positionSeconds);
+        const file = resumeTarget.file;
+        lastResumeInfo = {
+          scheduleId: active.scheduleId,
+          currentIndex: resumeTarget.currentIndex,
+          positionSeconds: resumeTarget.positionSeconds,
+          title: file && (file.title || file.path || file.assetId) || 'media',
+          resumedAt: new Date().toISOString()
+        };
+        appendVlcLog(
+          `[watchdog] resumed ${lastResumeInfo.title} at ${resumeTarget.positionSeconds}s ` +
+          `(playlist index ${resumeTarget.currentIndex})`
+        );
+        pushDashboard();
+      }
     }
   });
   playbackWatchdog.on('attempt', ({ attempt, maxAttempts }) => {
@@ -1252,6 +1302,8 @@ function mergeAssets(current, incoming) {
 
 function logout() {
   isShuttingDown = true;
+  playbackCheckpoint = null;
+  lastResumeInfo = null;
   const wasBypass = Boolean(cfg && cfg.bypass);
   try { if (socket) socket.disconnect(); } catch (_) {}
   socket = null;

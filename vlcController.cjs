@@ -36,6 +36,7 @@ class VlcController extends EventEmitter {
     this.idleMode = false;
     this.transitionDuration = options.transitionDuration || 0;
     this.pollIntervalMs = Math.max(250, Number(options.pollIntervalMs) || 1000);
+    this.resumeInputTimeoutMs = Math.max(250, Number(options.resumeInputTimeoutMs) || 3000);
     this.onTransitionStart = options.onTransitionStart || null;
     this.onTransitionEnd = options.onTransitionEnd || null;
     this._pollHandle = null;
@@ -97,6 +98,26 @@ class VlcController extends EventEmitter {
     if (index !== this.playback.currentIndex || currentPath !== this.playback.currentPath) {
       this._resetPlaybackProgress(currentPath, index);
     }
+  }
+
+  _waitForPlaylistIndex(targetIndex, timeoutMs = this.resumeInputTimeoutMs) {
+    if (this.playback.currentIndex === targetIndex) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const onProgress = playback => {
+        if (playback.currentIndex !== targetIndex) return;
+        cleanup();
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`VLC did not confirm playlist item ${targetIndex + 1}`));
+      }, timeoutMs);
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.removeListener('playback-progress', onProgress);
+      };
+      this.on('playback-progress', onProgress);
+    });
   }
 
   _toMrl(p) {
@@ -209,6 +230,31 @@ class VlcController extends EventEmitter {
     });
   }
 
+  _buildStartArgs() {
+    let x = 0, y = 0, w = 1920, h = 1080;
+    if (this.display) {
+      x = this.display.bounds.x;
+      y = this.display.bounds.y;
+      w = this.display.bounds.width;
+      h = this.display.bounds.height;
+    }
+    return [
+      '--intf', 'qt',
+      '--extraintf', 'rc',
+      `--rc-host=127.0.0.1:${this.rcPort}`,
+      '--video-x', String(x),
+      '--video-y', String(y),
+      '--width', String(w),
+      '--height', String(h),
+      '--fullscreen',
+      '--no-video-title-show',
+      '--loop',
+      '--no-qt-error-dialogs',
+      '--qt-continue=0',
+      '--no-qt-recentplay'
+    ];
+  }
+
   start() {
     if (this.proc) {
       try {
@@ -220,27 +266,7 @@ class VlcController extends EventEmitter {
       }
     }
     return new Promise((resolve, reject) => {
-      let x = 0, y = 0, w = 1920, h = 1080;
-      if (this.display) {
-        x = this.display.bounds.x;
-        y = this.display.bounds.y;
-        w = this.display.bounds.width;
-        h = this.display.bounds.height;
-      }
-
-      const args = [
-        '--intf', 'qt',
-        '--extraintf', 'rc',
-        `--rc-host=127.0.0.1:${this.rcPort}`,
-        '--video-x', String(x),
-        '--video-y', String(y),
-        '--width', String(w),
-        '--height', String(h),
-        '--fullscreen',
-        '--no-video-title-show',
-        '--loop',
-        '--no-qt-error-dialogs'
-      ];
+      const args = this._buildStartArgs();
 
       const vlcDir = path.dirname(this.vlcPath);
       const env = process.env;
@@ -393,6 +419,32 @@ class VlcController extends EventEmitter {
     await sleep(100);
     this._setState('playing');
     this.send('status');
+  }
+
+  async resumePlaylistAt(index, positionSeconds = 0) {
+    if (!this.ready) throw new Error('VLC RC is not ready');
+    if (!this.currentPlaylist.length) throw new Error('Cannot resume an empty playlist');
+    const targetIndex = Math.max(0, Math.min(
+      this.currentPlaylist.length - 1,
+      Math.floor(Number(index) || 0)
+    ));
+    const targetPosition = Math.max(0, Math.floor(Number(positionSeconds) || 0));
+
+    // The bundled VLC 3 old-RC interface addresses playlist items from 1,
+    // while the player keeps zero-based array indexes internally.
+    const inputConfirmation = this._waitForPlaylistIndex(targetIndex);
+    this.send(`goto ${targetIndex + 1}`);
+    await inputConfirmation;
+    // Give the newly confirmed input a short moment to become seekable.
+    await sleep(100);
+    if (targetPosition > 0) this.send(`seek ${targetPosition}`);
+    await sleep(200);
+
+    this.playback.positionSeconds = targetPosition;
+    this._emitPlaybackProgress();
+    this._setState('playing');
+    this._pollPlayback();
+    return this.getPlaybackStatus();
   }
 
   async playIdle() {

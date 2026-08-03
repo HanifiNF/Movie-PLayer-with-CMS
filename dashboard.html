@@ -241,6 +241,7 @@
       status: 'offline', deviceId: '', now: null, upcoming: [], skipped: [],
       vlc: { state: 'idle' },
       watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 },
+      recoveryResume: null,
       bypass: false
     };
 
@@ -344,6 +345,10 @@
           (watchdog.lastError ? ` ${watchdog.lastError}` : '');
       } else if (watchdog.state === 'degraded') {
         $('vlcNote').textContent = 'Playback health check failed. Waiting for confirmation before recovery.';
+      } else if (state.recoveryResume && now && state.recoveryResume.scheduleId === now.scheduleId) {
+        $('vlcNote').textContent =
+          `Recovered: resumed ${state.recoveryResume.title} at ` +
+          `${fmtPlaybackTime(state.recoveryResume.positionSeconds)}.`;
       } else {
         $('vlcNote').textContent = (vlc.state === 'error')
           ? 'VLC is unavailable. Automatic recovery will run while a schedule is active.'

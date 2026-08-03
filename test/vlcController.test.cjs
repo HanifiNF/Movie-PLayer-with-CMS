@@ -4,6 +4,15 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { VlcController } = require('../vlcController.cjs');
 
+test('VLC startup disables Qt resume prompts and recent-play history', () => {
+  const controller = new VlcController();
+  const args = controller._buildStartArgs();
+
+  assert.ok(args.includes('--qt-continue=0'));
+  assert.ok(args.includes('--no-qt-recentplay'));
+  assert.ok(args.includes('--no-qt-error-dialogs'));
+});
+
 test('replacePlaylist enqueues every item before starting the first one', async () => {
   const controller = new VlcController();
   const commands = [];
@@ -67,4 +76,53 @@ test('RC responses identify the active playlist item and its progress', () => {
     updatedAt: controller.getPlaybackStatus().updatedAt
   });
   assert.ok(controller.getPlaybackStatus().updatedAt);
+});
+
+test('resumePlaylistAt converts to VLC 3 one-based item and waits before seeking', async () => {
+  const controller = new VlcController();
+  const commands = [];
+  controller.ready = true;
+  controller.currentPlaylist = [
+    'C:\\media\\film A.mp4',
+    'C:\\media\\film B.mp4'
+  ];
+  controller.send = command => {
+    commands.push(command);
+    if (command === 'goto 2') {
+      setTimeout(() => {
+        controller._setCurrentInput('file:///C:/media/film%20B.mp4');
+      }, 10);
+    }
+  };
+
+  const playback = await controller.resumePlaylistAt(1, 42);
+
+  assert.deepEqual(commands, [
+    'goto 2',
+    'seek 42',
+    'status',
+    'get_time',
+    'get_length'
+  ]);
+  assert.equal(playback.currentIndex, 1);
+  assert.equal(playback.currentPath, 'C:\\media\\film B.mp4');
+  assert.equal(playback.positionSeconds, 42);
+});
+
+test('resumePlaylistAt never seeks when VLC does not confirm the target item', async () => {
+  const controller = new VlcController({ resumeInputTimeoutMs: 250 });
+  const commands = [];
+  controller.ready = true;
+  controller.currentPlaylist = [
+    'C:\\media\\film A.mp4',
+    'C:\\media\\film B.mp4'
+  ];
+  controller._setCurrentInput('file:///C:/media/film%20A.mp4');
+  controller.send = command => commands.push(command);
+
+  await assert.rejects(
+    controller.resumePlaylistAt(1, 42),
+    /did not confirm playlist item 2/
+  );
+  assert.deepEqual(commands, ['goto 2']);
 });
