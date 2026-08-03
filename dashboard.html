@@ -89,6 +89,17 @@
     .vlc-state.error   { background: #450a0a; color: #fca5a5; }
 
     .vlc-note { font-size: 11px; color: #fca5a5; margin-top: 6px; min-height: 14px; }
+    .health-section { margin-top: 15px; padding-top: 13px; border-top: 1px solid #1e293b; }
+    .health-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .health-head h3 { margin: 0; font-size: 11px; color: #94a3b8; letter-spacing: 1px; text-transform: uppercase; }
+    .health-state { font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    .health-state.healthy { color: #34d399; }
+    .health-state.warning, .health-state.checking { color: #fbbf24; }
+    .health-state.error { color: #fca5a5; }
+    .health-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin-top: 9px; font-size: 11px; }
+    .health-grid span { color: #64748b; }
+    .health-grid strong { display: block; margin-top: 2px; color: #e2e8f0; font-size: 12px; }
+    .health-details { margin-top: 7px; color: #fca5a5; font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
 
     .btn {
       background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px;
@@ -173,6 +184,20 @@
             <button id="btnAddSchedule" class="btn" style="display:none;">Add Schedule</button>
             <button id="btnManageSchedules" class="btn" style="display:none;">Manage Schedules</button>
           </div>
+          <div class="health-section">
+            <div class="health-head">
+              <h3>Media &amp; Storage</h3>
+              <span id="healthState" class="health-state">Idle</span>
+            </div>
+            <div class="health-grid">
+              <span>Ready<strong id="healthReady">0</strong></span>
+              <span>Problems<strong id="healthProblems">0</strong></span>
+              <span>Free space<strong id="healthFreeSpace">—</strong></span>
+              <span>Last check<strong id="healthCheckedAt">—</strong></span>
+            </div>
+            <div id="healthDetails" class="health-details"></div>
+            <button id="btnRecheckMedia" class="btn" style="margin-top:9px;">Recheck Media</button>
+          </div>
         </section>
       </div>
 
@@ -242,6 +267,7 @@
       vlc: { state: 'idle' },
       watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 },
       recoveryResume: null,
+      mediaHealth: null,
       bypass: false
     };
 
@@ -259,6 +285,47 @@
       return hours > 0
         ? `${pad(hours)}:${pad(minutes)}:${pad(secs)}`
         : `${pad(minutes)}:${pad(secs)}`;
+    }
+
+    function fmtBytes(bytes) {
+      if (bytes == null || !Number.isFinite(Number(bytes))) return 'Unknown';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let value = Number(bytes);
+      let unit = 0;
+      while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit += 1;
+      }
+      return `${value.toFixed(unit >= 3 ? 1 : 0)} ${units[unit]}`;
+    }
+
+    function renderMediaHealth() {
+      const health = state.mediaHealth || {};
+      const counts = health.counts || {};
+      const problemCount = (Number(counts.missing) || 0) +
+        (Number(counts.corrupt) || 0) + (Number(counts.unreadable) || 0);
+      const healthState = health.state || 'idle';
+      $('healthState').textContent = healthState;
+      $('healthState').className = `health-state ${healthState}`;
+      $('healthReady').textContent = Number(counts.ready) || 0;
+      $('healthProblems').textContent = problemCount;
+      $('healthFreeSpace').textContent = health.disk ? fmtBytes(health.disk.freeBytes) : '—';
+      $('healthCheckedAt').textContent = health.checkedAt
+        ? new Date(health.checkedAt).toLocaleTimeString()
+        : '—';
+      const problems = (health.items || []).filter(item => item.status !== 'ready');
+      $('healthDetails').textContent = problems.slice(0, 3)
+        .map(item => `${item.title}: ${item.status}${item.reason ? ` (${item.reason})` : ''}`)
+        .join(' · ');
+      if (problems.length > 3) {
+        $('healthDetails').textContent += ` · +${problems.length - 3} more`;
+      }
+      if (health.disk && health.disk.lowSpace) {
+        $('healthDetails').textContent +=
+          `${$('healthDetails').textContent ? ' · ' : ''}Low disk space`;
+      }
+      $('btnRecheckMedia').disabled = healthState === 'checking';
+      $('btnRecheckMedia').textContent = healthState === 'checking' ? 'Checking...' : 'Recheck Media';
     }
 
     function renderPlayback(now, vlc) {
@@ -304,6 +371,7 @@
       $('device').textContent = state.deviceId || '—';
       $('btnAddSchedule').style.display = state.bypass ? 'inline-block' : 'none';
       $('btnManageSchedules').style.display = state.bypass ? 'inline-block' : 'none';
+      renderMediaHealth();
 
       const now = state.now;
       if (now) {
@@ -414,6 +482,16 @@
     $('btnRetry').onclick  = () => ipcRenderer.invoke('vlc-retry');
     $('btnAddSchedule').onclick = () => ipcRenderer.invoke('open-schedule-adder');
     $('btnManageSchedules').onclick = () => ipcRenderer.invoke('open-schedule-manager');
+    $('btnRecheckMedia').onclick = async () => {
+      $('btnRecheckMedia').disabled = true;
+      $('btnRecheckMedia').textContent = 'Checking...';
+      const result = await ipcRenderer.invoke('recheck-media-health');
+      if (!result || !result.ok) {
+        $('healthDetails').textContent = result && result.error || 'Media health check failed';
+        $('btnRecheckMedia').disabled = false;
+        $('btnRecheckMedia').textContent = 'Recheck Media';
+      }
+    };
     $('btnConfig').onclick = () => ipcRenderer.invoke('open-config-folder');
     $('btnLogout').onclick = () => ipcRenderer.invoke('logout');
     $('btnQuit').onclick   = () => ipcRenderer.invoke('quit');

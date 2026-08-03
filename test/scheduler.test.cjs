@@ -105,6 +105,7 @@ test('scheduler sends every playlist item to VLC in order', () => {
     ]
   });
 
+  scheduler.schedules = [active];
   scheduler._activate(active, new Date(active.startTime), 3600000);
   scheduler.clear();
 
@@ -116,4 +117,33 @@ test('scheduler sends every playlist item to VLC in order', () => {
     ],
     options: { loop: false }
   });
+});
+
+test('scheduler skips unavailable media and exposes the actual playback playlist', () => {
+  let received = null;
+  let unavailable = null;
+  const vlc = {
+    replacePlaylist(files) { received = files; },
+    playIdle() {},
+    clear() {}
+  };
+  const scheduler = new Scheduler(vlc, {
+    isMediaReady: file => !file.path.includes('missing')
+  });
+  scheduler.on('media-unavailable', event => { unavailable = event.files; });
+  const active = schedule({
+    id: 'health-filter',
+    files: [
+      { title: 'Ready', path: 'C:\\media\\ready.mp4' },
+      { title: 'Missing', path: 'C:\\media\\missing.mp4' }
+    ]
+  });
+
+  scheduler.schedules = [active];
+  scheduler._activate(active, new Date(active.startTime), 3600000);
+
+  assert.deepEqual(received, ['C:\\media\\ready.mp4']);
+  assert.deepEqual(scheduler.getNow().files.map(file => file.title), ['Ready']);
+  assert.deepEqual(unavailable.map(file => file.title), ['Missing']);
+  scheduler.clear();
 });

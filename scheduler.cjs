@@ -149,12 +149,14 @@ class Scheduler extends EventEmitter {
     this.currentStart = null;
     this.currentDuration = null;
     this.currentOccurrenceKey = null;
+    this.currentFiles = [];
     this.tickHandle = null;
     this._idlePlaying = false;
     this._reconciling = false;
     this.finishedOccurrences = new Map();
     this.manuallySkipped = new Set();
     this.tickMs = options.tickMs || MS.second;
+    this.isMediaReady = options.isMediaReady || (() => true);
     this._startTick();
   }
 
@@ -261,7 +263,16 @@ class Scheduler extends EventEmitter {
       duration,
       this._occurrenceKey(schedule, startAt.getTime())
     );
-    const files = (schedule.files || [])
+    const scheduledFiles = schedule.files || [];
+    const readyFiles = scheduledFiles.filter(file => {
+      try { return this.isMediaReady(file); } catch (_) { return false; }
+    });
+    const unavailableFiles = scheduledFiles.filter(file => !readyFiles.includes(file));
+    this.currentFiles = readyFiles;
+    if (unavailableFiles.length) {
+      this.emit('media-unavailable', { schedule, files: unavailableFiles });
+    }
+    const files = readyFiles
       .map(file => file.localPath || file.path)
       .filter(Boolean);
 
@@ -269,7 +280,7 @@ class Scheduler extends EventEmitter {
       Promise.resolve(this.vlc.replacePlaylist(files, { loop: schedule.loop !== false }))
         .catch(error => this.emit('error', error));
     } else {
-      Promise.resolve(this.vlc.clear()).catch(error => this.emit('error', error));
+      Promise.resolve(this.vlc.playIdle()).catch(error => this.emit('error', error));
       this.emit('error', new Error(`Schedule ${schedule.id} has no ready media files`));
     }
     this.emit('activate', { schedule, start: startAt, duration });
@@ -299,7 +310,7 @@ class Scheduler extends EventEmitter {
     return {
       scheduleId: schedule.id,
       title: schedule.title || schedule.id,
-      files: schedule.files || [],
+      files: this.currentFiles.slice(),
       startTime: this.currentStart ? this.currentStart.toISOString() : null,
       endMs: this.currentStart && this.currentDuration
         ? this.currentStart.getTime() + this.currentDuration
@@ -348,6 +359,7 @@ class Scheduler extends EventEmitter {
     this.currentStart = start;
     this.currentDuration = duration;
     this.currentOccurrenceKey = id && start ? occurrenceKey : null;
+    if (!id) this.currentFiles = [];
   }
 
   clearTimers() {

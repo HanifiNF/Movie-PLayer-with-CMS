@@ -36,6 +36,7 @@
       "mediaManager.cjs",
       "mediaLibrary.cjs",
       "mediaProbe.cjs",
+      "mediaHealth.cjs",
       "playbackWatchdog.cjs",
       "playbackResume.cjs",
       "config.cjs",

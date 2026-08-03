@@ -17,6 +17,7 @@ const { listManagedAssets, scanMediaLibrary } = require('./mediaLibrary.cjs');
 const { MediaProbe } = require('./mediaProbe.cjs');
 const { PlaybackWatchdog } = require('./playbackWatchdog.cjs');
 const { resolveResumeTarget } = require('./playbackResume.cjs');
+const { MediaHealthMonitor } = require('./mediaHealth.cjs');
 const CFG = require('./config.cjs');
 
 if (process.env.PLAYER_USER_DATA) {
@@ -48,6 +49,9 @@ let mediaProbe = null;
 let playbackWatchdog = null;
 let playbackCheckpoint = null;
 let lastResumeInfo = null;
+let mediaHealthMonitor = null;
+let mediaHealthSnapshot = null;
+let mediaHealthCheck = null;
 let syncQueue = Promise.resolve();
 
 function readJson(file, fallback) {
@@ -371,9 +375,56 @@ function getRuntimeStatus() {
 
 function isVlcPlaybackHealthy() {
   if (!vlc || !vlc.ready || vlc.state === 'error') return false;
-  const playbackExpected = Boolean(scheduler && scheduler.getNow());
+  const active = scheduler && scheduler.getNow();
+  const playbackExpected = Boolean(active && active.files && active.files.length);
   if (!playbackExpected) return true;
   return !vlc.idleMode && (vlc.state === 'playing' || vlc.state === 'paused');
+}
+
+async function refreshMediaHealth(schedules, assets, options = {}) {
+  if (!mediaHealthMonitor) return null;
+  if (mediaHealthCheck) {
+    if (!options.force) return mediaHealthCheck;
+    await mediaHealthCheck;
+  }
+  mediaHealthSnapshot = {
+    ...mediaHealthMonitor.getSnapshot(),
+    state: 'checking'
+  };
+  pushDashboard();
+  mediaHealthCheck = mediaHealthMonitor.scan(schedules || [], assets || [])
+    .then(snapshot => {
+      mediaHealthSnapshot = snapshot;
+      const problemCount = snapshot.counts.missing + snapshot.counts.corrupt + snapshot.counts.unreadable;
+      appendVlcLog(
+        `[media-health] ready=${snapshot.counts.ready} problems=${problemCount} ` +
+        `free=${snapshot.disk.freeBytes == null ? 'unknown' : snapshot.disk.freeBytes}`
+      );
+      pushDashboard();
+      return snapshot;
+    })
+    .catch(error => {
+      appendVlcLog(`[media-health] scan failed: ${error.message}`);
+      mediaHealthSnapshot = {
+        ...mediaHealthMonitor.getSnapshot(),
+        state: 'error',
+        error: error.message || String(error)
+      };
+      pushDashboard();
+      return mediaHealthSnapshot;
+    })
+    .finally(() => { mediaHealthCheck = null; });
+  return mediaHealthCheck;
+}
+
+function getCachedAssets() {
+  try {
+    return normalizeSyncPayload(
+      readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] })
+    ).assets;
+  } catch (_) {
+    return [];
+  }
 }
 
 async function waitForVlcRecovery(timeoutMs = 10000) {
@@ -405,7 +456,8 @@ function pushDashboard() {
       playback: vlc ? vlc.getPlaybackStatus() : null
     },
     watchdog: playbackWatchdog ? playbackWatchdog.getStatus() : { state: 'idle', attempts: 0 },
-    recoveryResume: lastResumeInfo
+    recoveryResume: lastResumeInfo,
+    mediaHealth: mediaHealthSnapshot
   };
   try {
     dashboardWin.webContents.send('dashboard:update', payload);
@@ -533,6 +585,27 @@ ipcMain.handle('open-config-folder', async () => {
   return { ok: true };
 });
 
+ipcMain.handle('recheck-media-health', async () => {
+  if (!mediaManager || !mediaHealthMonitor) {
+    return { ok: false, error: 'Media health monitor is not initialized' };
+  }
+  try {
+    const cache = normalizeSyncPayload(
+      readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] })
+    );
+    const activeId = scheduler && scheduler.getNow() && scheduler.getNow().scheduleId;
+    const prepared = await mediaManager.prepareSchedules(cache.schedules, cache.assets);
+    const snapshot = await refreshMediaHealth(prepared, cache.assets, { force: true });
+    if (scheduler) {
+      scheduler.update(prepared);
+      if (activeId) scheduler.reactivate(activeId);
+    }
+    return { ok: true, mediaHealth: snapshot };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
 ipcMain.handle('open-schedule-adder', async (_event, scheduleId) => {
   if (!cfg || !cfg.bypass) return { ok: false, error: 'Only available in Test Mode' };
   createScheduleAdderWindow(String(scheduleId || ''));
@@ -560,6 +633,7 @@ function persistTestSchedules(cache, schedules) {
     mock: true
   });
   if (scheduler) scheduler.update(schedules);
+  refreshMediaHealth(schedules, cache.assets).catch(() => {});
   pushDashboard();
 }
 
@@ -951,6 +1025,7 @@ ipcMain.handle('add-test-schedule', async (_e, payload) => {
       assets: cache.assets,
       mock: true
     });
+    await refreshMediaHealth(schedules, cache.assets, { force: true });
     if (scheduler) {
       scheduler.update(schedules);
       if (existing) scheduler.reactivate(existing.id);
@@ -976,6 +1051,9 @@ async function startRuntime() {
   if (!cfg || !cfg.token) return;
   playbackCheckpoint = null;
   lastResumeInfo = null;
+  mediaHealthMonitor = null;
+  mediaHealthSnapshot = null;
+  mediaHealthCheck = null;
   if (playbackWatchdog) playbackWatchdog.stop();
   playbackWatchdog = null;
   if (vlc) vlc.quit();
@@ -983,6 +1061,8 @@ async function startRuntime() {
     mediaDir: path.join(DATA_DIR, 'media'),
     concurrency: 2
   });
+  mediaHealthMonitor = new MediaHealthMonitor({ storagePath: mediaManager.mediaDir });
+  mediaHealthSnapshot = mediaHealthMonitor.getSnapshot();
   mediaProbe = new MediaProbe({ cachePath: DURATION_CACHE_PATH });
   mediaManager.on('download-start', ({ asset }) => {
     appendVlcLog(`[media] downloading ${asset.id}`);
@@ -1043,7 +1123,9 @@ async function startRuntime() {
     if (vlc.state === 'error') setStatus('vlc-error');
     pushDashboard();
   });
-  scheduler = new Scheduler(vlc);
+  scheduler = new Scheduler(vlc, {
+    isMediaReady: file => mediaHealthMonitor.isReady(file)
+  });
   scheduler.on('activate', (info) => {
     nowSchedule = info.schedule;
     const active = scheduler.getNow();
@@ -1078,13 +1160,22 @@ async function startRuntime() {
     appendVlcLog(`[scheduler] ${error.message}`);
     console.error('Scheduler error', error);
   });
+  scheduler.on('media-unavailable', ({ schedule, files }) => {
+    const titles = files.map(file => file.title || file.path || file.assetId).join(', ');
+    appendVlcLog(`[media-health] schedule ${schedule.id} skipped unavailable media: ${titles}`);
+    refreshMediaHealth(scheduler.schedules, getCachedAssets()).catch(() => {});
+    pushDashboard();
+  });
 
   playbackWatchdog = new PlaybackWatchdog({
     intervalMs: 3000,
     failureThreshold: 2,
     maxAttempts: 5,
     backoffMs: [0, 2000, 5000, 15000, 30000],
-    isPlaybackExpected: () => Boolean(scheduler && scheduler.getNow()),
+    isPlaybackExpected: () => {
+      const active = scheduler && scheduler.getNow();
+      return Boolean(active && active.files && active.files.length);
+    },
     isHealthy: () => isVlcPlaybackHealthy(),
     recover: async ({ attempt, maxAttempts }) => {
       appendVlcLog(`[watchdog] recovery attempt ${attempt}/${maxAttempts}`);
@@ -1150,9 +1241,11 @@ async function startRuntime() {
       normalizedCache.schedules,
       normalizedCache.assets
     );
+    await refreshMediaHealth(prepared, normalizedCache.assets, { force: true });
     scheduler.update(prepared);
   } catch (error) {
     appendVlcLog(`[cache] invalid: ${error.message}`);
+    await refreshMediaHealth([], [], { force: true });
     scheduler.update([]);
   }
 
@@ -1186,6 +1279,7 @@ async function applySyncPayload(payload, mode = 'replace') {
     schedules: prepared,
     assets
   });
+  await refreshMediaHealth(prepared, assets, { force: true });
   scheduler.update(prepared);
   pushDashboard();
   return { applied: true, revision };
@@ -1204,6 +1298,7 @@ async function applyClearPayload(payload) {
     schedules: prepared,
     assets: current.assets
   });
+  await refreshMediaHealth(prepared, current.assets, { force: true });
   scheduler.update(prepared);
   pushDashboard();
   return { applied: true, revision };
