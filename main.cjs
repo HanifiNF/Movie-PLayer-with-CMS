@@ -395,7 +395,12 @@ function pushDashboard() {
     now,
     upcoming,
     skipped,
-    vlc: { state: vlc ? vlc.state : 'idle', rcReady: vlc ? vlc.ready : false, idleMode: vlc ? vlc.idleMode : false },
+    vlc: {
+      state: vlc ? vlc.state : 'idle',
+      rcReady: vlc ? vlc.ready : false,
+      idleMode: vlc ? vlc.idleMode : false,
+      playback: vlc ? vlc.getPlaybackStatus() : null
+    },
     watchdog: playbackWatchdog ? playbackWatchdog.getStatus() : { state: 'idle', attempts: 0 }
   };
   try {
@@ -1002,6 +1007,7 @@ async function startRuntime() {
   vlc.on('vlc-log', (line) => {
     appendVlcLog(line);
   });
+  vlc.on('playback-progress', () => pushDashboard());
   vlc.on('exit', (code) => {
     appendVlcLog(`[VLC exit] code=${code} at ${new Date().toISOString()}`);
     if (!isShuttingDown) {

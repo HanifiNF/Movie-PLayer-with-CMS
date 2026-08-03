@@ -35,10 +35,19 @@ class VlcController extends EventEmitter {
     this.state = 'idle';
     this.idleMode = false;
     this.transitionDuration = options.transitionDuration || 0;
+    this.pollIntervalMs = Math.max(250, Number(options.pollIntervalMs) || 1000);
     this.onTransitionStart = options.onTransitionStart || null;
     this.onTransitionEnd = options.onTransitionEnd || null;
     this._pollHandle = null;
     this._buffer = '';
+    this._pendingMetricResponses = [];
+    this.playback = {
+      currentPath: null,
+      currentIndex: -1,
+      positionSeconds: 0,
+      lengthSeconds: 0,
+      updatedAt: null
+    };
     this.display = options.display || null;
   }
 
@@ -55,6 +64,39 @@ class VlcController extends EventEmitter {
     if (this.rc && !this.rc.destroyed) { this.rc.destroy(); this.rc = null; }
     this.currentPlaylist = [];
     this.idleMode = false;
+    this._pendingMetricResponses = [];
+    this._resetPlaybackProgress();
+  }
+
+  _resetPlaybackProgress(currentPath = null, currentIndex = -1) {
+    this.playback = {
+      currentPath,
+      currentIndex,
+      positionSeconds: 0,
+      lengthSeconds: 0,
+      updatedAt: new Date().toISOString()
+    };
+    this.emit('playback-progress', this.getPlaybackStatus());
+  }
+
+  getPlaybackStatus() {
+    return { ...this.playback };
+  }
+
+  _emitPlaybackProgress() {
+    this.playback.updatedAt = new Date().toISOString();
+    this.emit('playback-progress', this.getPlaybackStatus());
+  }
+
+  _setCurrentInput(mrl) {
+    const normalizedMrl = String(mrl || '').trim();
+    const index = this.currentPlaylist.findIndex(file => (
+      this._toMrl(file).toLowerCase() === normalizedMrl.toLowerCase()
+    ));
+    const currentPath = index >= 0 ? this.currentPlaylist[index] : normalizedMrl;
+    if (index !== this.playback.currentIndex || currentPath !== this.playback.currentPath) {
+      this._resetPlaybackProgress(currentPath, index);
+    }
   }
 
   _toMrl(p) {
@@ -85,6 +127,23 @@ class VlcController extends EventEmitter {
       const t = line.trim();
       if (!t) continue;
       this.emit('rc-data', line);
+
+      const inputMatch = t.match(/new input\s*:\s*(.+?)\s*\)?$/i);
+      if (inputMatch) {
+        this._setCurrentInput(inputMatch[1]);
+        continue;
+      }
+
+      const numericMatch = t.match(/^>?\s*(-?\d+)\s*$/);
+      if (numericMatch && this._pendingMetricResponses.length) {
+        const metric = this._pendingMetricResponses.shift();
+        const value = Math.max(0, Number(numericMatch[1]) || 0);
+        if (metric === 'positionSeconds') this.playback.positionSeconds = value;
+        if (metric === 'lengthSeconds') this.playback.lengthSeconds = value;
+        this._emitPlaybackProgress();
+        continue;
+      }
+
       let raw = null;
       // console RC: "state: playing" or "| state: playing"
       let m = t.match(/(?:^\|\s*)?state\s*:\s*([a-zA-Z_]+)/i);
@@ -236,8 +295,16 @@ class VlcController extends EventEmitter {
 
   _startPoll() {
     if (this._pollHandle) clearInterval(this._pollHandle);
-    this._pollHandle = setInterval(() => { this.send('status'); }, 2000);
+    this._pollPlayback();
+    this._pollHandle = setInterval(() => this._pollPlayback(), this.pollIntervalMs);
     if (this._pollHandle.unref) this._pollHandle.unref();
+  }
+
+  _pollPlayback() {
+    this.send('status');
+    this._pendingMetricResponses = ['positionSeconds', 'lengthSeconds'];
+    this.send('get_time');
+    this.send('get_length');
   }
 
   _stopPoll() {
@@ -247,6 +314,7 @@ class VlcController extends EventEmitter {
   async replacePlaylist(filePaths, options = {}) {
     if (!Array.isArray(filePaths)) filePaths = [];
     this.currentPlaylist = filePaths.slice();
+    this._resetPlaybackProgress(filePaths[0] || null, filePaths.length ? 0 : -1);
     this.idleMode = !!options.idle;
     const shouldLoop = options.loop !== false;
 
@@ -291,6 +359,8 @@ class VlcController extends EventEmitter {
   async clear() {
     this.currentPlaylist = [];
     this.idleMode = false;
+    this._pendingMetricResponses = [];
+    this._resetPlaybackProgress();
     this.send('stop');
     await sleep(100);
     this.send('clear');

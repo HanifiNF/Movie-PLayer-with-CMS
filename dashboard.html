@@ -50,6 +50,21 @@
     .now .countdown { font-size: 14px; color: #38bdf8; font-variant-numeric: tabular-nums; }
     .now .actions { display: flex; gap: 8px; }
     .now .empty { color: #64748b; font-style: italic; }
+    .playback-details { margin-top: 14px; padding: 12px; background: #0f172a; border-radius: 9px; }
+    .playback-details.hidden { display: none; }
+    .playback-head, .playback-time {
+      display: flex; justify-content: space-between; gap: 12px; align-items: center;
+      font-size: 12px;
+    }
+    .playback-head strong { color: #e2e8f0; font-size: 14px; }
+    .playback-position { color: #38bdf8; white-space: nowrap; }
+    .progress-track {
+      height: 7px; margin: 9px 0 7px; overflow: hidden;
+      background: #1e293b; border-radius: 999px;
+    }
+    .progress-fill { height: 100%; width: 0; background: #38bdf8; transition: width .35s linear; }
+    .playback-time { color: #94a3b8; font-variant-numeric: tabular-nums; }
+    .playback-next { margin-top: 7px; color: #64748b; font-size: 11px; }
 
     .grid2 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; min-height: 0; }
     .panel { background: #111c33; border: 1px solid #1e293b; border-radius: 12px; padding: 16px 20px; overflow: auto; }
@@ -122,6 +137,18 @@
         <h2>Now Playing</h2>
         <div id="nowTitle" class="title empty">No active schedule</div>
         <div id="nowFile" class="file"></div>
+        <div id="playbackDetails" class="playback-details hidden">
+          <div class="playback-head">
+            <strong id="currentMedia">—</strong>
+            <span id="playlistPosition" class="playback-position"></span>
+          </div>
+          <div class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
+          <div class="playback-time">
+            <span id="playbackElapsed">00:00</span>
+            <span id="playbackDuration">00:00</span>
+          </div>
+          <div id="nextMedia" class="playback-next"></div>
+        </div>
         <div class="row">
           <div id="nowCountdown" class="countdown"></div>
           <div class="actions">
@@ -222,6 +249,54 @@
       render();
     });
 
+    function fmtPlaybackTime(seconds) {
+      const total = Math.max(0, Math.floor(Number(seconds) || 0));
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const secs = total % 60;
+      const pad = value => String(value).padStart(2, '0');
+      return hours > 0
+        ? `${pad(hours)}:${pad(minutes)}:${pad(secs)}`
+        : `${pad(minutes)}:${pad(secs)}`;
+    }
+
+    function renderPlayback(now, vlc) {
+      const details = $('playbackDetails');
+      const files = now && Array.isArray(now.files) ? now.files : [];
+      const playback = vlc && vlc.playback ? vlc.playback : {};
+      let index = Number.isInteger(playback.currentIndex) ? playback.currentIndex : -1;
+      if (index < 0 && playback.currentPath) {
+        index = files.findIndex(file => (
+          String(file.localPath || file.path || '').toLowerCase() ===
+          String(playback.currentPath).toLowerCase()
+        ));
+      }
+      if (!now || index < 0 || !files[index] || vlc.idleMode) {
+        details.classList.add('hidden');
+        $('progressFill').style.width = '0%';
+        return;
+      }
+
+      const current = files[index];
+      const position = Math.max(0, Number(playback.positionSeconds) || 0);
+      const length = Math.max(0, Number(playback.lengthSeconds) || 0);
+      const percentage = length > 0 ? Math.min(100, (position / length) * 100) : 0;
+      const nextIndex = index + 1 < files.length
+        ? index + 1
+        : (now.loop !== false && files.length > 1 ? 0 : -1);
+      const next = nextIndex >= 0 ? files[nextIndex] : null;
+
+      $('currentMedia').textContent = current.title || current.path || current.assetId || 'Current media';
+      $('playlistPosition').textContent = `${index + 1} of ${files.length}`;
+      $('progressFill').style.width = `${percentage}%`;
+      $('playbackElapsed').textContent = fmtPlaybackTime(position);
+      $('playbackDuration').textContent = length > 0 ? fmtPlaybackTime(length) : 'Detecting duration...';
+      $('nextMedia').textContent = next
+        ? `Next: ${next.title || next.path || next.assetId}`
+        : 'Last item in playlist';
+      details.classList.remove('hidden');
+    }
+
     function render() {
       $('badge').className = badgeClass(state.status);
       $('badge').textContent = badgeLabel(state.status);
@@ -247,6 +322,7 @@
       }
 
       const vlc = state.vlc || {};
+      renderPlayback(now, vlc);
       const vlcEl = $('vlcState');
       const displayState = (vlc.state === 'playing' && vlc.idleMode) ? 'idle' : (vlc.state || 'idle');
       vlcEl.className = 'vlc-state ' + displayState;
