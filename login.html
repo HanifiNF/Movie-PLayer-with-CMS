@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Player — Login</title>
+  <title>Player — Pairing</title>
   <style>
     :root {
       --canvas: #f5f3f0;
@@ -97,17 +97,17 @@
     </div>
 
     <div class="welcome">
-      <h2>Welcome back</h2>
-      <p class="subtitle">Sign in with your CMS operator account to connect this player.</p>
+      <h2>Connect this player</h2>
+      <p class="subtitle">Enter the CMS address and one-time enrollment code created by the operator.</p>
     </div>
 
-    <label for="username">Username</label>
-    <input id="username" name="username" type="text" placeholder="Enter your username" required autocomplete="username" autofocus />
+    <label for="serverURL">CMS Server URL</label>
+    <input id="serverURL" name="serverURL" type="url" placeholder="http://192.168.1.10:8080" required autocomplete="url" autofocus />
 
-    <label for="password">Password</label>
-    <input id="password" name="password" type="password" placeholder="••••••••" required autocomplete="current-password" />
+    <label for="enrollmentCode">Enrollment code</label>
+    <input id="enrollmentCode" name="enrollmentCode" type="text" placeholder="ABCD-2345" required maxlength="9" autocomplete="one-time-code" spellcheck="false" />
 
-    <button type="submit" id="btn">Login</button>
+    <button type="submit" id="btn">Pair Player</button>
 
     <div class="divider">Local testing</div>
     <button type="button" id="btnTest" class="btn-secondary">Test Mode (skip login)</button>
@@ -126,7 +126,7 @@
     function setBusy(busy) {
       btn.disabled = busy;
       btnTest.disabled = busy;
-      btn.textContent = busy ? 'Connecting...' : 'Login';
+      btn.textContent = busy ? 'Pairing...' : 'Pair Player';
       btnTest.textContent = busy ? 'Starting...' : 'Test Mode (skip login)';
     }
 
@@ -136,14 +136,27 @@
       setBusy(true);
       const payload = Object.fromEntries(new FormData(form));
       try {
-        const result = await ipcRenderer.invoke('login', payload);
-        if (!result || !result.ok) throw new Error(result && result.error || 'Login failed');
+        const result = await ipcRenderer.invoke('pair-player', payload);
+        if (!result || !result.ok) throw new Error(result && result.error || 'Pairing failed');
       } catch (error) {
         errEl.textContent = error.message || String(error);
         errEl.classList.add('show');
         setBusy(false);
       }
     };
+
+    document.getElementById('enrollmentCode').addEventListener('input', event => {
+      const normalized = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+      event.target.value = normalized.length > 4
+        ? `${normalized.slice(0, 4)}-${normalized.slice(4)}`
+        : normalized;
+    });
+
+    ipcRenderer.invoke('get-pairing-defaults').then(defaults => {
+      if (defaults && defaults.serverURL && !document.getElementById('serverURL').value) {
+        document.getElementById('serverURL').value = defaults.serverURL;
+      }
+    }).catch(() => {});
 
     btnTest.onclick = async () => {
       errEl.classList.remove('show');

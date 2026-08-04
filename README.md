@@ -6,7 +6,9 @@ Socket.IO from the CMS and plays local media files fullscreen through VLC.
 ## Features
 
 - One-click install (NSIS) or portable `.exe`
-- Login with `username + password`; server returns token + deviceId
+- One-time enrollment-code pairing with the CMS
+- Encrypted player token storage through Electron `safeStorage`
+- Ten-second CMS heartbeat with bounded reconnect backoff
 - Single persistent VLC instance, fullscreen, playlist swap without restart
 - Supports recurring schedules (daily / weekly) and one-shot
 - Deterministic overlap handling with schedule priority
@@ -35,27 +37,30 @@ player/
 
 ## CMS contract
 
-### Login
+### Pairing
 
-`POST {serverURL}/api/player/login`
+`POST {serverURL}/api/player/register`
 
 Request:
 ```json
-{ "username": "...", "password": "..." }
+{
+  "enrollment_code": "ABCD-2345",
+  "device_fingerprint": "stable-install-uuid",
+  "app_version": "1.1.0",
+  "platform": "win32-x64",
+  "timezone": "Asia/Jakarta"
+}
 ```
 
 Response (200):
 ```json
-{
-  "token": "<jwt>",
-  "deviceId": "dev-abc-123",
-  "user": { "username": "...", "name": "..." }
-}
+{ "data": { "token": "<token>", "device_id": "<uuid>", "device_name": "Lobby Player" } }
 ```
 
-The CMS should auto-create / pair a `deviceId` for the player on first login
-and return it. Subsequent logins for the same `(username, hostname)` pair
-should return the same `deviceId`.
+The player stores a stable installation UUID separately from pairing state. Its
+token is encrypted at rest and sent as a Bearer token to
+`POST /api/player/heartbeat` every ten seconds. Reset Pairing first calls
+`POST /api/player/unregister`, then removes local credentials.
 
 ### Socket
 
@@ -165,7 +170,7 @@ current time while retaining its duration, media, recurrence, and priority.
    The output installer is in `dist/`.
 
 4. Distribute the NSIS installer to each player PC. End users only need
-   to run the installer and log in with their CMS username/password.
+   to run the installer, enter the CMS URL, and submit an enrollment code.
 
 ## Development run
 
@@ -184,6 +189,6 @@ both locations.
 - `VLC`'s `--key-quit` and `--key-fullscreen` are unbound so the operator
   cannot accidentally close VLC with the keyboard. The player manages VLC
   through the RC interface on `127.0.0.1:4212` exclusively.
-- Logout removes the cached config + schedules and relaunches the app
-  (so the login window appears again).
+- Reset Pairing revokes the CMS token, removes cached config + schedules, and
+  returns to the pairing window. The installation UUID is preserved.
 - Quit closes VLC and exits the app.

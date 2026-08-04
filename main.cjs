@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, shell, screen, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, shell, screen, dialog, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -18,6 +18,8 @@ const { MediaProbe } = require('./mediaProbe.cjs');
 const { PlaybackWatchdog } = require('./playbackWatchdog.cjs');
 const { resolveResumeTarget } = require('./playbackResume.cjs');
 const { MediaHealthMonitor } = require('./mediaHealth.cjs');
+const { CmsClient, CmsApiError, normalizeServerUrl } = require('./cmsClient.cjs');
+const { DeviceCredentials } = require('./deviceCredentials.cjs');
 const CFG = require('./config.cjs');
 
 if (process.env.PLAYER_USER_DATA) {
@@ -25,6 +27,7 @@ if (process.env.PLAYER_USER_DATA) {
 }
 const DATA_DIR = app.getPath('userData');
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
+const INSTALLATION_PATH = path.join(DATA_DIR, 'installation.json');
 const CACHE_PATH = path.join(DATA_DIR, 'schedules.json');
 const DURATION_CACHE_PATH = path.join(DATA_DIR, 'media-durations.json');
 
@@ -34,6 +37,8 @@ let dashboardWin = null;
 let scheduleAdderWin = null;
 let scheduleManagerWin = null;
 let socket = null;
+let cmsClient = null;
+let cmsState = { status: 'offline', lastHeartbeatAt: null, lastError: null };
 let vlc = null;
 let scheduler = null;
 let cfg = null;
@@ -53,6 +58,11 @@ let mediaHealthMonitor = null;
 let mediaHealthSnapshot = null;
 let mediaHealthCheck = null;
 let syncQueue = Promise.resolve();
+const credentialStore = new DeviceCredentials({
+  configPath: CONFIG_PATH,
+  installationPath: INSTALLATION_PATH,
+  safeStorage
+});
 
 function readJson(file, fallback) {
   try {
@@ -92,8 +102,8 @@ function resetTestCachePreservingAssets() {
 function saveConfig(c, persist = true) {
   cfg = c;
   if (!persist) return;
-  if (c) writeJson(CONFIG_PATH, c);
-  else if (fs.existsSync(CONFIG_PATH)) fs.unlinkSync(CONFIG_PATH);
+  if (c) credentialStore.save(c);
+  else credentialStore.clear();
 }
 
 function makeFallbackIcon() {
@@ -132,7 +142,13 @@ function buildTrayMenu() {
   }
   items.push({ type: 'separator' });
   items.push({ label: 'Show Dashboard', click: () => showDashboard() });
-  items.push({ label: 'Reconnect', click: () => { if (socket) socket.connect(); } });
+  items.push({
+    label: 'Reconnect CMS',
+    click: () => {
+      if (cfg && !cfg.bypass) startCmsConnection();
+      if (CFG.SOCKET_ENABLED && socket) socket.connect();
+    }
+  });
   items.push({
     label: 'Retry VLC',
     click: async () => {
@@ -371,7 +387,7 @@ function appendVlcLog(line) {
 
 function getRuntimeStatus() {
   if (cfg && cfg.bypass) return 'test-mode (no server)';
-  return socket && socket.connected ? 'online' : 'offline';
+  return cmsState.status || 'offline';
 }
 
 function isVlcPlaybackHealthy() {
@@ -448,6 +464,8 @@ function pushDashboard() {
     deviceId: cfg && cfg.deviceId || '',
     appVersion: app.getVersion(),
     bypass: !!(cfg && cfg.bypass),
+    serverURL: cfg && cfg.serverURL || '',
+    cms: { ...cmsState },
     now,
     upcoming,
     skipped,
@@ -475,31 +493,37 @@ function startBroadcastLoop() {
   pushDashboard();
 }
 
-async function performLogin({ username, password }) {
-  const url = CFG.SERVER_URL.replace(/\/+$/, '');
-  const r = await fetch(url + '/api/player/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password })
+async function performPairing({ serverURL, enrollmentCode }) {
+  const url = normalizeServerUrl(serverURL || CFG.SERVER_URL);
+  const installId = credentialStore.getInstallId();
+  const client = new CmsClient({ serverURL: url });
+  const data = await client.register({
+    enrollment_code: String(enrollmentCode || '').trim(),
+    device_fingerprint: installId,
+    app_version: app.getVersion(),
+    platform: `${process.platform}-${process.arch}`,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Jakarta'
   });
-  if (!r.ok) {
-    const text = await r.text().catch(() => '');
-    throw new Error('Login failed (' + r.status + '): ' + (text || r.statusText));
+  if (!data || !data.token || !data.device_id) {
+    throw new Error('CMS registration response is incomplete');
   }
-  const data = await r.json();
-  if (!data || !data.token) throw new Error('Server response missing token');
-  return { url, data };
+  return { url, data, installId };
 }
 
-ipcMain.handle('login', async (_e, payload) => {
+ipcMain.handle('get-pairing-defaults', async () => ({
+  serverURL: CFG.SERVER_URL,
+  appVersion: app.getVersion()
+}));
+
+ipcMain.handle('pair-player', async (_e, payload) => {
   try {
-    const { url, data } = await performLogin(payload);
+    const { url, data, installId } = await performPairing(payload || {});
     const next = {
       serverURL: url,
-      username: payload.username,
-      deviceId: data.deviceId || ('dev-' + os.hostname()),
+      installId,
+      deviceId: data.device_id,
+      deviceName: data.device_name || os.hostname(),
       token: data.token,
-      user: data.user || { username: payload.username },
       bypass: false
     };
     saveConfig(next);
@@ -1069,6 +1093,30 @@ ipcMain.handle('logout', async () => {
   return { ok: true };
 });
 
+ipcMain.handle('reset-pairing', async () => {
+  if (!cfg || cfg.bypass) {
+    logout();
+    return { ok: true };
+  }
+  try {
+    const client = new CmsClient({ serverURL: cfg.serverURL });
+    await client.unregister(cfg.token);
+    logout();
+    return { ok: true };
+  } catch (error) {
+    if (error instanceof CmsApiError && error.status === 401) {
+      // The CMS already considers this token invalid, so keeping it locally
+      // cannot recover the pairing. Clearing it lets the operator pair again.
+      logout();
+      return { ok: true };
+    }
+    return {
+      ok: false,
+      error: `CMS could not revoke this pairing. Local credentials were kept: ${error.message || error}`
+    };
+  }
+});
+
 ipcMain.handle('quit', async () => {
   quitApp();
   return { ok: true };
@@ -1279,8 +1327,54 @@ async function startRuntime() {
   app.setLoginItemSettings({ openAtLogin: true, path: process.execPath });
 
   playbackWatchdog.start();
-  connectSocket();
+  startCmsConnection();
+  if (CFG.SOCKET_ENABLED) connectSocket();
   refreshTray();
+}
+
+function stopCmsConnection() {
+  if (cmsClient) cmsClient.stop();
+  cmsClient = null;
+}
+
+function startCmsConnection() {
+  stopCmsConnection();
+  if (!cfg || cfg.bypass) {
+    cmsState = { status: 'test-mode (no server)', lastHeartbeatAt: null, lastError: null };
+    setStatus(cmsState.status);
+    return;
+  }
+
+  cmsClient = new CmsClient({
+    serverURL: cfg.serverURL,
+    heartbeatIntervalMs: CFG.HEARTBEAT_INTERVAL_MS
+  });
+  cmsState = { status: 'connecting', lastHeartbeatAt: null, lastError: null };
+  cmsClient.on('status', status => {
+    cmsState.status = status;
+    setStatus(status);
+  });
+  cmsClient.on('heartbeat', data => {
+    cmsState.lastHeartbeatAt = new Date().toISOString();
+    cmsState.lastError = null;
+    if (data && data.device_id) cfg.deviceId = data.device_id;
+    pushDashboard();
+  });
+  cmsClient.on('connection-error', error => {
+    cmsState.lastError = error.message || String(error);
+    appendVlcLog(`[cms] ${cmsState.lastError}`);
+    pushDashboard();
+  });
+  cmsClient.on('authentication-error', error => {
+    cmsState.lastError = error.message || String(error);
+    appendVlcLog(`[cms] authentication failed: ${cmsState.lastError}`);
+    pushDashboard();
+  });
+  cmsClient.start(cfg.token, {
+    app_version: app.getVersion(),
+    platform: `${process.platform}-${process.arch}`,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Jakarta'
+  });
 }
 
 async function applySyncPayload(payload, mode = 'replace') {
@@ -1429,6 +1523,7 @@ function logout() {
   const wasBypass = Boolean(cfg && cfg.bypass);
   try { if (socket) socket.disconnect(); } catch (_) {}
   socket = null;
+  stopCmsConnection();
   if (broadcastHandle) { clearInterval(broadcastHandle); broadcastHandle = null; }
   if (playbackWatchdog) { playbackWatchdog.stop(); playbackWatchdog = null; }
   if (scheduler) { scheduler.clear(); scheduler = null; }
@@ -1448,6 +1543,7 @@ function logout() {
 function quitApp() {
   isShuttingDown = true;
   try { if (socket) socket.disconnect(); } catch (_) {}
+  stopCmsConnection();
   if (broadcastHandle) { clearInterval(broadcastHandle); broadcastHandle = null; }
   if (playbackWatchdog) { playbackWatchdog.stop(); playbackWatchdog = null; }
   if (scheduler) scheduler.clear();
@@ -1466,7 +1562,13 @@ app.on('ready', () => {
   } else {
     secondDisplay = displays[0];
   }
-  cfg = readJson(CONFIG_PATH, null);
+  try {
+    cfg = credentialStore.load();
+  } catch (error) {
+    console.error('Credential load failed', error);
+    cfg = null;
+    dialog.showErrorBox('Player credentials unavailable', error.message || String(error));
+  }
   if (cfg && cfg.bypass) {
     try { fs.unlinkSync(CONFIG_PATH); } catch (_) {}
     cfg = null;
@@ -1498,6 +1600,7 @@ app.on('window-all-closed', (e) => {
 app.on('before-quit', () => {
   isShuttingDown = true;
   try { if (socket) socket.disconnect(); } catch (_) {}
+  stopCmsConnection();
   if (playbackWatchdog) { playbackWatchdog.stop(); playbackWatchdog = null; }
   if (scheduler) scheduler.clear();
   if (vlc) vlc.quit();
@@ -1507,6 +1610,7 @@ app.on('before-quit', () => {
 app.on('will-quit', () => {
   isShuttingDown = true;
   try { if (socket) socket.disconnect(); } catch (_) {}
+  stopCmsConnection();
   if (playbackWatchdog) { playbackWatchdog.stop(); playbackWatchdog = null; }
   if (scheduler) scheduler.clear();
   if (vlc) vlc.quit();

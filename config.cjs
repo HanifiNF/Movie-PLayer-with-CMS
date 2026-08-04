@@ -4,8 +4,15 @@ const path = require('path');
 
 // Centralized configuration - edit values here, not in the login form.
 module.exports = {
-  // CMS server URL. Hardcoded; the login form no longer asks for it.
-  SERVER_URL: 'http://localhost:3000',
+  // Default CMS URL shown on the pairing screen. Operators may replace it
+  // with the LAN address of the CMS computer.
+  SERVER_URL: 'http://localhost:8080',
+
+  HEARTBEAT_INTERVAL_MS: 10000,
+
+  // The Socket.IO gateway is a later CMS phase. REST pairing and heartbeat
+  // remain active while this is disabled.
+  SOCKET_ENABLED: false,
 
   // VLC RC interface settings (used by vlcController.cjs).
   VLC_RC_PORT: 4212,

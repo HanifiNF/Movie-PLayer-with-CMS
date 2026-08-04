@@ -119,8 +119,8 @@
 
     .badge { display: inline-flex; align-items: center; padding: 5px 9px; border-radius: 999px; font-size: 10px; font-weight: 750; letter-spacing: .45px; text-transform: uppercase; }
     .badge.online { background: #e3f5ec; color: var(--green); }
-    .badge.offline, .badge.vlc-error { background: #fbe5e4; color: var(--red-dark); }
-    .badge.connecting { background: #f6ecd9; color: var(--amber); }
+    .badge.offline, .badge.vlc-error, .badge.authentication-error { background: #fbe5e4; color: var(--red-dark); }
+    .badge.connecting, .badge.reconnecting { background: #f6ecd9; color: var(--amber); }
     .badge.test-mode { background: var(--red-soft); color: var(--red-dark); }
     .badge.vlc-recovering { background: #f6ecd9; color: var(--amber); }
     .vlc-state { display: inline-flex; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; }
@@ -234,7 +234,7 @@
         </div>
         <div class="sidebar-actions">
           <button id="btnConfig" class="btn icon-btn" data-tooltip="Open Config" aria-label="Open config folder"><svg viewBox="0 0 24 24"><path d="M4 4h6l2 2h8v13H4z"/></svg></button>
-          <button id="btnLogout" class="btn icon-btn danger" data-tooltip="Logout" aria-label="Logout"><svg viewBox="0 0 24 24"><path d="M10 5H4v14h6M14 8l4 4-4 4M8 12h10"/></svg></button>
+          <button id="btnLogout" class="btn icon-btn danger" data-tooltip="Reset Pairing" aria-label="Reset pairing"><svg viewBox="0 0 24 24"><path d="M10 5H4v14h6M14 8l4 4-4 4M8 12h10"/></svg></button>
           <button id="btnQuit" class="btn icon-btn danger" data-tooltip="Quit Player" aria-label="Quit player"><svg viewBox="0 0 24 24"><path d="M12 3v9M6.5 6.5a8 8 0 1 0 11 0"/></svg></button>
         </div>
       </div>
@@ -313,9 +313,9 @@
           <div class="page-heading"><div><h2>About Player</h2><p>Application and device information.</p></div></div>
           <div class="about-grid">
             <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></svg></div><h3>Player application</h3><p>Realtime desktop media player for scheduled VLC playback.<br />Version <strong id="aboutVersion">1.0.0</strong></p></article>
-            <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h5"/></svg></div><h3>Registered device</h3><p>Device ID: <strong id="aboutDevice">—</strong><br />Mode: <strong id="aboutMode">Offline</strong></p></article>
+            <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h5"/></svg></div><h3>Registered device</h3><p>Device ID: <strong id="aboutDevice">—</strong><br />Mode: <strong id="aboutMode">Offline</strong><br />Last heartbeat: <strong id="aboutHeartbeat">—</strong></p></article>
             <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><path d="M4 17l3-10h10l3 10M6 13h12M3 20h18"/></svg></div><h3>Playback engine</h3><p>VLC state: <strong id="aboutVlc">Idle</strong><br />Remote control: <strong id="aboutRc">Unavailable</strong></p></article>
-            <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><path d="M4 4h6l2 2h8v13H4z"/></svg></div><h3>Configuration</h3><p>Use Open Config from the bottom-left menu to inspect this player's local configuration and logs.</p></article>
+            <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><path d="M4 4h6l2 2h8v13H4z"/></svg></div><h3>CMS connection</h3><p>Server: <strong id="aboutServer">—</strong><br />Credentials are encrypted by Windows.</p><div class="btn-row"><button id="btnResetPairing" class="btn danger">Reset Pairing</button></div></article>
           </div>
         </section>
       </main>
@@ -329,7 +329,7 @@
     const pauseIcon = '<rect class="solid" x="6" y="4" width="4" height="16"/><rect class="solid" x="14" y="4" width="4" height="16"/>';
     const playIcon = '<path class="solid" d="M7 4l13 8-13 8z"/>';
     let activeView = 'home';
-    let state = { status: 'offline', deviceId: '', appVersion: '1.0.0', now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
+    let state = { status: 'offline', deviceId: '', appVersion: '1.0.0', serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
     let assetState = { loaded: false, loading: false, error: '', directory: '', items: [] };
     let jumpPanelOpen = false;
     let jumpMaxSeconds = 0;
@@ -359,7 +359,8 @@
       return `${value.toFixed(unit >= 3 ? 1 : 0)} ${units[unit]}`;
     }
     function badgeClass(status) {
-      if (status === 'online') return 'badge online'; if (status === 'connecting') return 'badge connecting';
+      if (status === 'online') return 'badge online'; if (status === 'connecting' || status === 'reconnecting') return `badge ${status}`;
+      if (status === 'authentication-error') return 'badge authentication-error';
       if (status && status.startsWith('test-mode')) return 'badge test-mode';
       if (status === 'vlc-error') return 'badge vlc-error'; if (status === 'vlc-recovering') return 'badge vlc-recovering';
       return 'badge offline';
@@ -367,6 +368,7 @@
     function badgeLabel(status) {
       if (status && status.startsWith('test-mode')) return 'Test Mode';
       if (status === 'vlc-error') return 'VLC Error'; if (status === 'vlc-recovering') return 'VLC Recovering';
+      if (status === 'authentication-error') return 'Pairing Invalid';
       return status ? status.charAt(0).toUpperCase() + status.slice(1) : 'Offline';
     }
     function titleFor(file) { return file && (file.title || file.path || file.assetId) || 'Untitled media'; }
@@ -528,7 +530,7 @@
       if (!(state.upcoming || []).length) { const li = document.createElement('li'); li.innerHTML = '<div class="empty-state" style="width:100%">No upcoming schedules.</div>'; upcoming.appendChild(li); }
       for (const item of state.upcoming || []) { const li = document.createElement('li'); const time = document.createElement('span'); const title = document.createElement('span'); const meta = document.createElement('span'); time.className = 'time'; title.className = 'title'; meta.className = 'meta'; time.textContent = fmtDate(item.startMs); title.textContent = item.title; meta.textContent = item.freqLabel || ''; li.append(time, title, meta); upcoming.appendChild(li); }
       renderMediaHealth(); renderSkipped(); if (assetState.loaded || assetState.loading || assetState.error) renderAssets();
-      $('aboutVersion').textContent = state.appVersion || '1.0.0'; $('aboutDevice').textContent = state.deviceId || 'Not registered'; $('aboutMode').textContent = badgeLabel(state.status); $('aboutVlc').textContent = displayState; $('aboutRc').textContent = vlc.rcReady ? 'Ready' : 'Unavailable';
+      $('aboutVersion').textContent = state.appVersion || '1.0.0'; $('aboutDevice').textContent = state.deviceId || 'Not registered'; $('aboutMode').textContent = badgeLabel(state.status); $('aboutHeartbeat').textContent = state.cms && state.cms.lastHeartbeatAt ? new Date(state.cms.lastHeartbeatAt).toLocaleString() : '—'; $('aboutServer').textContent = state.serverURL || (state.bypass ? 'Test mode' : '—'); $('aboutVlc').textContent = displayState; $('aboutRc').textContent = vlc.rcReady ? 'Ready' : 'Unavailable';
     }
 
     ipcRenderer.on('dashboard:update', (_event, payload) => { state = Object.assign({}, state, payload); render(); });
@@ -541,7 +543,8 @@
     $('btnJumpApply').onclick = async () => { const target = syncJumpTargetFromInputs(); $('btnJumpApply').disabled = true; const result = await invokePlaybackControl('vlc-seek-to', target); $('btnJumpApply').disabled = false; if (result) closeJumpPanel(); };
     $('btnSkip').onclick = () => ipcRenderer.invoke('vlc-skip'); $('btnRetry').onclick = () => ipcRenderer.invoke('vlc-retry'); $('btnAddSchedule').onclick = () => ipcRenderer.invoke('open-schedule-adder'); $('btnManageSchedules').onclick = () => ipcRenderer.invoke('open-schedule-manager');
     $('btnRecheckMedia').onclick = async () => { healthError = ''; $('btnRecheckMedia').disabled = true; $('btnRecheckMedia').textContent = 'Checking...'; const result = await ipcRenderer.invoke('recheck-media-health'); if (!result || !result.ok) healthError = result && result.error || 'Media health check failed'; render(); };
-    $('btnConfig').onclick = () => ipcRenderer.invoke('open-config-folder'); $('btnLogout').onclick = () => ipcRenderer.invoke('logout'); $('btnQuit').onclick = () => ipcRenderer.invoke('quit');
+    async function resetPairing() { if (!confirm('Revoke this player registration and return to the pairing screen?')) return; const result = await ipcRenderer.invoke('reset-pairing'); if (!result || !result.ok) alert(result && result.error || 'Unable to reset pairing'); }
+    $('btnConfig').onclick = () => ipcRenderer.invoke('open-config-folder'); $('btnLogout').onclick = resetPairing; $('btnResetPairing').onclick = resetPairing; $('btnQuit').onclick = () => ipcRenderer.invoke('quit');
     function updateClock() { const now = new Date(); const pad = n => String(n).padStart(2, '0'); $('clock').textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`; }
     setInterval(updateClock, 1000); updateClock(); render();
   </script>

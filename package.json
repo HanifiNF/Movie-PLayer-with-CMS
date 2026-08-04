@@ -41,6 +41,8 @@
       "mediaHealth.cjs",
       "playbackWatchdog.cjs",
       "playbackResume.cjs",
+      "cmsClient.cjs",
+      "deviceCredentials.cjs",
       "config.cjs",
       "login.html",
       "dashboard.html",
