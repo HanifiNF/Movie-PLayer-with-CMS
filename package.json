@@ -1,6 +1,6 @@
 {
   "name": "player",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Realtime media player for WirGroup CMS - receives schedule via Socket.IO and plays through VLC",
   "main": "main.cjs",
   "scripts": {
@@ -12,7 +12,9 @@
   "author": "WirGroup",
   "license": "UNLICENSED",
   "private": true,
-  "engines": { "node": ">=22.12.0" },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "devDependencies": {
     "electron": "^43.0.0",
     "electron-builder": "^26.15.7"
@@ -68,7 +70,7 @@
       "icon": "assets/icon.ico"
     },
     "nsis": {
-      "oneClick": true,
+      "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,

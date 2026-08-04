@@ -2,70 +2,118 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Player — Login</title>
   <style>
+    :root {
+      --canvas: #f5f3f0;
+      --surface: #fffdfb;
+      --surface-soft: #faf7f4;
+      --red: #c43d3d;
+      --red-dark: #a92f2f;
+      --red-soft: #fbe7e7;
+      --text: #292524;
+      --muted: #78716c;
+      --subtle: #a8a29e;
+      --border: #e7e1dc;
+    }
     * { box-sizing: border-box; }
     body {
-      margin: 0; padding: 24px;
+      position: relative; display: flex; align-items: center; justify-content: center;
+      min-height: 100vh; margin: 0; padding: 28px; overflow: hidden;
+      background: var(--canvas); color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #0f172a; color: #e2e8f0;
-      display: flex; align-items: center; justify-content: center;
-      min-height: 100vh;
     }
+    body::before, body::after {
+      content: ""; position: absolute; border-radius: 50%; pointer-events: none;
+      background: rgba(196, 61, 61, .06);
+    }
+    body::before { width: 260px; height: 260px; top: -145px; right: -105px; }
+    body::after { width: 190px; height: 190px; left: -115px; bottom: -105px; }
     .card {
-      width: 100%; max-width: 360px;
-      background: #1e293b; padding: 28px; border-radius: 12px;
-      box-shadow: 0 10px 30px rgba(0,0,0,.4);
+      position: relative; z-index: 1; width: 100%; max-width: 360px; padding: 30px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 18px;
+      box-shadow: 0 18px 50px rgba(74, 52, 46, .1);
     }
-    h1 { margin: 0 0 6px; font-size: 22px; color: #38bdf8; }
-    .subtitle { margin: 0 0 22px; font-size: 12px; color: #94a3b8; }
-    label { display: block; font-size: 12px; color: #94a3b8; margin: 14px 0 6px; }
+    .identity { display: flex; align-items: center; gap: 12px; margin-bottom: 25px; }
+    .brand-mark {
+      display: grid; place-items: center; flex: 0 0 43px; width: 43px; height: 43px;
+      border-radius: 13px; background: var(--red); color: white;
+      box-shadow: 0 8px 20px rgba(196, 61, 61, .24);
+    }
+    .brand-mark svg { width: 21px; fill: currentColor; }
+    h1 { margin: 0; font-size: 21px; letter-spacing: -.4px; }
+    .product {
+      margin-top: 2px; color: var(--subtle); font-size: 9px; font-weight: 700;
+      letter-spacing: .9px; text-transform: uppercase;
+    }
+    .welcome { margin-bottom: 22px; }
+    .welcome h2 { margin: 0 0 5px; font-size: 18px; letter-spacing: -.3px; }
+    .subtitle { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    label { display: block; margin: 14px 0 6px; color: var(--muted); font-size: 11px; font-weight: 650; }
     input {
-      width: 100%; padding: 10px 12px; border: 1px solid #334155;
-      background: #0f172a; color: #e2e8f0; border-radius: 8px;
-      font-size: 14px; outline: none;
+      width: 100%; padding: 11px 12px; border: 1px solid var(--border); border-radius: 9px;
+      outline: none; background: var(--surface-soft); color: var(--text); font-size: 13px;
+      transition: border-color .12s, box-shadow .12s, background .12s;
     }
-    input:focus { border-color: #38bdf8; }
+    input::placeholder { color: #b9b1ab; }
+    input:focus {
+      border-color: var(--red); background: var(--surface);
+      box-shadow: 0 0 0 3px rgba(196, 61, 61, .1);
+    }
     button {
-      width: 100%; margin-top: 22px; padding: 12px;
-      background: #38bdf8; color: #0f172a; border: none;
-      border-radius: 8px; font-size: 14px; font-weight: 600;
-      cursor: pointer;
+      width: 100%; margin-top: 22px; padding: 11px 12px; border: 1px solid var(--red);
+      border-radius: 9px; background: var(--red); color: white; cursor: pointer;
+      font-size: 13px; font-weight: 700; transition: background .12s, border-color .12s, transform .12s;
     }
-    button:hover { background: #0ea5e9; }
-    button:disabled { background: #475569; cursor: not-allowed; }
+    button:hover { border-color: var(--red-dark); background: var(--red-dark); }
+    button:active:not(:disabled) { transform: translateY(1px); }
+    button:disabled { border-color: #d8cfca; background: #d8cfca; color: #fffaf7; cursor: not-allowed; }
+    .divider {
+      display: flex; align-items: center; gap: 9px; margin-top: 15px;
+      color: var(--subtle); font-size: 9px; font-weight: 650; text-transform: uppercase;
+    }
+    .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
     .btn-secondary {
-      margin-top: 10px;
-      background: transparent;
-      color: #38bdf8;
-      border: 1px solid #334155;
-      font-weight: 500;
+      margin-top: 13px; border-color: #e9c9c7; background: var(--surface);
+      color: var(--red-dark); font-weight: 650;
     }
-    .btn-secondary:hover { background: #0f172a; border-color: #38bdf8; }
-    .btn-secondary:disabled { background: transparent; color: #475569; border-color: #334155; }
+    .btn-secondary:hover { border-color: #dfaaa7; background: var(--red-soft); }
+    .btn-secondary:disabled { border-color: var(--border); background: var(--surface-soft); color: #b9b1ab; }
     .err {
-      margin-top: 14px; padding: 10px 12px; border-radius: 6px;
-      background: #7f1d1d; color: #fecaca; font-size: 12px; display: none;
+      display: none; margin-top: 14px; padding: 10px 11px; border: 1px solid #efcbc9;
+      border-radius: 8px; background: #fff3f2; color: var(--red-dark);
+      font-size: 11px; line-height: 1.4;
     }
     .err.show { display: block; }
+    .footnote { margin: 17px 0 0; color: var(--subtle); font-size: 9px; line-height: 1.5; text-align: center; }
   </style>
 </head>
 <body>
   <form class="card" id="f">
-    <h1>Player</h1>
-    <p class="subtitle">Sign in with your CMS account</p>
+    <div class="identity">
+      <div class="brand-mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4l13 8-13 8z"/></svg></div>
+      <div><h1>Player</h1><div class="product">Realtime media playback</div></div>
+    </div>
 
-    <label>Username</label>
-    <input name="username" type="text" placeholder="your username" required autocomplete="username" />
+    <div class="welcome">
+      <h2>Welcome back</h2>
+      <p class="subtitle">Sign in with your CMS operator account to connect this player.</p>
+    </div>
 
-    <label>Password</label>
-    <input name="password" type="password" placeholder="••••••••" required autocomplete="current-password" />
+    <label for="username">Username</label>
+    <input id="username" name="username" type="text" placeholder="Enter your username" required autocomplete="username" autofocus />
+
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" placeholder="••••••••" required autocomplete="current-password" />
 
     <button type="submit" id="btn">Login</button>
 
+    <div class="divider">Local testing</div>
     <button type="button" id="btnTest" class="btn-secondary">Test Mode (skip login)</button>
 
-    <div class="err" id="err"></div>
+    <div class="err" id="err" role="alert"></div>
+    <p class="footnote">Scheduled playback continues locally when the CMS connection is temporarily unavailable.</p>
   </form>
 
   <script>
@@ -82,17 +130,16 @@
       btnTest.textContent = busy ? 'Starting...' : 'Test Mode (skip login)';
     }
 
-    form.onsubmit = async (e) => {
-      e.preventDefault();
+    form.onsubmit = async event => {
+      event.preventDefault();
       errEl.classList.remove('show');
       setBusy(true);
-      const fd = new FormData(form);
-      const payload = Object.fromEntries(fd);
+      const payload = Object.fromEntries(new FormData(form));
       try {
         const result = await ipcRenderer.invoke('login', payload);
         if (!result || !result.ok) throw new Error(result && result.error || 'Login failed');
-      } catch (err) {
-        errEl.textContent = err.message || String(err);
+      } catch (error) {
+        errEl.textContent = error.message || String(error);
         errEl.classList.add('show');
         setBusy(false);
       }
@@ -104,8 +151,8 @@
       try {
         const result = await ipcRenderer.invoke('login-bypass');
         if (!result || !result.ok) throw new Error(result && result.error || 'Bypass failed');
-      } catch (err) {
-        errEl.textContent = err.message || String(err);
+      } catch (error) {
+        errEl.textContent = error.message || String(error);
         errEl.classList.add('show');
         setBusy(false);
       }

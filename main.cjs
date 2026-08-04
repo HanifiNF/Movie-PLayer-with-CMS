@@ -176,13 +176,14 @@ function createLoginWindow() {
     return;
   }
   loginWin = new BrowserWindow({
-    width: 420,
-    height: 560,
+    width: 440,
+    height: 640,
     resizable: false,
     minimizable: true,
     maximizable: false,
     title: 'Player — Login',
     autoHideMenuBar: true,
+    backgroundColor: '#f5f3f0',
     webPreferences: {
       contextIsolation: false,
       nodeIntegration: true
@@ -208,13 +209,13 @@ function createDashboardWindow() {
     return;
   }
   dashboardWin = new BrowserWindow({
-    width: 920,
-    height: 620,
-    minWidth: 720,
-    minHeight: 480,
+    width: 1180,
+    height: 760,
+    minWidth: 900,
+    minHeight: 620,
     title: 'Player — Dashboard',
     autoHideMenuBar: true,
-    background: '#0b1220',
+    background: '#f5f3f0',
     webPreferences: {
       contextIsolation: false,
       nodeIntegration: true
@@ -445,6 +446,7 @@ function pushDashboard() {
   const payload = {
     status: statusLabel,
     deviceId: cfg && cfg.deviceId || '',
+    appVersion: app.getVersion(),
     bypass: !!(cfg && cfg.bypass),
     now,
     upcoming,
@@ -760,7 +762,6 @@ ipcMain.handle('duplicate-test-schedule', async (_event, scheduleId) => {
 });
 
 ipcMain.handle('list-local-media', async () => {
-  if (!cfg || !cfg.bypass) return { ok: false, error: 'Only available in Test Mode' };
   try {
     fs.mkdirSync(CFG.MEDIA_LIBRARY_DIR, { recursive: true });
     const cached = normalizeSyncPayload(

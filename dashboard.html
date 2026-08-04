@@ -2,671 +2,548 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Player — Dashboard</title>
   <style>
+    :root {
+      --canvas: #f5f3f0;
+      --surface: #fffdfb;
+      --surface-soft: #faf7f4;
+      --sidebar: #fffaf7;
+      --red: #c43d3d;
+      --red-dark: #a92f2f;
+      --red-soft: #fbe7e7;
+      --text: #292524;
+      --muted: #78716c;
+      --subtle: #a8a29e;
+      --border: #e7e1dc;
+      --green: #27845d;
+      --amber: #b06a12;
+      --shadow: 0 8px 28px rgba(74, 52, 46, .07);
+    }
     * { box-sizing: border-box; }
-    html, body {
-      margin: 0; padding: 0; height: 100vh;
+    html, body { margin: 0; height: 100%; }
+    body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #0b1220; color: #e2e8f0;
-      user-select: none;
+      background: var(--canvas); color: var(--text); user-select: none;
     }
-    .app { display: flex; flex-direction: column; height: 100vh; }
+    button, input, select { font: inherit; }
+    button { color: inherit; }
+    .app { display: grid; grid-template-columns: 238px minmax(0, 1fr); height: 100vh; overflow: hidden; }
 
-    header {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 14px 22px; background: #0f172a; border-bottom: 1px solid #1e293b;
+    .sidebar {
+      display: flex; flex-direction: column; min-height: 0; padding: 24px 16px 16px;
+      background: var(--sidebar); border-right: 1px solid var(--border);
     }
-    header .brand { display: flex; align-items: baseline; gap: 14px; }
-    header .brand h1 { margin: 0; font-size: 18px; color: #38bdf8; letter-spacing: 0.5px; }
-    header .brand .ver { font-size: 11px; color: #64748b; }
-    header .right { display: flex; align-items: center; gap: 14px; font-size: 12px; color: #94a3b8; }
-    header .device { font-family: ui-monospace, Consolas, monospace; }
-    header .clock {
-      font-family: ui-monospace, Consolas, monospace;
-      font-size: 14px; color: #38bdf8; font-variant-numeric: tabular-nums;
+    .brand { display: flex; align-items: center; gap: 11px; padding: 0 10px 25px; }
+    .brand-mark {
+      display: grid; place-items: center; width: 36px; height: 36px; border-radius: 11px;
+      background: var(--red); color: white; box-shadow: 0 7px 18px rgba(196, 61, 61, .23);
     }
+    .brand-mark svg { width: 19px; fill: currentColor; }
+    .brand-name { font-size: 18px; font-weight: 760; letter-spacing: -.3px; }
+    .brand-version { display: block; margin-top: 1px; color: var(--subtle); font-size: 10px; font-weight: 600; }
+    .nav { display: flex; flex-direction: column; gap: 5px; }
+    .nav-btn {
+      display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 12px;
+      border: 0; border-radius: 10px; background: transparent; color: var(--muted);
+      cursor: pointer; text-align: left; font-size: 13px; font-weight: 650;
+    }
+    .nav-btn:hover { background: #f7eeea; color: var(--text); }
+    .nav-btn.active { background: var(--red-soft); color: var(--red-dark); }
+    .nav-btn svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+    .sidebar-bottom { margin-top: auto; padding-top: 18px; border-top: 1px solid var(--border); }
+    .connection { padding: 0 10px 13px; }
+    .connection-label { color: var(--subtle); font-size: 10px; font-weight: 700; letter-spacing: .9px; text-transform: uppercase; }
+    .device { display: block; margin-top: 7px; overflow: hidden; color: var(--muted); font-family: ui-monospace, Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+    .sidebar-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
 
-    .badge {
-      padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 600;
-      letter-spacing: 0.6px; text-transform: uppercase;
+    .workspace { min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+    .topbar {
+      height: 68px; flex: 0 0 68px; display: flex; align-items: center; justify-content: space-between;
+      padding: 0 28px; background: rgba(255, 253, 251, .86); border-bottom: 1px solid var(--border);
     }
-    .badge.online { background: #064e3b; color: #34d399; }
-    .badge.offline { background: #450a0a; color: #fca5a5; }
-    .badge.connecting { background: #1e1b4b; color: #a5b4fc; }
-    .badge.test-mode { background: #1e293b; color: #fbbf24; border: 1px solid #475569; }
-    .badge.vlc-error { background: #450a0a; color: #fca5a5; }
-    .badge.vlc-recovering { background: #422006; color: #fcd34d; }
+    .topbar h1 { margin: 0; font-size: 19px; letter-spacing: -.35px; }
+    .topbar-right { display: flex; align-items: center; gap: 12px; }
+    .clock { color: var(--muted); font-family: ui-monospace, Consolas, monospace; font-size: 13px; font-variant-numeric: tabular-nums; }
+    .content { flex: 1; min-height: 0; padding: 24px 28px 30px; overflow: auto; }
+    .view.hidden { display: none; }
+    .page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+    .page-heading h2 { margin: 0 0 4px; font-size: 21px; letter-spacing: -.45px; }
+    .page-heading p { margin: 0; color: var(--muted); font-size: 12px; }
 
-    main { flex: 1; padding: 18px 22px; overflow: auto; display: grid; grid-template-rows: auto 1fr; gap: 16px; }
-
-    .now {
-      background: #111c33; border: 1px solid #1e293b; border-radius: 12px; padding: 18px 22px;
-    }
-    .now h2 { margin: 0 0 6px; font-size: 12px; color: #94a3b8; letter-spacing: 1.2px; text-transform: uppercase; }
-    .now .title { font-size: 22px; font-weight: 600; color: #e2e8f0; margin-bottom: 4px; }
-    .now .file { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: #64748b; word-break: break-all; }
-    .now .row { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; gap: 14px; flex-wrap: wrap; }
-    .now .countdown { font-size: 14px; color: #38bdf8; font-variant-numeric: tabular-nums; }
-    .now .actions { display: flex; gap: 8px; }
-    .now .empty { color: #64748b; font-style: italic; }
-    .playback-details { margin-top: 14px; padding: 12px; background: #0f172a; border-radius: 9px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 15px; box-shadow: var(--shadow); }
+    .card-pad { padding: 19px 20px; }
+    .section-label { margin: 0 0 11px; color: var(--muted); font-size: 10px; font-weight: 750; letter-spacing: 1.1px; text-transform: uppercase; }
+    .home-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, .8fr); gap: 16px; margin-top: 16px; }
+    .now-card { padding: 21px 22px; border-top: 4px solid var(--red); }
+    .now-title { margin-bottom: 4px; font-size: 23px; font-weight: 720; letter-spacing: -.45px; }
+    .now-title.empty { color: var(--subtle); font-style: italic; font-weight: 500; }
+    .now-file { color: var(--muted); font-family: ui-monospace, Consolas, monospace; font-size: 11px; overflow-wrap: anywhere; }
+    .playback-details { margin-top: 17px; padding: 13px 14px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 11px; }
     .playback-details.hidden { display: none; }
-    .playback-head, .playback-time {
-      display: flex; justify-content: space-between; gap: 12px; align-items: center;
-      font-size: 12px;
-    }
-    .playback-head strong { color: #e2e8f0; font-size: 14px; }
-    .playback-position { color: #38bdf8; white-space: nowrap; }
-    .progress-track {
-      height: 7px; margin: 9px 0 7px; overflow: hidden;
-      background: #1e293b; border-radius: 999px;
-    }
-    .progress-fill { height: 100%; width: 0; background: #38bdf8; transition: width .35s linear; }
-    .playback-time { color: #94a3b8; font-variant-numeric: tabular-nums; }
-    .playback-next { margin-top: 7px; color: #64748b; font-size: 11px; }
-
-    .grid2 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; min-height: 0; }
-    .panel { background: #111c33; border: 1px solid #1e293b; border-radius: 12px; padding: 16px 20px; overflow: auto; }
-    .panel h2 { margin: 0 0 10px; font-size: 12px; color: #94a3b8; letter-spacing: 1.2px; text-transform: uppercase; }
-    .panel ul { margin: 0; padding: 0; list-style: none; }
-    .panel li {
-      display: flex; justify-content: space-between; gap: 10px;
-      padding: 9px 0; border-bottom: 1px dashed #1e293b; font-size: 13px;
-    }
-    .panel li:last-child { border-bottom: none; }
-    .panel li .time { color: #38bdf8; font-variant-numeric: tabular-nums; font-family: ui-monospace, Consolas, monospace; }
-    .panel li .ttl { color: #e2e8f0; flex: 1; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .panel li .rec { color: #64748b; font-size: 11px; }
-    .panel .empty { color: #64748b; font-style: italic; font-size: 13px; padding: 6px 0; }
-
-    .vlc-state {
-      display: inline-block; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;
-    }
-    .vlc-state.playing { background: #064e3b; color: #34d399; }
-    .vlc-state.paused  { background: #422006; color: #fbbf24; }
-    .vlc-state.idle    { background: #1e293b; color: #94a3b8; }
-    .vlc-state.error   { background: #450a0a; color: #fca5a5; }
-
-    .vlc-note { font-size: 11px; color: #fca5a5; margin-top: 6px; min-height: 14px; }
-    .health-section { margin-top: 15px; padding-top: 13px; border-top: 1px solid #1e293b; }
-    .health-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-    .health-head h3 { margin: 0; font-size: 11px; color: #94a3b8; letter-spacing: 1px; text-transform: uppercase; }
-    .health-state { font-size: 11px; font-weight: 700; text-transform: uppercase; }
-    .health-state.healthy { color: #34d399; }
-    .health-state.warning, .health-state.checking { color: #fbbf24; }
-    .health-state.error { color: #fca5a5; }
-    .health-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin-top: 9px; font-size: 11px; }
-    .health-grid span { color: #64748b; }
-    .health-grid strong { display: block; margin-top: 2px; color: #e2e8f0; font-size: 12px; }
-    .health-details { margin-top: 7px; color: #fca5a5; font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
+    .playback-head, .playback-time { display: flex; justify-content: space-between; gap: 12px; align-items: center; font-size: 11px; }
+    .playback-head strong { font-size: 13px; }
+    .playback-position, .countdown { color: var(--red); font-weight: 700; font-variant-numeric: tabular-nums; }
+    .progress-track { height: 7px; margin: 10px 0 7px; overflow: hidden; background: #eadfda; border-radius: 999px; }
+    .progress-fill { height: 100%; width: 0; background: var(--red); border-radius: inherit; transition: width .35s linear; }
+    .playback-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .playback-next { margin-top: 7px; color: var(--subtle); font-size: 10px; }
+    .now-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 15px; flex-wrap: wrap; }
+    .actions { display: flex; gap: 7px; }
 
     .btn {
-      background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px;
-      padding: 8px 14px; font-size: 13px; cursor: pointer; transition: background .12s;
+      border: 1px solid var(--border); border-radius: 9px; padding: 8px 13px;
+      background: var(--surface); color: var(--text); cursor: pointer; font-size: 12px; font-weight: 650;
+      transition: background .12s, border-color .12s, transform .12s;
     }
-    .btn:hover { background: #334155; }
-    .btn:disabled { background: #0f172a; color: #475569; cursor: not-allowed; border-color: #1e293b; }
-    .btn.primary { background: #38bdf8; color: #0f172a; border-color: #38bdf8; font-weight: 600; }
-    .btn.primary:hover { background: #0ea5e9; }
-    .btn.danger { background: #7f1d1d; color: #fecaca; border-color: #7f1d1d; }
-    .btn.danger:hover { background: #991b1b; }
-    .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-    .icon-btn {
-      position: relative; width: 38px; height: 36px; padding: 7px;
-      display: inline-flex; align-items: center; justify-content: center;
-    }
-    .icon-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .btn:hover { background: var(--surface-soft); border-color: #d6ccc5; }
+    .btn:active:not(:disabled) { transform: translateY(1px); }
+    .btn:disabled { color: #c4bdb8; background: #f4f0ed; cursor: not-allowed; }
+    .btn.primary { border-color: var(--red); background: var(--red); color: white; }
+    .btn.primary:hover { border-color: var(--red-dark); background: var(--red-dark); }
+    .btn.danger { border-color: #efd0cf; color: var(--red-dark); background: #fff7f6; }
+    .btn.danger:hover { background: var(--red-soft); }
+    .btn-row { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 12px; }
+    .icon-btn { position: relative; display: inline-grid; place-items: center; width: 38px; height: 36px; padding: 7px; }
+    .icon-btn svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
     .icon-btn svg .solid { fill: currentColor; stroke: none; }
     .icon-btn::after {
-      content: attr(data-tooltip); position: absolute; z-index: 20;
-      left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%);
-      padding: 5px 7px; border-radius: 5px; background: #020617; color: #e2e8f0;
-      font-size: 10px; font-weight: 500; white-space: nowrap;
-      opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .12s;
-      box-shadow: 0 4px 12px rgba(0,0,0,.4);
+      content: attr(data-tooltip); position: absolute; z-index: 30; left: 50%; bottom: calc(100% + 8px);
+      transform: translateX(-50%); padding: 5px 7px; border-radius: 6px; background: #3b302c;
+      color: white; font-size: 10px; font-weight: 550; white-space: nowrap; opacity: 0;
+      visibility: hidden; pointer-events: none; transition: opacity .12s;
     }
     .icon-btn:hover::after, .icon-btn:focus-visible::after { opacity: 1; visibility: visible; }
-    .jump-panel {
-      margin-top: 12px; padding: 12px; border: 1px solid #334155;
-      background: #0f172a; border-radius: 9px;
-    }
+    .sidebar-actions .icon-btn { width: 100%; color: var(--muted); }
+
+    .badge { display: inline-flex; align-items: center; padding: 5px 9px; border-radius: 999px; font-size: 10px; font-weight: 750; letter-spacing: .45px; text-transform: uppercase; }
+    .badge.online { background: #e3f5ec; color: var(--green); }
+    .badge.offline, .badge.vlc-error { background: #fbe5e4; color: var(--red-dark); }
+    .badge.connecting { background: #f6ecd9; color: var(--amber); }
+    .badge.test-mode { background: var(--red-soft); color: var(--red-dark); }
+    .badge.vlc-recovering { background: #f6ecd9; color: var(--amber); }
+    .vlc-state { display: inline-flex; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; }
+    .vlc-state.playing { background: #e3f5ec; color: var(--green); }
+    .vlc-state.paused { background: #f6ecd9; color: var(--amber); }
+    .vlc-state.idle { background: #eee9e5; color: var(--muted); }
+    .vlc-state.error { background: #fbe5e4; color: var(--red-dark); }
+    .vlc-note { min-height: 15px; margin-top: 7px; color: var(--red-dark); font-size: 10px; line-height: 1.4; }
+
+    .jump-panel { margin-top: 13px; padding: 13px; border: 1px solid #ead6d1; background: #fff8f6; border-radius: 10px; }
     .jump-panel.hidden { display: none; }
-    .jump-top { display: flex; justify-content: space-between; gap: 10px; color: #94a3b8; font-size: 11px; }
-    .jump-top strong { color: #38bdf8; font-variant-numeric: tabular-nums; }
-    .jump-panel input[type="range"] { width: 100%; margin: 10px 0 5px; accent-color: #38bdf8; }
-    .jump-row { display: flex; align-items: flex-end; gap: 8px; margin-top: 7px; }
+    .jump-top { display: flex; justify-content: space-between; color: var(--muted); font-size: 10px; }
+    .jump-top strong { color: var(--red); font-variant-numeric: tabular-nums; }
+    input[type="range"] { width: 100%; accent-color: var(--red); }
+    .jump-panel input[type="range"] { margin: 10px 0 5px; }
+    .jump-row { display: flex; align-items: flex-end; gap: 8px; margin-top: 6px; }
     .jump-field { width: 92px; }
-    .jump-field label { display: block; color: #64748b; font-size: 10px; margin-bottom: 4px; }
-    .jump-field input {
-      width: 100%; padding: 7px 8px; border: 1px solid #334155;
-      border-radius: 6px; background: #111c33; color: #e2e8f0;
+    label { display: block; margin-bottom: 5px; color: var(--muted); font-size: 10px; font-weight: 650; }
+    input, select {
+      width: 100%; border: 1px solid var(--border); border-radius: 9px; padding: 9px 10px;
+      outline: none; background: var(--surface); color: var(--text); font-size: 12px;
     }
+    input:focus, select:focus { border-color: var(--red); box-shadow: 0 0 0 3px rgba(196, 61, 61, .1); }
     .jump-actions { display: flex; gap: 6px; margin-left: auto; }
 
-    .skipped-panel { margin-top: 16px; }
-    .skipped-panel li { align-items: flex-start; }
-    .skipped-panel .details {
-      display: flex; flex-direction: column; flex: 1; min-width: 0;
-      color: #94a3b8; font-size: 12px;
-    }
-    .skipped-panel .details .ttl { color: #e2e8f0; font-size: 13px; margin-bottom: 2px; }
-    .skipped-panel .details .file { font-family: ui-monospace, Consolas, monospace; color: #64748b; word-break: break-all; }
+    .list { margin: 0; padding: 0; list-style: none; }
+    .list li { display: flex; align-items: center; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+    .list li:last-child { border-bottom: 0; }
+    .list .time { color: var(--red); font-family: ui-monospace, Consolas, monospace; font-size: 11px; white-space: nowrap; }
+    .list .title { flex: 1; min-width: 0; overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+    .list .meta { color: var(--muted); font-size: 10px; }
+    .empty-state { padding: 34px 16px; color: var(--subtle); font-size: 12px; font-style: italic; text-align: center; }
 
-    footer {
-      display: flex; justify-content: space-between; align-items: center; gap: 10px;
-      padding: 12px 22px; background: #0f172a; border-top: 1px solid #1e293b;
+    .toolbar { display: grid; grid-template-columns: minmax(220px, 1fr) 190px; gap: 10px; margin-bottom: 14px; }
+    .search-wrap { position: relative; }
+    .search-wrap svg { position: absolute; left: 11px; top: 50%; width: 16px; transform: translateY(-50%); fill: none; stroke: var(--subtle); stroke-width: 2; }
+    .search-wrap input { padding-left: 35px; }
+    .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 15px; }
+    .summary-card { padding: 15px 16px; }
+    .summary-card span { color: var(--muted); font-size: 10px; font-weight: 700; text-transform: uppercase; }
+    .summary-card strong { display: block; margin-top: 6px; font-size: 22px; }
+    .summary-card strong.red { color: var(--red); }
+    .table-card { overflow: hidden; }
+    .table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    .table th { padding: 11px 14px; background: var(--surface-soft); color: var(--muted); font-size: 10px; letter-spacing: .6px; text-align: left; text-transform: uppercase; }
+    .table td { padding: 12px 14px; border-top: 1px solid var(--border); font-size: 11px; vertical-align: middle; }
+    .table .asset-main { overflow: hidden; font-size: 12px; font-weight: 680; text-overflow: ellipsis; white-space: nowrap; }
+    .table .asset-path { margin-top: 3px; overflow: hidden; color: var(--subtle); font-family: ui-monospace, Consolas, monospace; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+    .status-pill { display: inline-flex; padding: 4px 8px; border-radius: 999px; font-size: 9px; font-weight: 750; text-transform: capitalize; }
+    .status-pill.ready { background: #e3f5ec; color: var(--green); }
+    .status-pill.missing, .status-pill.corrupt, .status-pill.unreadable { background: #fbe5e4; color: var(--red-dark); }
+    .status-pill.checking, .status-pill.idle { background: #eee9e5; color: var(--muted); }
+    .directory-note { margin: -5px 0 13px; color: var(--muted); font-family: ui-monospace, Consolas, monospace; font-size: 9px; overflow-wrap: anywhere; }
+
+    .health-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .health-state { font-size: 10px; font-weight: 800; text-transform: uppercase; }
+    .health-state.healthy { color: var(--green); }
+    .health-state.warning, .health-state.checking { color: var(--amber); }
+    .health-state.error { color: var(--red-dark); }
+    .health-list { display: grid; gap: 9px; margin-top: 14px; }
+    .health-item { display: flex; justify-content: space-between; gap: 15px; padding: 12px 13px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-soft); }
+    .health-item strong { display: block; font-size: 12px; }
+    .health-item small { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; overflow-wrap: anywhere; }
+
+    .skipped-item { align-items: flex-start !important; }
+    .skipped-details { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; }
+    .skipped-details strong { font-size: 12px; }
+    .skipped-details span { color: var(--muted); font-size: 10px; }
+    .skipped-file { overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; }
+
+    .about-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .about-card { padding: 21px; }
+    .about-icon { display: grid; place-items: center; width: 40px; height: 40px; margin-bottom: 17px; border-radius: 11px; background: var(--red-soft); color: var(--red); }
+    .about-icon svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.9; }
+    .about-card h3 { margin: 0 0 5px; font-size: 14px; }
+    .about-card p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+
+    @media (max-width: 980px) {
+      .app { grid-template-columns: 82px minmax(0, 1fr); }
+      .sidebar { padding: 22px 11px 14px; }
+      .brand { justify-content: center; padding-inline: 0; }
+      .brand-copy, .nav-label, .connection-label, .device { display: none; }
+      .connection { padding-inline: 0; text-align: center; }
+      .connection .badge { width: 12px; height: 12px; padding: 0; overflow: hidden; font-size: 0; }
+      .nav-btn { justify-content: center; padding-inline: 0; }
+      .home-grid { grid-template-columns: 1fr; }
+      .sidebar-actions { grid-template-columns: 1fr; }
+      .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
-    footer .left { display: flex; gap: 8px; }
   </style>
 </head>
 <body>
   <div class="app">
-    <header>
+    <aside class="sidebar">
       <div class="brand">
-        <h1>Player</h1>
-        <span class="ver">v1.0.0</span>
+        <div class="brand-mark"><svg viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></svg></div>
+        <div class="brand-copy"><div class="brand-name">Player</div><span id="sidebarVersion" class="brand-version">v1.0.0</span></div>
       </div>
-      <div class="right">
-        <span id="clock" class="clock">--:--:--</span>
-        <span id="badge" class="badge offline">Offline</span>
-        <span>Device: <span id="device" class="device">—</span></span>
+      <nav class="nav" aria-label="Main navigation">
+        <button class="nav-btn active" data-view="home" title="Home"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg><span class="nav-label">Home</span></button>
+        <button class="nav-btn" data-view="assets" title="Assets"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 4v16M16 4v16M3 9h5M16 9h5M3 15h5M16 15h5"/></svg><span class="nav-label">Assets</span></button>
+        <button class="nav-btn" data-view="health" title="Media Health"><svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.4 8-8 9-4.6-1-8-4-8-9V6z"/><path d="M8 12h2l1.2-3 2 6 1.3-3H17"/></svg><span class="nav-label">Media Health</span></button>
+        <button class="nav-btn" data-view="skipped" title="Skipped"><svg viewBox="0 0 24 24"><path d="M5 4l11 8-11 8z"/><path d="M19 5v14"/></svg><span class="nav-label">Skipped</span></button>
+        <button class="nav-btn" data-view="about" title="About"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></svg><span class="nav-label">About</span></button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="connection">
+          <div class="connection-label">Connection</div>
+          <span id="badge" class="badge offline">Offline</span>
+          <span id="device" class="device">—</span>
+        </div>
+        <div class="sidebar-actions">
+          <button id="btnConfig" class="btn icon-btn" data-tooltip="Open Config" aria-label="Open config folder"><svg viewBox="0 0 24 24"><path d="M4 4h6l2 2h8v13H4z"/></svg></button>
+          <button id="btnLogout" class="btn icon-btn danger" data-tooltip="Logout" aria-label="Logout"><svg viewBox="0 0 24 24"><path d="M10 5H4v14h6M14 8l4 4-4 4M8 12h10"/></svg></button>
+          <button id="btnQuit" class="btn icon-btn danger" data-tooltip="Quit Player" aria-label="Quit player"><svg viewBox="0 0 24 24"><path d="M12 3v9M6.5 6.5a8 8 0 1 0 11 0"/></svg></button>
+        </div>
       </div>
-    </header>
+    </aside>
 
-    <main>
-      <section class="now">
-        <h2>Now Playing</h2>
-        <div id="nowTitle" class="title empty">No active schedule</div>
-        <div id="nowFile" class="file"></div>
-        <div id="playbackDetails" class="playback-details hidden">
-          <div class="playback-head">
-            <strong id="currentMedia">—</strong>
-            <span id="playlistPosition" class="playback-position"></span>
-          </div>
-          <div class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
-          <div class="playback-time">
-            <span id="playbackElapsed">00:00</span>
-            <span id="playbackDuration">00:00</span>
-          </div>
-          <div id="nextMedia" class="playback-next"></div>
-        </div>
-        <div class="row">
-          <div id="nowCountdown" class="countdown"></div>
-          <div class="actions">
-            <button id="btnRewind" class="btn icon-btn" data-tooltip="Rewind 10 seconds" aria-label="Rewind 10 seconds" disabled>
-              <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v6h6"/><path d="M9.5 11v4"/><path d="M13 11.5a1.5 1.5 0 0 1 3 0v2a1.5 1.5 0 0 1-3 0z"/></svg>
-            </button>
-            <button id="btnPause" class="btn icon-btn" data-tooltip="Pause" aria-label="Pause" disabled>
-              <svg viewBox="0 0 24 24"><rect class="solid" x="6" y="4" width="4" height="16"/><rect class="solid" x="14" y="4" width="4" height="16"/></svg>
-            </button>
-            <button id="btnResume" class="btn icon-btn" data-tooltip="Resume" aria-label="Resume" disabled>
-              <svg viewBox="0 0 24 24"><path class="solid" d="M7 4l13 8-13 8z"/></svg>
-            </button>
-            <button id="btnForward" class="btn icon-btn" data-tooltip="Forward 10 seconds" aria-label="Forward 10 seconds" disabled>
-              <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v6h-6"/><path d="M8 11v4"/><path d="M11.5 11.5a1.5 1.5 0 0 1 3 0v2a1.5 1.5 0 0 1-3 0z"/></svg>
-            </button>
-            <button id="btnJump" class="btn icon-btn" data-tooltip="Jump To" aria-label="Jump to position" disabled>
-              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/><path d="M8 2h8"/></svg>
-            </button>
-            <button id="btnSkip" class="btn icon-btn" data-tooltip="Skip Schedule" aria-label="Skip schedule" disabled>
-              <svg viewBox="0 0 24 24"><path class="solid" d="M5 4l11 8-11 8z"/><path d="M19 5v14"/></svg>
-            </button>
-          </div>
-        </div>
-        <div id="jumpPanel" class="jump-panel hidden">
-          <div class="jump-top"><span>Jump to position</span><strong id="jumpTargetLabel">00:00</strong></div>
-          <input id="jumpSlider" type="range" min="0" max="0" value="0" step="1" />
-          <div class="jump-row">
-            <div class="jump-field"><label for="jumpMinutes">Minute</label><input id="jumpMinutes" type="number" min="0" value="0" /></div>
-            <div class="jump-field"><label for="jumpSeconds">Second</label><input id="jumpSeconds" type="number" min="0" max="59" value="0" /></div>
-            <div class="jump-actions">
-              <button id="btnJumpApply" class="btn icon-btn primary" data-tooltip="Go" aria-label="Go to position">
-                <svg viewBox="0 0 24 24"><path d="M5 12h13"/><path d="M13 6l6 6-6 6"/></svg>
-              </button>
-              <button id="btnJumpCancel" class="btn icon-btn" data-tooltip="Cancel" aria-label="Cancel jump">
-                <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
-              </button>
+    <div class="workspace">
+      <header class="topbar"><h1 id="pageTitle">Home</h1><div class="topbar-right"><span id="clock" class="clock">--:--:--</span></div></header>
+      <main class="content">
+        <section id="view-home" class="view">
+          <div class="page-heading"><div><h2>Playback overview</h2><p>Monitor the active schedule and control VLC playback.</p></div></div>
+          <article class="card now-card">
+            <div class="section-label">Now Playing</div>
+            <div id="nowTitle" class="now-title empty">No active schedule</div>
+            <div id="nowFile" class="now-file"></div>
+            <div id="playbackDetails" class="playback-details hidden">
+              <div class="playback-head"><strong id="currentMedia">—</strong><span id="playlistPosition" class="playback-position"></span></div>
+              <div class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
+              <div class="playback-time"><span id="playbackElapsed">00:00</span><span id="playbackDuration">00:00</span></div>
+              <div id="nextMedia" class="playback-next"></div>
             </div>
-          </div>
-        </div>
-      </section>
-
-      <div class="grid2">
-        <section class="panel">
-          <h2>Upcoming</h2>
-          <ul id="upcoming"></ul>
-        </section>
-        <section class="panel">
-          <h2>VLC</h2>
-          <div>State: <span id="vlcState" class="vlc-state idle">idle</span></div>
-          <div id="vlcNote" class="vlc-note"></div>
-          <div class="btn-row">
-            <button id="btnRetry" class="btn primary">Retry VLC</button>
-            <button id="btnAddSchedule" class="btn" style="display:none;">Add Schedule</button>
-            <button id="btnManageSchedules" class="btn" style="display:none;">Manage Schedules</button>
-          </div>
-          <div class="health-section">
-            <div class="health-head">
-              <h3>Media &amp; Storage</h3>
-              <span id="healthState" class="health-state">Idle</span>
+            <div class="now-row">
+              <div id="nowCountdown" class="countdown"></div>
+              <div class="actions">
+                <button id="btnRewind" class="btn icon-btn" data-tooltip="Rewind 10 seconds" aria-label="Rewind 10 seconds" disabled><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v6h6"/><path d="M9.5 11v4M13 11.5a1.5 1.5 0 0 1 3 0v2a1.5 1.5 0 0 1-3 0z"/></svg></button>
+                <button id="btnPlayPause" class="btn icon-btn primary" data-tooltip="Pause" aria-label="Pause" disabled><svg id="playPauseIcon" viewBox="0 0 24 24"><rect class="solid" x="6" y="4" width="4" height="16"/><rect class="solid" x="14" y="4" width="4" height="16"/></svg></button>
+                <button id="btnForward" class="btn icon-btn" data-tooltip="Forward 10 seconds" aria-label="Forward 10 seconds" disabled><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v6h-6"/><path d="M8 11v4M11.5 11.5a1.5 1.5 0 0 1 3 0v2a1.5 1.5 0 0 1-3 0z"/></svg></button>
+                <button id="btnJump" class="btn icon-btn" data-tooltip="Jump To" aria-label="Jump to position" disabled><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2M8 2h8"/></svg></button>
+                <button id="btnSkip" class="btn icon-btn" data-tooltip="Skip Schedule" aria-label="Skip schedule" disabled><svg viewBox="0 0 24 24"><path class="solid" d="M5 4l11 8-11 8z"/><path d="M19 5v14"/></svg></button>
+              </div>
             </div>
-            <div class="health-grid">
-              <span>Ready<strong id="healthReady">0</strong></span>
-              <span>Problems<strong id="healthProblems">0</strong></span>
-              <span>Free space<strong id="healthFreeSpace">—</strong></span>
-              <span>Last check<strong id="healthCheckedAt">—</strong></span>
+            <div id="jumpPanel" class="jump-panel hidden">
+              <div class="jump-top"><span>Jump to position</span><strong id="jumpTargetLabel">00:00</strong></div>
+              <input id="jumpSlider" type="range" min="0" max="0" value="0" step="1" aria-label="Playback position" />
+              <div class="jump-row">
+                <div class="jump-field"><label for="jumpMinutes">Minute</label><input id="jumpMinutes" type="number" min="0" value="0" /></div>
+                <div class="jump-field"><label for="jumpSeconds">Second</label><input id="jumpSeconds" type="number" min="0" max="59" value="0" /></div>
+                <div class="jump-actions">
+                  <button id="btnJumpApply" class="btn icon-btn primary" data-tooltip="Go" aria-label="Go to position"><svg viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6"/></svg></button>
+                  <button id="btnJumpCancel" class="btn icon-btn" data-tooltip="Cancel" aria-label="Cancel jump"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+                </div>
+              </div>
             </div>
-            <div id="healthDetails" class="health-details"></div>
-            <button id="btnRecheckMedia" class="btn" style="margin-top:9px;">Recheck Media</button>
+          </article>
+          <div class="home-grid">
+            <article class="card card-pad"><div class="section-label">Upcoming schedules</div><ul id="upcoming" class="list"></ul></article>
+            <article class="card card-pad">
+              <div class="section-label">VLC Player</div>
+              <div>State: <span id="vlcState" class="vlc-state idle">idle</span></div>
+              <div id="vlcNote" class="vlc-note"></div>
+              <div class="btn-row"><button id="btnRetry" class="btn primary">Retry VLC</button><button id="btnAddSchedule" class="btn" style="display:none">Add Schedule</button><button id="btnManageSchedules" class="btn" style="display:none">Manage Schedules</button></div>
+            </article>
           </div>
         </section>
-      </div>
 
-      <section class="panel skipped-panel">
-        <h2>Skipped</h2>
-        <ul id="skipped"></ul>
-      </section>
-    </main>
+        <section id="view-assets" class="view hidden">
+          <div class="page-heading"><div><h2>Assets</h2><p>Browse media available in Folder A and downloaded assets.</p></div><button id="btnRefreshAssets" class="btn primary">Refresh Assets</button></div>
+          <div class="summary-grid"><article class="card summary-card"><span>Total</span><strong id="assetTotal">0</strong></article><article class="card summary-card"><span>Ready</span><strong id="assetReady">0</strong></article><article class="card summary-card"><span>Problems</span><strong id="assetProblems" class="red">0</strong></article><article class="card summary-card"><span>Showing</span><strong id="assetShowing">0</strong></article></div>
+          <div class="toolbar"><div class="search-wrap"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16 16l5 5"/></svg><input id="assetSearch" type="search" placeholder="Search title, filename, or path..." /></div><select id="assetFilter" aria-label="Filter assets"><option value="all">All assets</option><option value="ready">Ready to play</option><option value="problem">Has problems</option><option value="local">Folder A</option><option value="managed">Downloaded</option></select></div>
+          <div id="assetDirectory" class="directory-note"></div>
+          <div class="card table-card"><table class="table"><thead><tr><th style="width:42%">Media</th><th style="width:16%">Source</th><th style="width:14%">Duration</th><th style="width:14%">Size</th><th style="width:14%">Status</th></tr></thead><tbody id="assetRows"></tbody></table><div id="assetEmpty" class="empty-state">Open this page to scan available media.</div></div>
+        </section>
 
-    <footer>
-      <div class="left">
-        <button id="btnConfig" class="btn">Open Config Folder</button>
-        <button id="btnLogout" class="btn danger">Logout</button>
-      </div>
-      <div>
-        <button id="btnQuit" class="btn danger">Quit Player</button>
-      </div>
-    </footer>
+        <section id="view-health" class="view hidden">
+          <div class="page-heading"><div><h2>Media Health</h2><p>Check the integrity of media referenced by schedules and available storage.</p></div><button id="btnRecheckMedia" class="btn primary">Recheck Media</button></div>
+          <div class="summary-grid"><article class="card summary-card"><span>Ready</span><strong id="healthReady">0</strong></article><article class="card summary-card"><span>Problems</span><strong id="healthProblems" class="red">0</strong></article><article class="card summary-card"><span>Free space</span><strong id="healthFreeSpace">—</strong></article><article class="card summary-card"><span>Last check</span><strong id="healthCheckedAt" style="font-size:15px">—</strong></article></div>
+          <article class="card card-pad"><div class="health-head"><div><div class="section-label" style="margin-bottom:4px">Scheduled media</div><span id="healthSummary" style="color:var(--muted);font-size:11px">No scan results yet.</span></div><span id="healthState" class="health-state idle">Idle</span></div><div id="healthDetails" class="health-list"></div></article>
+        </section>
+
+        <section id="view-skipped" class="view hidden">
+          <div class="page-heading"><div><h2>Skipped schedules</h2><p>Review schedules skipped by an operator and reactivate them when needed.</p></div></div>
+          <div class="toolbar" style="grid-template-columns:minmax(220px, 520px)"><div class="search-wrap"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16 16l5 5"/></svg><input id="skippedSearch" type="search" placeholder="Search skipped schedules..." /></div></div>
+          <article class="card card-pad"><ul id="skipped" class="list"></ul></article>
+        </section>
+
+        <section id="view-about" class="view hidden">
+          <div class="page-heading"><div><h2>About Player</h2><p>Application and device information.</p></div></div>
+          <div class="about-grid">
+            <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></svg></div><h3>Player application</h3><p>Realtime desktop media player for scheduled VLC playback.<br />Version <strong id="aboutVersion">1.0.0</strong></p></article>
+            <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h5"/></svg></div><h3>Registered device</h3><p>Device ID: <strong id="aboutDevice">—</strong><br />Mode: <strong id="aboutMode">Offline</strong></p></article>
+            <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><path d="M4 17l3-10h10l3 10M6 13h12M3 20h18"/></svg></div><h3>Playback engine</h3><p>VLC state: <strong id="aboutVlc">Idle</strong><br />Remote control: <strong id="aboutRc">Unavailable</strong></p></article>
+            <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><path d="M4 4h6l2 2h8v13H4z"/></svg></div><h3>Configuration</h3><p>Use Open Config from the bottom-left menu to inspect this player's local configuration and logs.</p></article>
+          </div>
+        </section>
+      </main>
+    </div>
   </div>
 
   <script>
     const { ipcRenderer } = require('electron');
-    const $ = (id) => document.getElementById(id);
-
-    function fmtCountdown(ms) {
-      if (ms == null || isNaN(ms)) return '';
-      if (ms < 0) ms = 0;
-      const s = Math.floor(ms / 1000);
-      const h = Math.floor(s / 3600);
-      const m = Math.floor((s % 3600) / 60);
-      const sec = s % 60;
-      const pad = (n) => String(n).padStart(2, '0');
-      return `ends in ${pad(h)}:${pad(m)}:${pad(sec)}`;
-    }
-
-    function fmtTime(ms) {
-      if (ms == null) return '';
-      const d = new Date(ms);
-      const pad = (n) => String(n).padStart(2, '0');
-      return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    }
-
-    function fmtDate(ms) {
-      const d = new Date(ms);
-      const pad = (n) => String(n).padStart(2, '0');
-      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    }
-
-    function badgeClass(status) {
-      if (status === 'online') return 'badge online';
-      if (status === 'connecting') return 'badge connecting';
-      if (status && status.indexOf('test-mode') === 0) return 'badge test-mode';
-      if (status === 'vlc-error') return 'badge vlc-error';
-      if (status === 'vlc-recovering') return 'badge vlc-recovering';
-      return 'badge offline';
-    }
-
-    function badgeLabel(status) {
-      if (status && status.indexOf('test-mode') === 0) return 'Test Mode';
-      if (status === 'vlc-error') return 'VLC Error';
-      if (status === 'vlc-recovering') return 'VLC Recovering';
-      return status ? status.charAt(0).toUpperCase() + status.slice(1) : 'Offline';
-    }
-
-    let state = {
-      status: 'offline', deviceId: '', now: null, upcoming: [], skipped: [],
-      vlc: { state: 'idle' },
-      watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 },
-      recoveryResume: null,
-      mediaHealth: null,
-      bypass: false
-    };
+    const $ = id => document.getElementById(id);
+    const viewTitles = { home: 'Home', assets: 'Assets', health: 'Media Health', skipped: 'Skipped', about: 'About' };
+    const pauseIcon = '<rect class="solid" x="6" y="4" width="4" height="16"/><rect class="solid" x="14" y="4" width="4" height="16"/>';
+    const playIcon = '<path class="solid" d="M7 4l13 8-13 8z"/>';
+    let activeView = 'home';
+    let state = { status: 'offline', deviceId: '', appVersion: '1.0.0', now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
+    let assetState = { loaded: false, loading: false, error: '', directory: '', items: [] };
     let jumpPanelOpen = false;
     let jumpMaxSeconds = 0;
     let jumpMediaKey = '';
     let controlError = '';
+    let healthError = '';
 
-    ipcRenderer.on('dashboard:update', (_e, payload) => {
-      state = Object.assign({}, state, payload);
-      render();
-    });
-
+    function fmtCountdown(ms) {
+      if (ms == null || isNaN(ms)) return '';
+      const total = Math.max(0, Math.floor(ms / 1000));
+      const pad = n => String(n).padStart(2, '0');
+      return `ends in ${pad(Math.floor(total / 3600))}:${pad(Math.floor((total % 3600) / 60))}:${pad(total % 60)}`;
+    }
+    function fmtDate(ms) {
+      const d = new Date(ms); const pad = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
     function fmtPlaybackTime(seconds) {
-      const total = Math.max(0, Math.floor(Number(seconds) || 0));
-      const hours = Math.floor(total / 3600);
-      const minutes = Math.floor((total % 3600) / 60);
-      const secs = total % 60;
-      const pad = value => String(value).padStart(2, '0');
-      return hours > 0
-        ? `${pad(hours)}:${pad(minutes)}:${pad(secs)}`
-        : `${pad(minutes)}:${pad(secs)}`;
+      const total = Math.max(0, Math.floor(Number(seconds) || 0)); const pad = value => String(value).padStart(2, '0');
+      const hours = Math.floor(total / 3600); const minutes = Math.floor((total % 3600) / 60);
+      return hours > 0 ? `${pad(hours)}:${pad(minutes)}:${pad(total % 60)}` : `${pad(minutes)}:${pad(total % 60)}`;
     }
-
-    function currentPlayback() {
-      return state.vlc && state.vlc.playback ? state.vlc.playback : {};
-    }
-
-    function playbackMediaKey(playback) {
-      return `${Number.isInteger(playback.currentIndex) ? playback.currentIndex : -1}|${playback.currentPath || ''}`;
-    }
-
-    function clampJumpTarget(seconds) {
-      const target = Math.floor(Number(seconds) || 0);
-      return Math.max(0, Math.min(jumpMaxSeconds, target));
-    }
-
-    function setJumpTarget(seconds) {
-      const target = clampJumpTarget(seconds);
-      $('jumpSlider').value = String(target);
-      $('jumpMinutes').value = String(Math.floor(target / 60));
-      $('jumpSeconds').value = String(target % 60);
-      $('jumpTargetLabel').textContent = `${fmtPlaybackTime(target)} / ${fmtPlaybackTime(jumpMaxSeconds + 1)}`;
-      return target;
-    }
-
-    function syncJumpTargetFromInputs() {
-      const minutes = Math.max(0, Math.floor(Number($('jumpMinutes').value) || 0));
-      const seconds = Math.max(0, Math.min(59, Math.floor(Number($('jumpSeconds').value) || 0)));
-      return setJumpTarget((minutes * 60) + seconds);
-    }
-
-    function openJumpPanel() {
-      const playback = currentPlayback();
-      jumpMaxSeconds = Math.max(0, Math.floor(Number(playback.lengthSeconds) || 0) - 1);
-      jumpMediaKey = playbackMediaKey(playback);
-      $('jumpSlider').max = String(jumpMaxSeconds);
-      $('jumpMinutes').max = String(Math.floor(jumpMaxSeconds / 60));
-      setJumpTarget(playback.positionSeconds);
-      jumpPanelOpen = true;
-      $('jumpPanel').classList.remove('hidden');
-    }
-
-    function closeJumpPanel() {
-      jumpPanelOpen = false;
-      jumpMediaKey = '';
-      $('jumpPanel').classList.add('hidden');
-    }
-
-    async function invokePlaybackControl(channel, value) {
-      controlError = '';
-      try {
-        const result = value === undefined
-          ? await ipcRenderer.invoke(channel)
-          : await ipcRenderer.invoke(channel, value);
-        if (result && result.ok === false) {
-          throw new Error(result.error || 'Playback control failed');
-        }
-        return result;
-      } catch (error) {
-        controlError = error && error.message ? error.message : String(error);
-        render();
-        return null;
-      }
-    }
-
     function fmtBytes(bytes) {
       if (bytes == null || !Number.isFinite(Number(bytes))) return 'Unknown';
-      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-      let value = Number(bytes);
-      let unit = 0;
-      while (value >= 1024 && unit < units.length - 1) {
-        value /= 1024;
-        unit += 1;
-      }
+      const units = ['B', 'KB', 'MB', 'GB', 'TB']; let value = Number(bytes); let unit = 0;
+      while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
       return `${value.toFixed(unit >= 3 ? 1 : 0)} ${units[unit]}`;
+    }
+    function badgeClass(status) {
+      if (status === 'online') return 'badge online'; if (status === 'connecting') return 'badge connecting';
+      if (status && status.startsWith('test-mode')) return 'badge test-mode';
+      if (status === 'vlc-error') return 'badge vlc-error'; if (status === 'vlc-recovering') return 'badge vlc-recovering';
+      return 'badge offline';
+    }
+    function badgeLabel(status) {
+      if (status && status.startsWith('test-mode')) return 'Test Mode';
+      if (status === 'vlc-error') return 'VLC Error'; if (status === 'vlc-recovering') return 'VLC Recovering';
+      return status ? status.charAt(0).toUpperCase() + status.slice(1) : 'Offline';
+    }
+    function titleFor(file) { return file && (file.title || file.path || file.assetId) || 'Untitled media'; }
+    function currentPlayback() { return state.vlc && state.vlc.playback ? state.vlc.playback : {}; }
+    function playbackMediaKey(playback) { return `${Number.isInteger(playback.currentIndex) ? playback.currentIndex : -1}|${playback.currentPath || ''}`; }
+
+    function setView(view) {
+      if (!viewTitles[view]) return;
+      activeView = view;
+      document.querySelectorAll('.view').forEach(section => section.classList.toggle('hidden', section.id !== `view-${view}`));
+      document.querySelectorAll('.nav-btn').forEach(button => button.classList.toggle('active', button.dataset.view === view));
+      $('pageTitle').textContent = viewTitles[view];
+      if (view === 'assets' && !assetState.loaded && !assetState.loading) loadAssets();
+    }
+
+    async function loadAssets() {
+      assetState.loading = true; assetState.error = ''; renderAssets();
+      try {
+        const result = await ipcRenderer.invoke('list-local-media');
+        if (!result || !result.ok) throw new Error(result && result.error || 'Could not scan assets');
+        assetState = { loaded: true, loading: false, error: '', directory: result.directory || '', items: Array.isArray(result.items) ? result.items : [] };
+      } catch (error) {
+        assetState.loading = false; assetState.error = error.message || String(error);
+      }
+      renderAssets();
+    }
+
+    function normalizedAssetStatus(item) {
+      const health = state.mediaHealth && Array.isArray(state.mediaHealth.items) ? state.mediaHealth.items : [];
+      const itemPath = String(item.path || '').toLowerCase();
+      const healthItem = health.find(entry => itemPath && String(entry.path || '').toLowerCase() === itemPath);
+      if (healthItem) return healthItem.status;
+      if (item.status === 'available' || item.status === 'downloaded') return Number(item.size) > 0 ? 'ready' : 'corrupt';
+      if (item.status === 'invalid') return 'corrupt';
+      return item.status || 'missing';
+    }
+
+    function renderAssets() {
+      const query = String($('assetSearch').value || '').trim().toLowerCase();
+      const filter = $('assetFilter').value;
+      const all = assetState.items.map(item => ({ ...item, healthStatus: normalizedAssetStatus(item) }));
+      const readyCount = all.filter(item => item.healthStatus === 'ready').length;
+      const filtered = all.filter(item => {
+        const matchesText = !query || [item.title, item.filename, item.relativePath, item.sourceLabel].some(value => String(value || '').toLowerCase().includes(query));
+        const matchesFilter = filter === 'all' || (filter === 'ready' && item.healthStatus === 'ready') ||
+          (filter === 'problem' && item.healthStatus !== 'ready') || (filter === 'local' && item.source === 'library') ||
+          (filter === 'managed' && item.source === 'managed');
+        return matchesText && matchesFilter;
+      });
+      $('assetTotal').textContent = all.length; $('assetReady').textContent = readyCount;
+      $('assetProblems').textContent = all.length - readyCount; $('assetShowing').textContent = filtered.length;
+      $('assetDirectory').textContent = assetState.directory ? `Folder A: ${assetState.directory}` : '';
+      const rows = $('assetRows'); rows.innerHTML = '';
+      for (const item of filtered) {
+        const tr = document.createElement('tr');
+        const media = document.createElement('td'); const main = document.createElement('div'); const path = document.createElement('div');
+        main.className = 'asset-main'; main.textContent = item.title || item.filename || 'Untitled';
+        path.className = 'asset-path'; path.textContent = item.relativePath || item.path || '';
+        media.append(main, path); tr.appendChild(media);
+        const source = document.createElement('td'); source.textContent = item.sourceLabel || (item.source === 'managed' ? 'Downloaded' : 'Folder A'); tr.appendChild(source);
+        const duration = document.createElement('td'); duration.textContent = Number(item.durationMs) > 0 ? fmtPlaybackTime(Number(item.durationMs) / 1000) : '—'; tr.appendChild(duration);
+        const size = document.createElement('td'); size.textContent = fmtBytes(item.size); tr.appendChild(size);
+        const status = document.createElement('td'); const pill = document.createElement('span'); pill.className = `status-pill ${item.healthStatus}`; pill.textContent = item.healthStatus; status.appendChild(pill); tr.appendChild(status);
+        rows.appendChild(tr);
+      }
+      $('assetEmpty').style.display = filtered.length ? 'none' : 'block';
+      $('assetEmpty').textContent = assetState.loading ? 'Scanning assets...' : assetState.error || (assetState.loaded ? 'No assets match the current search and filter.' : 'Open this page to scan available media.');
+      $('btnRefreshAssets').disabled = assetState.loading;
+      $('btnRefreshAssets').textContent = assetState.loading ? 'Scanning...' : 'Refresh Assets';
     }
 
     function renderMediaHealth() {
-      const health = state.mediaHealth || {};
-      const counts = health.counts || {};
-      const problemCount = (Number(counts.missing) || 0) +
-        (Number(counts.corrupt) || 0) + (Number(counts.unreadable) || 0);
+      const health = state.mediaHealth || {}; const counts = health.counts || {};
+      const problems = (Number(counts.missing) || 0) + (Number(counts.corrupt) || 0) + (Number(counts.unreadable) || 0);
       const healthState = health.state || 'idle';
-      $('healthState').textContent = healthState;
-      $('healthState').className = `health-state ${healthState}`;
-      $('healthReady').textContent = Number(counts.ready) || 0;
-      $('healthProblems').textContent = problemCount;
+      $('healthState').textContent = healthState; $('healthState').className = `health-state ${healthState}`;
+      $('healthReady').textContent = Number(counts.ready) || 0; $('healthProblems').textContent = problems;
       $('healthFreeSpace').textContent = health.disk ? fmtBytes(health.disk.freeBytes) : '—';
-      $('healthCheckedAt').textContent = health.checkedAt
-        ? new Date(health.checkedAt).toLocaleTimeString()
-        : '—';
-      const problems = (health.items || []).filter(item => item.status !== 'ready');
-      $('healthDetails').textContent = problems.slice(0, 3)
-        .map(item => `${item.title}: ${item.status}${item.reason ? ` (${item.reason})` : ''}`)
-        .join(' · ');
-      if (problems.length > 3) {
-        $('healthDetails').textContent += ` · +${problems.length - 3} more`;
+      $('healthCheckedAt').textContent = health.checkedAt ? new Date(health.checkedAt).toLocaleTimeString() : '—';
+      const items = Array.isArray(health.items) ? health.items : [];
+      $('healthSummary').textContent = healthError || (healthState === 'checking' ? 'Checking scheduled media...' : `${items.length} scheduled media item${items.length === 1 ? '' : 's'} checked.`);
+      const list = $('healthDetails'); list.innerHTML = '';
+      if (!items.length) { const empty = document.createElement('div'); empty.className = 'empty-state'; empty.textContent = 'No scheduled media has been checked yet.'; list.appendChild(empty); }
+      for (const item of items) {
+        const row = document.createElement('div'); row.className = 'health-item';
+        const info = document.createElement('div'); const title = document.createElement('strong'); const detail = document.createElement('small');
+        title.textContent = item.title || item.path || item.id; detail.textContent = [item.path, item.reason].filter(Boolean).join(' · '); info.append(title, detail);
+        const pill = document.createElement('span'); pill.className = `status-pill ${item.status}`; pill.textContent = item.status; row.append(info, pill); list.appendChild(row);
       }
-      if (health.disk && health.disk.lowSpace) {
-        $('healthDetails').textContent +=
-          `${$('healthDetails').textContent ? ' · ' : ''}Low disk space`;
-      }
-      $('btnRecheckMedia').disabled = healthState === 'checking';
-      $('btnRecheckMedia').textContent = healthState === 'checking' ? 'Checking...' : 'Recheck Media';
+      $('btnRecheckMedia').disabled = healthState === 'checking'; $('btnRecheckMedia').textContent = healthState === 'checking' ? 'Checking...' : 'Recheck Media';
     }
 
     function renderPlayback(now, vlc) {
-      const details = $('playbackDetails');
-      const files = now && Array.isArray(now.files) ? now.files : [];
-      const playback = vlc && vlc.playback ? vlc.playback : {};
+      const files = now && Array.isArray(now.files) ? now.files : []; const playback = vlc && vlc.playback ? vlc.playback : {};
       let index = Number.isInteger(playback.currentIndex) ? playback.currentIndex : -1;
-      if (index < 0 && playback.currentPath) {
-        index = files.findIndex(file => (
-          String(file.localPath || file.path || '').toLowerCase() ===
-          String(playback.currentPath).toLowerCase()
-        ));
-      }
-      if (!now || index < 0 || !files[index] || vlc.idleMode) {
-        details.classList.add('hidden');
-        $('progressFill').style.width = '0%';
-        return;
-      }
+      if (index < 0 && playback.currentPath) index = files.findIndex(file => String(file.localPath || file.path || '').toLowerCase() === String(playback.currentPath).toLowerCase());
+      if (!now || index < 0 || !files[index] || vlc.idleMode) { $('playbackDetails').classList.add('hidden'); $('progressFill').style.width = '0%'; return; }
+      const position = Math.max(0, Number(playback.positionSeconds) || 0); const length = Math.max(0, Number(playback.lengthSeconds) || 0);
+      const nextIndex = index + 1 < files.length ? index + 1 : (now.loop !== false && files.length > 1 ? 0 : -1);
+      $('currentMedia').textContent = titleFor(files[index]); $('playlistPosition').textContent = `${index + 1} of ${files.length}`;
+      $('progressFill').style.width = `${length > 0 ? Math.min(100, position / length * 100) : 0}%`;
+      $('playbackElapsed').textContent = fmtPlaybackTime(position); $('playbackDuration').textContent = length > 0 ? fmtPlaybackTime(length) : 'Detecting duration...';
+      $('nextMedia').textContent = nextIndex >= 0 ? `Next: ${titleFor(files[nextIndex])}` : 'Last item in playlist'; $('playbackDetails').classList.remove('hidden');
+    }
 
-      const current = files[index];
-      const position = Math.max(0, Number(playback.positionSeconds) || 0);
-      const length = Math.max(0, Number(playback.lengthSeconds) || 0);
-      const percentage = length > 0 ? Math.min(100, (position / length) * 100) : 0;
-      const nextIndex = index + 1 < files.length
-        ? index + 1
-        : (now.loop !== false && files.length > 1 ? 0 : -1);
-      const next = nextIndex >= 0 ? files[nextIndex] : null;
+    function renderSkipped() {
+      const query = String($('skippedSearch').value || '').trim().toLowerCase(); const list = $('skipped'); list.innerHTML = '';
+      const skipped = (state.skipped || []).filter(item => !query || [item.title, ...(item.files || []).map(titleFor)].some(value => String(value || '').toLowerCase().includes(query)));
+      if (!skipped.length) { const li = document.createElement('li'); li.innerHTML = `<div class="empty-state" style="width:100%">${query ? 'No skipped schedules match your search.' : 'No skipped schedules.'}</div>`; list.appendChild(li); return; }
+      for (const item of skipped) {
+        const li = document.createElement('li'); li.className = 'skipped-item'; const details = document.createElement('div'); details.className = 'skipped-details';
+        const title = document.createElement('strong'); title.textContent = item.title || item.scheduleId;
+        const dates = document.createElement('span'); dates.textContent = `${item.startTime ? fmtDate(new Date(item.startTime).getTime()) : '—'} → ${item.endTime ? fmtDate(new Date(item.endTime).getTime()) : '—'}`;
+        const file = document.createElement('span'); file.className = 'skipped-file'; file.textContent = (item.files || []).map(titleFor).join(' → '); details.append(title, dates, file);
+        const button = document.createElement('button'); button.className = 'btn primary'; button.textContent = 'Reactivate'; button.onclick = () => ipcRenderer.invoke('vlc-reactivate', item.scheduleId); li.append(details, button); list.appendChild(li);
+      }
+    }
 
-      $('currentMedia').textContent = current.title || current.path || current.assetId || 'Current media';
-      $('playlistPosition').textContent = `${index + 1} of ${files.length}`;
-      $('progressFill').style.width = `${percentage}%`;
-      $('playbackElapsed').textContent = fmtPlaybackTime(position);
-      $('playbackDuration').textContent = length > 0 ? fmtPlaybackTime(length) : 'Detecting duration...';
-      $('nextMedia').textContent = next
-        ? `Next: ${next.title || next.path || next.assetId}`
-        : 'Last item in playlist';
-      details.classList.remove('hidden');
+    function clampJumpTarget(seconds) { return Math.max(0, Math.min(jumpMaxSeconds, Math.floor(Number(seconds) || 0))); }
+    function setJumpTarget(seconds) {
+      const target = clampJumpTarget(seconds); $('jumpSlider').value = String(target); $('jumpMinutes').value = String(Math.floor(target / 60)); $('jumpSeconds').value = String(target % 60);
+      $('jumpTargetLabel').textContent = `${fmtPlaybackTime(target)} / ${fmtPlaybackTime(jumpMaxSeconds + 1)}`; return target;
+    }
+    function syncJumpTargetFromInputs() { return setJumpTarget(Math.max(0, Math.floor(Number($('jumpMinutes').value) || 0)) * 60 + Math.max(0, Math.min(59, Math.floor(Number($('jumpSeconds').value) || 0)))); }
+    function openJumpPanel() {
+      const playback = currentPlayback(); jumpMaxSeconds = Math.max(0, Math.floor(Number(playback.lengthSeconds) || 0) - 1); jumpMediaKey = playbackMediaKey(playback);
+      $('jumpSlider').max = String(jumpMaxSeconds); $('jumpMinutes').max = String(Math.floor(jumpMaxSeconds / 60)); setJumpTarget(playback.positionSeconds); jumpPanelOpen = true; $('jumpPanel').classList.remove('hidden');
+    }
+    function closeJumpPanel() { jumpPanelOpen = false; jumpMediaKey = ''; $('jumpPanel').classList.add('hidden'); }
+    async function invokePlaybackControl(channel, value) {
+      controlError = '';
+      try { const result = value === undefined ? await ipcRenderer.invoke(channel) : await ipcRenderer.invoke(channel, value); if (result && result.ok === false) throw new Error(result.error || 'Playback control failed'); return result; }
+      catch (error) { controlError = error && error.message ? error.message : String(error); render(); return null; }
     }
 
     function render() {
-      $('badge').className = badgeClass(state.status);
-      $('badge').textContent = badgeLabel(state.status);
-      $('device').textContent = state.deviceId || '—';
-      $('btnAddSchedule').style.display = state.bypass ? 'inline-block' : 'none';
-      $('btnManageSchedules').style.display = state.bypass ? 'inline-block' : 'none';
-      renderMediaHealth();
-
+      $('badge').className = badgeClass(state.status); $('badge').textContent = badgeLabel(state.status); $('device').textContent = state.deviceId || '—';
+      $('sidebarVersion').textContent = `v${state.appVersion || '1.0.0'}`; $('btnAddSchedule').style.display = state.bypass ? 'inline-block' : 'none'; $('btnManageSchedules').style.display = state.bypass ? 'inline-block' : 'none';
       const now = state.now;
-      if (now) {
-        $('nowTitle').textContent = now.title || now.scheduleId;
-        $('nowTitle').classList.remove('empty');
-        $('nowFile').textContent = (now.files || [])
-          .map(file => file.title || file.path || file.assetId)
-          .filter(Boolean)
-          .join(' â†’ ');
-        const remaining = now.endMs ? (now.endMs - Date.now()) : null;
-        $('nowCountdown').textContent = fmtCountdown(remaining);
-      } else {
-        $('nowTitle').textContent = 'No active schedule';
-        $('nowTitle').classList.add('empty');
-        $('nowFile').textContent = '';
-        $('nowCountdown').textContent = '';
-      }
-
-      const vlc = state.vlc || {};
-      renderPlayback(now, vlc);
-      const vlcEl = $('vlcState');
-      const displayState = (vlc.state === 'playing' && vlc.idleMode) ? 'idle' : (vlc.state || 'idle');
-      vlcEl.className = 'vlc-state ' + displayState;
-      vlcEl.textContent = displayState;
+      if (now) { $('nowTitle').textContent = now.title || now.scheduleId; $('nowTitle').classList.remove('empty'); $('nowFile').textContent = (now.files || []).map(titleFor).join(' → '); $('nowCountdown').textContent = fmtCountdown(now.endMs ? now.endMs - Date.now() : null); }
+      else { $('nowTitle').textContent = 'No active schedule'; $('nowTitle').classList.add('empty'); $('nowFile').textContent = ''; $('nowCountdown').textContent = ''; }
+      const vlc = state.vlc || {}; renderPlayback(now, vlc);
+      const displayState = vlc.state === 'playing' && vlc.idleMode ? 'idle' : vlc.state || 'idle'; $('vlcState').className = `vlc-state ${displayState}`; $('vlcState').textContent = displayState;
       const watchdog = state.watchdog || {};
-      if (watchdog.state === 'recovering') {
-        $('vlcNote').textContent =
-          `Automatic recovery attempt ${watchdog.attempts}/${watchdog.maxAttempts} is running...`;
-      } else if (watchdog.state === 'waiting') {
-        const seconds = watchdog.nextRetryAt
-          ? Math.max(0, Math.ceil((watchdog.nextRetryAt - Date.now()) / 1000))
-          : 0;
-        $('vlcNote').textContent =
-          `Recovery attempt ${watchdog.attempts}/${watchdog.maxAttempts} failed. Retrying in ${seconds}s.` +
-          (watchdog.lastError ? ` ${watchdog.lastError}` : '');
-      } else if (watchdog.state === 'exhausted') {
-        $('vlcNote').textContent =
-          `Automatic recovery stopped after ${watchdog.attempts} attempts. Click Retry VLC.` +
-          (watchdog.lastError ? ` ${watchdog.lastError}` : '');
-      } else if (watchdog.state === 'degraded') {
-        $('vlcNote').textContent = 'Playback health check failed. Waiting for confirmation before recovery.';
-      } else if (controlError) {
-        $('vlcNote').textContent = `Playback control failed: ${controlError}`;
-      } else if (state.recoveryResume && now && state.recoveryResume.scheduleId === now.scheduleId) {
-        $('vlcNote').textContent =
-          `Recovered: resumed ${state.recoveryResume.title} at ` +
-          `${fmtPlaybackTime(state.recoveryResume.positionSeconds)}.`;
-      } else {
-        $('vlcNote').textContent = (vlc.state === 'error')
-          ? 'VLC is unavailable. Automatic recovery will run while a schedule is active.'
-          : '';
-      }
-
-      const hasNow = !!now;
-      const isIdleMode = !!vlc.idleMode;
-      const playing = vlc.state === 'playing';
-      const paused = vlc.state === 'paused';
-      const playback = vlc.playback || {};
-      const hasDuration = Number.isFinite(Number(playback.lengthSeconds)) && Number(playback.lengthSeconds) > 0;
-      const hasCurrentItem = Number.isInteger(playback.currentIndex) && playback.currentIndex >= 0;
-      const canSeek = hasNow && !isIdleMode && (playing || paused) && hasDuration && hasCurrentItem;
-      $('btnPause').disabled = !(hasNow && playing && !isIdleMode);
-      $('btnResume').disabled = !(hasNow && paused && !isIdleMode);
-      $('btnRewind').disabled = !canSeek;
-      $('btnForward').disabled = !canSeek;
-      $('btnJump').disabled = !canSeek;
-      $('btnSkip').disabled = !hasNow;
-      if (jumpPanelOpen) {
-        const mediaChanged = jumpMediaKey !== playbackMediaKey(playback);
-        if (!canSeek || mediaChanged) {
-          closeJumpPanel();
-        } else {
-          jumpMaxSeconds = Math.max(0, Math.floor(Number(playback.lengthSeconds)) - 1);
-          $('jumpSlider').max = String(jumpMaxSeconds);
-          $('jumpMinutes').max = String(Math.floor(jumpMaxSeconds / 60));
-          setJumpTarget($('jumpSlider').value);
-        }
-      }
-
-      const upEl = $('upcoming');
-      upEl.innerHTML = '';
-      if (!state.upcoming || !state.upcoming.length) {
-        const li = document.createElement('li');
-        li.innerHTML = '<span class="empty">No upcoming schedules</span>';
-        upEl.appendChild(li);
-      } else {
-        for (const it of state.upcoming) {
-          const li = document.createElement('li');
-          li.innerHTML = `<span class="time">${fmtDate(it.startMs)}</span>` +
-                         `<span class="ttl" title="${it.title}">${it.title}</span>` +
-                         `<span class="rec">${it.freqLabel || ''}</span>`;
-          upEl.appendChild(li);
-        }
-      }
-
-      const skEl = $('skipped');
-      skEl.innerHTML = '';
-      if (!state.skipped || !state.skipped.length) {
-        const li = document.createElement('li');
-        li.innerHTML = '<span class="empty">No skipped schedules</span>';
-        skEl.appendChild(li);
-      } else {
-        for (const it of state.skipped) {
-          const li = document.createElement('li');
-          const start = it.startTime ? fmtDate(new Date(it.startTime).getTime()) : '-';
-          const end = it.endTime ? fmtDate(new Date(it.endTime).getTime()) : '-';
-          const file = (it.files || [])
-            .map(item => item.title || item.path || item.assetId)
-            .filter(Boolean)
-            .join(' â†’ ');
-          li.innerHTML = `<div class="details">` +
-                           `<span class="ttl" title="${it.title}">${it.title}</span>` +
-                           `<span>${start} → ${end}</span>` +
-                           `<span class="file">${file}</span>` +
-                         `</div>` +
-                         `<button class="btn primary" data-id="${it.scheduleId}">Reactivate</button>`;
-          skEl.appendChild(li);
-        }
-        skEl.querySelectorAll('button[data-id]').forEach((btn) => {
-          btn.onclick = () => ipcRenderer.invoke('vlc-reactivate', btn.dataset.id);
-        });
-      }
+      if (watchdog.state === 'recovering') $('vlcNote').textContent = `Automatic recovery attempt ${watchdog.attempts}/${watchdog.maxAttempts} is running...`;
+      else if (watchdog.state === 'waiting') $('vlcNote').textContent = `Recovery attempt ${watchdog.attempts}/${watchdog.maxAttempts} failed. Retrying soon.${watchdog.lastError ? ` ${watchdog.lastError}` : ''}`;
+      else if (watchdog.state === 'exhausted') $('vlcNote').textContent = `Automatic recovery stopped after ${watchdog.attempts} attempts. Click Retry VLC.${watchdog.lastError ? ` ${watchdog.lastError}` : ''}`;
+      else if (watchdog.state === 'degraded') $('vlcNote').textContent = 'Playback health check failed. Waiting for confirmation before recovery.';
+      else if (controlError) $('vlcNote').textContent = `Playback control failed: ${controlError}`;
+      else if (state.recoveryResume && now && state.recoveryResume.scheduleId === now.scheduleId) $('vlcNote').textContent = `Recovered: resumed ${state.recoveryResume.title} at ${fmtPlaybackTime(state.recoveryResume.positionSeconds)}.`;
+      else $('vlcNote').textContent = vlc.state === 'error' ? 'VLC is unavailable. Automatic recovery will run while a schedule is active.' : '';
+      const playing = vlc.state === 'playing'; const paused = vlc.state === 'paused'; const playback = vlc.playback || {}; const hasNow = !!now; const isIdleMode = !!vlc.idleMode;
+      const canSeek = hasNow && !isIdleMode && (playing || paused) && Number(playback.lengthSeconds) > 0 && Number.isInteger(playback.currentIndex) && playback.currentIndex >= 0;
+      $('btnPlayPause').disabled = !(hasNow && !isIdleMode && (playing || paused)); $('playPauseIcon').innerHTML = paused ? playIcon : pauseIcon;
+      $('btnPlayPause').dataset.tooltip = paused ? 'Resume' : 'Pause'; $('btnPlayPause').setAttribute('aria-label', paused ? 'Resume' : 'Pause');
+      $('btnRewind').disabled = !canSeek; $('btnForward').disabled = !canSeek; $('btnJump').disabled = !canSeek; $('btnSkip').disabled = !hasNow;
+      if (jumpPanelOpen) { if (!canSeek || jumpMediaKey !== playbackMediaKey(playback)) closeJumpPanel(); else { jumpMaxSeconds = Math.max(0, Math.floor(Number(playback.lengthSeconds)) - 1); $('jumpSlider').max = String(jumpMaxSeconds); $('jumpMinutes').max = String(Math.floor(jumpMaxSeconds / 60)); setJumpTarget($('jumpSlider').value); } }
+      const upcoming = $('upcoming'); upcoming.innerHTML = '';
+      if (!(state.upcoming || []).length) { const li = document.createElement('li'); li.innerHTML = '<div class="empty-state" style="width:100%">No upcoming schedules.</div>'; upcoming.appendChild(li); }
+      for (const item of state.upcoming || []) { const li = document.createElement('li'); const time = document.createElement('span'); const title = document.createElement('span'); const meta = document.createElement('span'); time.className = 'time'; title.className = 'title'; meta.className = 'meta'; time.textContent = fmtDate(item.startMs); title.textContent = item.title; meta.textContent = item.freqLabel || ''; li.append(time, title, meta); upcoming.appendChild(li); }
+      renderMediaHealth(); renderSkipped(); if (assetState.loaded || assetState.loading || assetState.error) renderAssets();
+      $('aboutVersion').textContent = state.appVersion || '1.0.0'; $('aboutDevice').textContent = state.deviceId || 'Not registered'; $('aboutMode').textContent = badgeLabel(state.status); $('aboutVlc').textContent = displayState; $('aboutRc').textContent = vlc.rcReady ? 'Ready' : 'Unavailable';
     }
 
+    ipcRenderer.on('dashboard:update', (_event, payload) => { state = Object.assign({}, state, payload); render(); });
+    document.querySelectorAll('.nav-btn').forEach(button => button.onclick = () => setView(button.dataset.view));
+    $('btnRefreshAssets').onclick = loadAssets; $('assetSearch').oninput = renderAssets; $('assetFilter').onchange = renderAssets; $('skippedSearch').oninput = renderSkipped;
     $('btnRewind').onclick = () => invokePlaybackControl('vlc-seek-relative', -10);
-    $('btnPause').onclick  = () => invokePlaybackControl('vlc-pause');
-    $('btnResume').onclick = () => invokePlaybackControl('vlc-resume');
-    $('btnForward').onclick = () => invokePlaybackControl('vlc-seek-relative', 10);
-    $('btnJump').onclick = () => jumpPanelOpen ? closeJumpPanel() : openJumpPanel();
-    $('jumpSlider').oninput = () => setJumpTarget($('jumpSlider').value);
-    $('jumpMinutes').oninput = syncJumpTargetFromInputs;
-    $('jumpSeconds').oninput = syncJumpTargetFromInputs;
-    $('btnJumpCancel').onclick = closeJumpPanel;
-    $('btnJumpApply').onclick = async () => {
-      const target = syncJumpTargetFromInputs();
-      $('btnJumpApply').disabled = true;
-      const result = await invokePlaybackControl('vlc-seek-to', target);
-      $('btnJumpApply').disabled = false;
-      if (result) closeJumpPanel();
-    };
-    $('btnSkip').onclick   = () => ipcRenderer.invoke('vlc-skip');
-    $('btnRetry').onclick  = () => ipcRenderer.invoke('vlc-retry');
-    $('btnAddSchedule').onclick = () => ipcRenderer.invoke('open-schedule-adder');
-    $('btnManageSchedules').onclick = () => ipcRenderer.invoke('open-schedule-manager');
-    $('btnRecheckMedia').onclick = async () => {
-      $('btnRecheckMedia').disabled = true;
-      $('btnRecheckMedia').textContent = 'Checking...';
-      const result = await ipcRenderer.invoke('recheck-media-health');
-      if (!result || !result.ok) {
-        $('healthDetails').textContent = result && result.error || 'Media health check failed';
-        $('btnRecheckMedia').disabled = false;
-        $('btnRecheckMedia').textContent = 'Recheck Media';
-      }
-    };
-    $('btnConfig').onclick = () => ipcRenderer.invoke('open-config-folder');
-    $('btnLogout').onclick = () => ipcRenderer.invoke('logout');
-    $('btnQuit').onclick   = () => ipcRenderer.invoke('quit');
-
-    function updateClock() {
-      const now = new Date();
-      const pad = (n) => String(n).padStart(2, '0');
-      $('clock').textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-    }
-    setInterval(updateClock, 1000);
-    updateClock();
-
-    render();
+    $('btnPlayPause').onclick = () => invokePlaybackControl(state.vlc && state.vlc.state === 'paused' ? 'vlc-resume' : 'vlc-pause');
+    $('btnForward').onclick = () => invokePlaybackControl('vlc-seek-relative', 10); $('btnJump').onclick = () => jumpPanelOpen ? closeJumpPanel() : openJumpPanel();
+    $('jumpSlider').oninput = () => setJumpTarget($('jumpSlider').value); $('jumpMinutes').oninput = syncJumpTargetFromInputs; $('jumpSeconds').oninput = syncJumpTargetFromInputs; $('btnJumpCancel').onclick = closeJumpPanel;
+    $('btnJumpApply').onclick = async () => { const target = syncJumpTargetFromInputs(); $('btnJumpApply').disabled = true; const result = await invokePlaybackControl('vlc-seek-to', target); $('btnJumpApply').disabled = false; if (result) closeJumpPanel(); };
+    $('btnSkip').onclick = () => ipcRenderer.invoke('vlc-skip'); $('btnRetry').onclick = () => ipcRenderer.invoke('vlc-retry'); $('btnAddSchedule').onclick = () => ipcRenderer.invoke('open-schedule-adder'); $('btnManageSchedules').onclick = () => ipcRenderer.invoke('open-schedule-manager');
+    $('btnRecheckMedia').onclick = async () => { healthError = ''; $('btnRecheckMedia').disabled = true; $('btnRecheckMedia').textContent = 'Checking...'; const result = await ipcRenderer.invoke('recheck-media-health'); if (!result || !result.ok) healthError = result && result.error || 'Media health check failed'; render(); };
+    $('btnConfig').onclick = () => ipcRenderer.invoke('open-config-folder'); $('btnLogout').onclick = () => ipcRenderer.invoke('logout'); $('btnQuit').onclick = () => ipcRenderer.invoke('quit');
+    function updateClock() { const now = new Date(); const pad = n => String(n).padStart(2, '0'); $('clock').textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`; }
+    setInterval(updateClock, 1000); updateClock(); render();
   </script>
 </body>
 </html>
