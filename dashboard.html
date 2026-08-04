@@ -56,9 +56,16 @@
     .connection { padding: 0 10px 13px; }
     .connection-label { color: var(--subtle); font-size: 10px; font-weight: 700; letter-spacing: .9px; text-transform: uppercase; }
     .device { display: block; margin-top: 7px; overflow: hidden; color: var(--muted); font-family: ui-monospace, Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-    .sidebar-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
+    .sidebar-actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
 
-    .workspace { min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+    .workspace { position: relative; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+    .operator-lock { position: absolute; z-index: 80; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(245, 243, 240, .96); backdrop-filter: blur(5px); }
+    .operator-lock.hidden { display: none; }
+    .operator-lock-card { width: min(380px, 100%); padding: 26px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: 0 20px 55px rgba(74, 52, 46, .14); }
+    .operator-lock-card h2 { margin: 0 0 6px; font-size: 19px; }
+    .operator-lock-card p { margin: 0 0 17px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .operator-lock-card input { margin-bottom: 11px; }
+    .operator-lock-error { min-height: 16px; margin-top: 10px; color: var(--red-dark); font-size: 10px; }
     .topbar {
       height: 68px; flex: 0 0 68px; display: flex; align-items: center; justify-content: space-between;
       padding: 0 28px; background: rgba(255, 253, 251, .86); border-bottom: 1px solid var(--border);
@@ -234,6 +241,7 @@
         </div>
         <div class="sidebar-actions">
           <button id="btnConfig" class="btn icon-btn" data-tooltip="Open Config" aria-label="Open config folder"><svg viewBox="0 0 24 24"><path d="M4 4h6l2 2h8v13H4z"/></svg></button>
+          <button id="btnLock" class="btn icon-btn" data-tooltip="Lock Dashboard" aria-label="Lock dashboard"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></button>
           <button id="btnLogout" class="btn icon-btn danger" data-tooltip="Reset Pairing" aria-label="Reset pairing"><svg viewBox="0 0 24 24"><path d="M10 5H4v14h6M14 8l4 4-4 4M8 12h10"/></svg></button>
           <button id="btnQuit" class="btn icon-btn danger" data-tooltip="Quit Player" aria-label="Quit player"><svg viewBox="0 0 24 24"><path d="M12 3v9M6.5 6.5a8 8 0 1 0 11 0"/></svg></button>
         </div>
@@ -241,6 +249,18 @@
     </aside>
 
     <div class="workspace">
+      <div id="operatorLock" class="operator-lock">
+        <form id="operatorLoginForm" class="operator-lock-card">
+          <h2>Dashboard locked</h2>
+          <p>Playback continues automatically. Sign in as an authorized CMS operator to use controls.</p>
+          <label for="operatorEmail">Operator email</label>
+          <input id="operatorEmail" type="email" required autocomplete="username" />
+          <label for="operatorPassword">Password</label>
+          <input id="operatorPassword" type="password" required autocomplete="current-password" />
+          <button id="btnOperatorLogin" class="btn primary" type="submit">Unlock Dashboard</button>
+          <div id="operatorLoginError" class="operator-lock-error"></div>
+        </form>
+      </div>
       <header class="topbar"><h1 id="pageTitle">Home</h1><div class="topbar-right"><span id="clock" class="clock">--:--:--</span></div></header>
       <main class="content">
         <section id="view-home" class="view">
@@ -329,7 +349,7 @@
     const pauseIcon = '<rect class="solid" x="6" y="4" width="4" height="16"/><rect class="solid" x="14" y="4" width="4" height="16"/>';
     const playIcon = '<path class="solid" d="M7 4l13 8-13 8z"/>';
     let activeView = 'home';
-    let state = { status: 'offline', deviceId: '', appVersion: '1.0.0', serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
+    let state = { status: 'offline', deviceId: '', appVersion: '1.0.0', serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, operator: { unlocked: false, user: null }, now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
     let assetState = { loaded: false, loading: false, error: '', directory: '', items: [] };
     let jumpPanelOpen = false;
     let jumpMaxSeconds = 0;
@@ -505,6 +525,7 @@
     }
 
     function render() {
+      $('operatorLock').classList.toggle('hidden', Boolean(state.bypass || state.operator && state.operator.unlocked));
       $('badge').className = badgeClass(state.status); $('badge').textContent = badgeLabel(state.status); $('device').textContent = state.deviceId || '—';
       $('sidebarVersion').textContent = `v${state.appVersion || '1.0.0'}`; $('btnAddSchedule').style.display = state.bypass ? 'inline-block' : 'none'; $('btnManageSchedules').style.display = state.bypass ? 'inline-block' : 'none';
       const now = state.now;
@@ -534,6 +555,7 @@
     }
 
     ipcRenderer.on('dashboard:update', (_event, payload) => { state = Object.assign({}, state, payload); render(); });
+    $('operatorLoginForm').onsubmit = async event => { event.preventDefault(); $('operatorLoginError').textContent = ''; $('btnOperatorLogin').disabled = true; const result = await ipcRenderer.invoke('operator-login', { email: $('operatorEmail').value, password: $('operatorPassword').value }); $('btnOperatorLogin').disabled = false; if (!result || !result.ok) { $('operatorLoginError').textContent = result && result.error || 'Login failed'; return; } $('operatorPassword').value = ''; };
     document.querySelectorAll('.nav-btn').forEach(button => button.onclick = () => setView(button.dataset.view));
     $('btnRefreshAssets').onclick = loadAssets; $('assetSearch').oninput = renderAssets; $('assetFilter').onchange = renderAssets; $('skippedSearch').oninput = renderSkipped;
     $('btnRewind').onclick = () => invokePlaybackControl('vlc-seek-relative', -10);
@@ -544,7 +566,7 @@
     $('btnSkip').onclick = () => ipcRenderer.invoke('vlc-skip'); $('btnRetry').onclick = () => ipcRenderer.invoke('vlc-retry'); $('btnAddSchedule').onclick = () => ipcRenderer.invoke('open-schedule-adder'); $('btnManageSchedules').onclick = () => ipcRenderer.invoke('open-schedule-manager');
     $('btnRecheckMedia').onclick = async () => { healthError = ''; $('btnRecheckMedia').disabled = true; $('btnRecheckMedia').textContent = 'Checking...'; const result = await ipcRenderer.invoke('recheck-media-health'); if (!result || !result.ok) healthError = result && result.error || 'Media health check failed'; render(); };
     async function resetPairing() { if (!confirm('Revoke this player registration and return to the pairing screen?')) return; const result = await ipcRenderer.invoke('reset-pairing'); if (!result || !result.ok) alert(result && result.error || 'Unable to reset pairing'); }
-    $('btnConfig').onclick = () => ipcRenderer.invoke('open-config-folder'); $('btnLogout').onclick = resetPairing; $('btnResetPairing').onclick = resetPairing; $('btnQuit').onclick = () => ipcRenderer.invoke('quit');
+    $('btnConfig').onclick = () => ipcRenderer.invoke('open-config-folder'); $('btnLock').onclick = () => ipcRenderer.invoke('operator-logout'); $('btnLogout').onclick = resetPairing; $('btnResetPairing').onclick = resetPairing; $('btnQuit').onclick = () => ipcRenderer.invoke('quit');
     function updateClock() { const now = new Date(); const pad = n => String(n).padStart(2, '0'); $('clock').textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`; }
     setInterval(updateClock, 1000); updateClock(); render();
   </script>

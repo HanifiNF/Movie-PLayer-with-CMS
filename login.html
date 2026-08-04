@@ -51,13 +51,13 @@
     .welcome h2 { margin: 0 0 5px; font-size: 18px; letter-spacing: -.3px; }
     .subtitle { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
     label { display: block; margin: 14px 0 6px; color: var(--muted); font-size: 11px; font-weight: 650; }
-    input {
+    input, select {
       width: 100%; padding: 11px 12px; border: 1px solid var(--border); border-radius: 9px;
       outline: none; background: var(--surface-soft); color: var(--text); font-size: 13px;
       transition: border-color .12s, box-shadow .12s, background .12s;
     }
     input::placeholder { color: #b9b1ab; }
-    input:focus {
+    input:focus, select:focus {
       border-color: var(--red); background: var(--surface);
       box-shadow: 0 0 0 3px rgba(196, 61, 61, .1);
     }
@@ -86,6 +86,7 @@
       font-size: 11px; line-height: 1.4;
     }
     .err.show { display: block; }
+    .hidden { display: none !important; }
     .footnote { margin: 17px 0 0; color: var(--subtle); font-size: 9px; line-height: 1.5; text-align: center; }
   </style>
 </head>
@@ -98,19 +99,31 @@
 
     <div class="welcome">
       <h2>Connect this player</h2>
-      <p class="subtitle">Enter the CMS address and one-time enrollment code created by the operator.</p>
+      <p class="subtitle">Sign in as an authorized CMS operator, then select the device assigned to this PC.</p>
     </div>
 
     <label for="serverURL">CMS Server URL</label>
     <input id="serverURL" name="serverURL" type="url" placeholder="http://192.168.1.10:8080" required autocomplete="url" autofocus />
 
-    <label for="enrollmentCode">Enrollment code</label>
-    <input id="enrollmentCode" name="enrollmentCode" type="text" placeholder="ABCD-2345" required maxlength="9" autocomplete="one-time-code" spellcheck="false" />
+    <div id="loginStep">
+      <label for="email">Operator email</label>
+      <input id="email" name="email" type="email" placeholder="operator@example.com" required autocomplete="username" />
 
-    <button type="submit" id="btn">Pair Player</button>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" placeholder="Enter your password" required autocomplete="current-password" />
 
-    <div class="divider">Local testing</div>
-    <button type="button" id="btnTest" class="btn-secondary">Test Mode (skip login)</button>
+      <button type="submit" id="btn">Sign In</button>
+    </div>
+
+    <div id="deviceStep" class="hidden">
+      <label for="deviceId">Assigned device</label>
+      <select id="deviceId"></select>
+      <button type="button" id="btnClaim">Connect Player</button>
+      <button type="button" id="btnBack" class="btn-secondary">Use another account</button>
+    </div>
+
+    <div id="testDivider" class="divider hidden">Local testing</div>
+    <button type="button" id="btnTest" class="btn-secondary hidden">Test Mode (development only)</button>
 
     <div class="err" id="err" role="alert"></div>
     <p class="footnote">Scheduled playback continues locally when the CMS connection is temporarily unavailable.</p>
@@ -121,12 +134,17 @@
     const form = document.getElementById('f');
     const btn = document.getElementById('btn');
     const btnTest = document.getElementById('btnTest');
+    const btnClaim = document.getElementById('btnClaim');
+    const btnBack = document.getElementById('btnBack');
     const errEl = document.getElementById('err');
 
     function setBusy(busy) {
       btn.disabled = busy;
+      btnClaim.disabled = busy;
+      btnBack.disabled = busy;
       btnTest.disabled = busy;
-      btn.textContent = busy ? 'Pairing...' : 'Pair Player';
+      btn.textContent = busy ? 'Signing in...' : 'Sign In';
+      btnClaim.textContent = busy ? 'Connecting...' : 'Connect Player';
       btnTest.textContent = busy ? 'Starting...' : 'Test Mode (skip login)';
     }
 
@@ -136,8 +154,20 @@
       setBusy(true);
       const payload = Object.fromEntries(new FormData(form));
       try {
-        const result = await ipcRenderer.invoke('pair-player', payload);
-        if (!result || !result.ok) throw new Error(result && result.error || 'Pairing failed');
+        const result = await ipcRenderer.invoke('setup-login', payload);
+        if (!result || !result.ok) throw new Error(result && result.error || 'Login failed');
+        const select = document.getElementById('deviceId');
+        select.replaceChildren();
+        for (const device of result.devices || []) {
+          const option = document.createElement('option');
+          option.value = device.id;
+          option.textContent = `${device.name}${device.location ? ` — ${device.location}` : ''}`;
+          select.appendChild(option);
+        }
+        if (!select.options.length) throw new Error('No pending device is assigned to this operator.');
+        document.getElementById('loginStep').classList.add('hidden');
+        document.getElementById('deviceStep').classList.remove('hidden');
+        setBusy(false);
       } catch (error) {
         errEl.textContent = error.message || String(error);
         errEl.classList.add('show');
@@ -145,16 +175,30 @@
       }
     };
 
-    document.getElementById('enrollmentCode').addEventListener('input', event => {
-      const normalized = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
-      event.target.value = normalized.length > 4
-        ? `${normalized.slice(0, 4)}-${normalized.slice(4)}`
-        : normalized;
-    });
+    btnClaim.onclick = async () => {
+      errEl.classList.remove('show'); setBusy(true);
+      try {
+        const result = await ipcRenderer.invoke('claim-player', { deviceId: document.getElementById('deviceId').value });
+        if (!result || !result.ok) throw new Error(result && result.error || 'Device claim failed');
+      } catch (error) {
+        errEl.textContent = error.message || String(error); errEl.classList.add('show'); setBusy(false);
+      }
+    };
+
+    btnBack.onclick = async () => {
+      await ipcRenderer.invoke('setup-cancel').catch(() => {});
+      document.getElementById('deviceStep').classList.add('hidden');
+      document.getElementById('loginStep').classList.remove('hidden');
+      document.getElementById('password').value = '';
+    };
 
     ipcRenderer.invoke('get-pairing-defaults').then(defaults => {
       if (defaults && defaults.serverURL && !document.getElementById('serverURL').value) {
         document.getElementById('serverURL').value = defaults.serverURL;
+      }
+      if (defaults && defaults.testModeEnabled) {
+        btnTest.classList.remove('hidden');
+        document.getElementById('testDivider').classList.remove('hidden');
       }
     }).catch(() => {});
 

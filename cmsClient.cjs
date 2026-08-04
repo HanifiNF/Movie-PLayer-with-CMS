@@ -30,6 +30,22 @@ function normalizeServerUrl(value) {
   return parsed.toString().replace(/\/+$/, '');
 }
 
+function parseSessionExpiry(value, now = Date.now()) {
+  const fallback = now + 30 * 60 * 1000;
+  if (typeof value !== 'string' || !value.trim()) return fallback;
+
+  let timestamp = value.trim();
+  // Compatibility with older CMS responses. Those values were generated in
+  // UTC but omitted the offset, so interpreting them as PC-local time could
+  // make a new session appear expired immediately.
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(timestamp)) {
+    timestamp = timestamp.replace(' ', 'T') + 'Z';
+  }
+
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 class CmsClient extends EventEmitter {
   constructor(options = {}) {
     super();
@@ -51,6 +67,29 @@ class CmsClient extends EventEmitter {
     return this.#request('/api/player/register', {
       method: 'POST',
       body: payload
+    });
+  }
+
+  async operatorLogin(email, password) {
+    return this.#request('/api/auth/login', {
+      method: 'POST',
+      body: { email, password }
+    });
+  }
+
+  async operatorLogout(token) {
+    return this.#request('/api/auth/logout', { method: 'POST', token, body: {} });
+  }
+
+  async availableDevices(operatorToken) {
+    return this.#request('/api/operator/devices/available', {
+      method: 'GET', token: operatorToken
+    });
+  }
+
+  async claim(operatorToken, payload) {
+    return this.#request('/api/player/claim', {
+      method: 'POST', token: operatorToken, body: payload
     });
   }
 
@@ -131,7 +170,7 @@ class CmsClient extends EventEmitter {
       const response = await this.fetch(this.serverURL + endpoint, {
         method: options.method,
         headers,
-        body: JSON.stringify(options.body || {}),
+        body: options.method === 'GET' ? undefined : JSON.stringify(options.body || {}),
         signal: controller.signal
       });
       const payload = await response.json().catch(() => ({}));
@@ -155,4 +194,4 @@ class CmsClient extends EventEmitter {
   }
 }
 
-module.exports = { CmsClient, CmsApiError, normalizeServerUrl };
+module.exports = { CmsClient, CmsApiError, normalizeServerUrl, parseSessionExpiry };

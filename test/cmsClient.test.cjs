@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { once } = require('node:events');
-const { CmsClient, CmsApiError, normalizeServerUrl } = require('../cmsClient.cjs');
+const { CmsClient, CmsApiError, normalizeServerUrl, parseSessionExpiry } = require('../cmsClient.cjs');
 
 function response(status, payload) {
   return {
@@ -17,6 +17,25 @@ test('normalizeServerUrl accepts HTTP URLs and removes trailing slashes', () => 
   assert.equal(normalizeServerUrl(' http://localhost:8080/// '), 'http://localhost:8080');
   assert.throws(() => normalizeServerUrl('file:///tmp/cms'), CmsApiError);
   assert.throws(() => normalizeServerUrl('http://user:pass@localhost:8080'), CmsApiError);
+});
+
+test('parseSessionExpiry preserves timezone-aware timestamps', () => {
+  assert.equal(
+    parseSessionExpiry('2026-08-04T10:30:00+00:00'),
+    Date.UTC(2026, 7, 4, 10, 30, 0)
+  );
+  assert.equal(
+    parseSessionExpiry('2026-08-04T17:30:00+07:00'),
+    Date.UTC(2026, 7, 4, 10, 30, 0)
+  );
+});
+
+test('parseSessionExpiry treats legacy timezone-less CMS timestamps as UTC', () => {
+  assert.equal(
+    parseSessionExpiry('2026-08-04 10:30:00'),
+    Date.UTC(2026, 7, 4, 10, 30, 0)
+  );
+  assert.equal(parseSessionExpiry('invalid', 1000), 30 * 60 * 1000 + 1000);
 });
 
 test('register sends the enrollment payload to the CMS', async () => {
@@ -35,6 +54,28 @@ test('register sends the enrollment payload to the CMS', async () => {
   assert.equal(request.options.method, 'POST');
   assert.deepEqual(JSON.parse(request.options.body), { enrollment_code: 'ABCD-2345' });
   assert.equal(result.token, 'secret-token');
+});
+
+test('operator login, available devices, and claim use separate operator token', async () => {
+  const requests = [];
+  const client = new CmsClient({
+    serverURL: 'http://localhost:8080',
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      if (url.endsWith('/api/auth/login')) return response(200, { data: { token: 'operator-token', user: { role: 'operator' } } });
+      if (url.endsWith('/api/operator/devices/available')) return response(200, { data: [{ id: 'device-1', name: 'Lobby' }] });
+      return response(201, { data: { token: 'device-token', device_id: 'device-1' } });
+    }
+  });
+
+  const auth = await client.operatorLogin('operator@example.com', 'password');
+  const devices = await client.availableDevices(auth.token);
+  const claim = await client.claim(auth.token, { device_id: devices[0].id, device_fingerprint: 'install-1' });
+
+  assert.equal(claim.token, 'device-token');
+  assert.equal(requests[1].options.headers.Authorization, 'Bearer operator-token');
+  assert.equal(requests[1].options.body, undefined);
+  assert.equal(requests[2].options.headers.Authorization, 'Bearer operator-token');
 });
 
 test('heartbeat authenticates with Bearer token and reports online', async () => {

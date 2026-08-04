@@ -6,10 +6,12 @@ snapshot after reconnecting.
 
 ## Device registration
 
-Before Socket.IO is enabled, the player pairs through
-`POST /api/player/register`, sends `POST /api/player/heartbeat` every ten
-seconds, and revokes its token through `POST /api/player/unregister`. All
-authenticated REST calls use `Authorization: Bearer {playerToken}`.
+Before Socket.IO is enabled, an operator authenticates through
+`POST /api/auth/login`, lists assigned pending devices through
+`GET /api/operator/devices/available`, and claims one through
+`POST /api/player/claim`. The short-lived operator token is then discarded.
+The resulting device token is used for `POST /api/player/heartbeat` every ten
+seconds and `POST /api/player/unregister` during reset.
 
 After connecting to the `/player` namespace, the player emits:
 

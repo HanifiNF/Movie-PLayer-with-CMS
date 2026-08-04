@@ -18,7 +18,7 @@ const { MediaProbe } = require('./mediaProbe.cjs');
 const { PlaybackWatchdog } = require('./playbackWatchdog.cjs');
 const { resolveResumeTarget } = require('./playbackResume.cjs');
 const { MediaHealthMonitor } = require('./mediaHealth.cjs');
-const { CmsClient, CmsApiError, normalizeServerUrl } = require('./cmsClient.cjs');
+const { CmsClient, CmsApiError, normalizeServerUrl, parseSessionExpiry } = require('./cmsClient.cjs');
 const { DeviceCredentials } = require('./deviceCredentials.cjs');
 const CFG = require('./config.cjs');
 
@@ -39,6 +39,8 @@ let scheduleManagerWin = null;
 let socket = null;
 let cmsClient = null;
 let cmsState = { status: 'offline', lastHeartbeatAt: null, lastError: null };
+let setupSession = null;
+let operatorSession = null;
 let vlc = null;
 let scheduler = null;
 let cfg = null;
@@ -63,6 +65,22 @@ const credentialStore = new DeviceCredentials({
   installationPath: INSTALLATION_PATH,
   safeStorage
 });
+const DASHBOARD_IDLE_LOCK_MS = 15 * 60 * 1000;
+
+function isTestModeEnabled() {
+  return !app.isPackaged && process.env.PLAYER_ENABLE_TEST_MODE === '1';
+}
+
+function operatorAccessError(touch = true) {
+  if (cfg && cfg.bypass) return null;
+  const now = Date.now();
+  if (!operatorSession || now >= operatorSession.expiresAt || now - operatorSession.lastActivityAt >= DASHBOARD_IDLE_LOCK_MS) {
+    operatorSession = null;
+    return { ok: false, code: 'dashboard_locked', error: 'Dashboard is locked. Sign in as an operator.' };
+  }
+  if (touch) operatorSession.lastActivityAt = now;
+  return null;
+}
 
 function readJson(file, fallback) {
   try {
@@ -466,6 +484,10 @@ function pushDashboard() {
     bypass: !!(cfg && cfg.bypass),
     serverURL: cfg && cfg.serverURL || '',
     cms: { ...cmsState },
+    operator: {
+      unlocked: Boolean(!operatorAccessError(false)),
+      user: operatorSession && operatorSession.user || null
+    },
     now,
     upcoming,
     skipped,
@@ -512,8 +534,99 @@ async function performPairing({ serverURL, enrollmentCode }) {
 
 ipcMain.handle('get-pairing-defaults', async () => ({
   serverURL: CFG.SERVER_URL,
-  appVersion: app.getVersion()
+  appVersion: app.getVersion(),
+  testModeEnabled: isTestModeEnabled()
 }));
+
+ipcMain.handle('setup-login', async (_event, payload) => {
+  try {
+    if (setupSession) {
+      const previous = setupSession;
+      setupSession = null;
+      const previousClient = new CmsClient({ serverURL: previous.serverURL });
+      await previousClient.operatorLogout(previous.token).catch(() => {});
+    }
+    const serverURL = normalizeServerUrl(payload && payload.serverURL || CFG.SERVER_URL);
+    const client = new CmsClient({ serverURL });
+    const auth = await client.operatorLogin(String(payload && payload.email || '').trim(), String(payload && payload.password || ''));
+    const devices = await client.availableDevices(auth.token);
+    setupSession = { serverURL, token: auth.token, user: auth.user, expiresAt: parseSessionExpiry(auth.expires_at) };
+    return { ok: true, user: auth.user, devices: Array.isArray(devices) ? devices : [] };
+  } catch (error) {
+    setupSession = null;
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('claim-player', async (_event, payload) => {
+  if (!setupSession || Date.now() >= setupSession.expiresAt) {
+    setupSession = null;
+    return { ok: false, error: 'Operator setup session expired. Sign in again.' };
+  }
+  try {
+    const client = new CmsClient({ serverURL: setupSession.serverURL });
+    const installId = credentialStore.getInstallId();
+    const data = await client.claim(setupSession.token, {
+      device_id: String(payload && payload.deviceId || ''),
+      device_fingerprint: installId,
+      app_version: app.getVersion(),
+      platform: `${process.platform}-${process.arch}`,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Jakarta'
+    });
+    await client.operatorLogout(setupSession.token).catch(() => {});
+    const next = {
+      serverURL: setupSession.serverURL, installId, deviceId: data.device_id,
+      deviceName: data.device_name || os.hostname(), token: data.token, bypass: false
+    };
+    setupSession = null;
+    saveConfig(next);
+    await startRuntime();
+    createDashboardWindow();
+    if (loginWin && !loginWin.isDestroyed()) loginWin.hide();
+    return { ok: true, deviceId: next.deviceId };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('setup-cancel', async () => {
+  const session = setupSession;
+  setupSession = null;
+  if (session) {
+    const client = new CmsClient({ serverURL: session.serverURL });
+    await client.operatorLogout(session.token).catch(() => {});
+  }
+  return { ok: true };
+});
+
+ipcMain.handle('operator-login', async (_event, payload) => {
+  if (!cfg || cfg.bypass) return { ok: true, bypass: true };
+  try {
+    const client = new CmsClient({ serverURL: cfg.serverURL });
+    const auth = await client.operatorLogin(String(payload && payload.email || '').trim(), String(payload && payload.password || ''));
+    operatorSession = {
+      token: auth.token, user: auth.user,
+      expiresAt: parseSessionExpiry(auth.expires_at),
+      lastActivityAt: Date.now()
+    };
+    pushDashboard();
+    return { ok: true, user: auth.user };
+  } catch (error) {
+    operatorSession = null;
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('operator-logout', async () => {
+  const session = operatorSession;
+  operatorSession = null;
+  pushDashboard();
+  if (session && cfg && cfg.serverURL) {
+    const client = new CmsClient({ serverURL: cfg.serverURL });
+    await client.operatorLogout(session.token).catch(() => {});
+  }
+  return { ok: true };
+});
 
 ipcMain.handle('pair-player', async (_e, payload) => {
   try {
@@ -537,6 +650,7 @@ ipcMain.handle('pair-player', async (_e, payload) => {
 });
 
 ipcMain.handle('login-bypass', async () => {
+  if (!isTestModeEnabled()) return { ok: false, error: 'Test Mode is disabled.' };
   try {
     const url = CFG.SERVER_URL.replace(/\/+$/, '');
     const next = {
@@ -559,18 +673,21 @@ ipcMain.handle('login-bypass', async () => {
 });
 
 ipcMain.handle('vlc-pause', async () => {
+  const denied = operatorAccessError(); if (denied) return denied;
   if (vlc) vlc.pause();
   pushDashboard();
   return { ok: true };
 });
 
 ipcMain.handle('vlc-resume', async () => {
+  const denied = operatorAccessError(); if (denied) return denied;
   if (vlc) vlc.resume();
   pushDashboard();
   return { ok: true };
 });
 
 ipcMain.handle('vlc-seek-relative', async (_event, deltaSeconds) => {
+  const denied = operatorAccessError(); if (denied) return denied;
   if (!vlc) return { ok: false, error: 'VLC controller not initialized' };
   try {
     const delta = Number(deltaSeconds);
@@ -584,6 +701,7 @@ ipcMain.handle('vlc-seek-relative', async (_event, deltaSeconds) => {
 });
 
 ipcMain.handle('vlc-seek-to', async (_event, positionSeconds) => {
+  const denied = operatorAccessError(); if (denied) return denied;
   if (!vlc) return { ok: false, error: 'VLC controller not initialized' };
   try {
     const position = Number(positionSeconds);
@@ -597,12 +715,14 @@ ipcMain.handle('vlc-seek-to', async (_event, positionSeconds) => {
 });
 
 ipcMain.handle('vlc-skip', async () => {
+  const denied = operatorAccessError(); if (denied) return denied;
   if (scheduler) scheduler.skip();
   pushDashboard();
   return { ok: true };
 });
 
 ipcMain.handle('vlc-reactivate', async (_e, scheduleId) => {
+  const denied = operatorAccessError(); if (denied) return denied;
   if (!scheduler) return { ok: false, error: 'Scheduler not initialized' };
   try {
     scheduler.reactivate(scheduleId);
@@ -614,6 +734,7 @@ ipcMain.handle('vlc-reactivate', async (_e, scheduleId) => {
 });
 
 ipcMain.handle('vlc-retry', async () => {
+  const denied = operatorAccessError(); if (denied) return denied;
   if (!vlc) return { ok: false, error: 'VLC controller not initialized' };
   try {
     if (playbackWatchdog) {
@@ -633,11 +754,13 @@ ipcMain.handle('vlc-retry', async () => {
 });
 
 ipcMain.handle('open-config-folder', async () => {
+  const denied = operatorAccessError(); if (denied) return denied;
   shell.openPath(DATA_DIR);
   return { ok: true };
 });
 
 ipcMain.handle('recheck-media-health', async () => {
+  const denied = operatorAccessError(); if (denied) return denied;
   if (!mediaManager || !mediaHealthMonitor) {
     return { ok: false, error: 'Media health monitor is not initialized' };
   }
@@ -1098,6 +1221,7 @@ ipcMain.handle('reset-pairing', async () => {
     logout();
     return { ok: true };
   }
+  const denied = operatorAccessError(); if (denied) return denied;
   try {
     const client = new CmsClient({ serverURL: cfg.serverURL });
     await client.unregister(cfg.token);
@@ -1518,6 +1642,8 @@ function mergeAssets(current, incoming) {
 
 function logout() {
   isShuttingDown = true;
+  setupSession = null;
+  operatorSession = null;
   playbackCheckpoint = null;
   lastResumeInfo = null;
   const wasBypass = Boolean(cfg && cfg.bypass);

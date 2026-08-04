@@ -6,7 +6,7 @@ Socket.IO from the CMS and plays local media files fullscreen through VLC.
 ## Features
 
 - One-click install (NSIS) or portable `.exe`
-- One-time enrollment-code pairing with the CMS
+- Operator login followed by assigned-device selection
 - Encrypted player token storage through Electron `safeStorage`
 - Ten-second CMS heartbeat with bounded reconnect backoff
 - Single persistent VLC instance, fullscreen, playlist swap without restart
@@ -37,14 +37,16 @@ player/
 
 ## CMS contract
 
-### Pairing
+### Operator login and device claim
 
-`POST {serverURL}/api/player/register`
+The setup screen first calls `POST {serverURL}/api/auth/login`, then requests
+`GET {serverURL}/api/operator/devices/available`. The operator selects a device
+and the player calls `POST {serverURL}/api/player/claim`.
 
 Request:
 ```json
 {
-  "enrollment_code": "ABCD-2345",
+  "device_id": "device-uuid-from-cms",
   "device_fingerprint": "stable-install-uuid",
   "app_version": "1.1.0",
   "platform": "win32-x64",
@@ -57,8 +59,10 @@ Response (200):
 { "data": { "token": "<token>", "device_id": "<uuid>", "device_name": "Lobby Player" } }
 ```
 
-The player stores a stable installation UUID separately from pairing state. Its
-token is encrypted at rest and sent as a Bearer token to
+The claim request is authenticated by a short-lived operator token. After a
+successful claim, that operator session is discarded. The player stores a
+stable installation UUID separately from pairing state. Its device token is
+encrypted at rest and sent as a Bearer token to
 `POST /api/player/heartbeat` every ten seconds. Reset Pairing first calls
 `POST /api/player/unregister`, then removes local credentials.
 
@@ -170,7 +174,8 @@ current time while retaining its duration, media, recurrence, and priority.
    The output installer is in `dist/`.
 
 4. Distribute the NSIS installer to each player PC. End users only need
-   to run the installer, enter the CMS URL, and submit an enrollment code.
+   to run the installer, enter the CMS URL, sign in as an operator, and select
+   the assigned device.
 
 ## Development run
 
@@ -191,4 +196,8 @@ both locations.
   through the RC interface on `127.0.0.1:4212` exclusively.
 - Reset Pairing revokes the CMS token, removes cached config + schedules, and
   returns to the pairing window. The installation UUID is preserved.
+- Production builds never expose Test Mode. For source-only development, set
+  `PLAYER_ENABLE_TEST_MODE=1` before `npm start`.
+- Playback and heartbeat continue while the dashboard is locked. Operator
+  controls require a fresh CMS login and lock again after 15 minutes idle.
 - Quit closes VLC and exits the app.
