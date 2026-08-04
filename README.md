@@ -63,8 +63,9 @@ The claim request is authenticated by a short-lived operator token. After a
 successful claim, that operator session is discarded. The player stores a
 stable installation UUID separately from pairing state. Its device token is
 encrypted at rest and sent as a Bearer token to
-`POST /api/player/heartbeat` every ten seconds. Reset Pairing first calls
-`POST /api/player/unregister`, then removes local credentials.
+`POST /api/player/heartbeat` every ten seconds. Only a CMS administrator can
+revoke pairing. A revoked Player stops playback, clears its local credentials,
+shows a notification, and returns to the pairing screen on its next heartbeat.
 
 ### Socket
 
@@ -194,8 +195,8 @@ both locations.
 - `VLC`'s `--key-quit` and `--key-fullscreen` are unbound so the operator
   cannot accidentally close VLC with the keyboard. The player manages VLC
   through the RC interface on `127.0.0.1:4212` exclusively.
-- Reset Pairing revokes the CMS token, removes cached config + schedules, and
-  returns to the pairing window. The installation UUID is preserved.
+- Pairing lifecycle is controlled by the CMS administrator. Operators cannot
+  revoke a Player from the local dashboard.
 - Production builds never expose Test Mode. For source-only development, set
   `PLAYER_ENABLE_TEST_MODE=1` before `npm start`.
 - Playback and heartbeat continue while the dashboard is locked. Operator

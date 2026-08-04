@@ -11,7 +11,8 @@ Before Socket.IO is enabled, an operator authenticates through
 `GET /api/operator/devices/available`, and claims one through
 `POST /api/player/claim`. The short-lived operator token is then discarded.
 The resulting device token is used for `POST /api/player/heartbeat` every ten
-seconds and `POST /api/player/unregister` during reset.
+seconds. Pairing can only be revoked by an authenticated CMS administrator;
+the Player has no unregister endpoint.
 
 After connecting to the `/player` namespace, the player emits:
 

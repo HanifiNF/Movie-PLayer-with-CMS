@@ -41,6 +41,9 @@ test('token is encrypted at rest and restored for runtime use', t => {
   fixture.store.save({
     serverURL: 'http://localhost:8080',
     deviceId: 'device-1',
+    deviceName: 'Player Jakarta',
+    deviceLocation: 'Jakarta',
+    deviceTimezone: 'Asia/Jakarta',
     token: 'plain-secret-token',
     bypass: false
   });
@@ -48,7 +51,11 @@ test('token is encrypted at rest and restored for runtime use', t => {
   const storedText = fs.readFileSync(path.join(fixture.directory, 'config.json'), 'utf8');
   assert.doesNotMatch(storedText, /plain-secret-token/);
   assert.doesNotMatch(storedText, /"token"/);
-  assert.equal(fixture.store.load().token, 'plain-secret-token');
+  const loaded = fixture.store.load();
+  assert.equal(loaded.token, 'plain-secret-token');
+  assert.equal(loaded.deviceName, 'Player Jakarta');
+  assert.equal(loaded.deviceLocation, 'Jakarta');
+  assert.equal(loaded.deviceTimezone, 'Asia/Jakarta');
 });
 
 test('legacy plaintext token is migrated on first load', t => {

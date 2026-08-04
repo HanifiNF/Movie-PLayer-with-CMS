@@ -200,6 +200,10 @@
         btnTest.classList.remove('hidden');
         document.getElementById('testDivider').classList.remove('hidden');
       }
+      if (defaults && defaults.notice) {
+        errEl.textContent = defaults.notice;
+        errEl.classList.add('show');
+      }
     }).catch(() => {});
 
     btnTest.onclick = async () => {

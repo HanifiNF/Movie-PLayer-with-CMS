@@ -18,7 +18,7 @@ const { MediaProbe } = require('./mediaProbe.cjs');
 const { PlaybackWatchdog } = require('./playbackWatchdog.cjs');
 const { resolveResumeTarget } = require('./playbackResume.cjs');
 const { MediaHealthMonitor } = require('./mediaHealth.cjs');
-const { CmsClient, CmsApiError, normalizeServerUrl, parseSessionExpiry } = require('./cmsClient.cjs');
+const { CmsClient, normalizeServerUrl, parseSessionExpiry } = require('./cmsClient.cjs');
 const { DeviceCredentials } = require('./deviceCredentials.cjs');
 const CFG = require('./config.cjs');
 
@@ -60,6 +60,7 @@ let mediaHealthMonitor = null;
 let mediaHealthSnapshot = null;
 let mediaHealthCheck = null;
 let syncQueue = Promise.resolve();
+let pairingNotice = '';
 const credentialStore = new DeviceCredentials({
   configPath: CONFIG_PATH,
   installationPath: INSTALLATION_PATH,
@@ -122,6 +123,27 @@ function saveConfig(c, persist = true) {
   if (!persist) return;
   if (c) credentialStore.save(c);
   else credentialStore.clear();
+}
+
+function applyDeviceMetadata(data) {
+  if (!cfg || cfg.bypass || !data || typeof data !== 'object') return false;
+  const fields = {
+    deviceId: data.device_id,
+    deviceName: data.device_name,
+    deviceLocation: data.device_location,
+    deviceTimezone: data.device_timezone
+  };
+  let changed = false;
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined) continue;
+    const normalized = value === null ? '' : String(value);
+    if (cfg[key] !== normalized) {
+      cfg[key] = normalized;
+      changed = true;
+    }
+  }
+  if (changed) saveConfig(cfg);
+  return changed;
 }
 
 function makeFallbackIcon() {
@@ -480,6 +502,12 @@ function pushDashboard() {
   const payload = {
     status: statusLabel,
     deviceId: cfg && cfg.deviceId || '',
+    device: {
+      id: cfg && cfg.deviceId || '',
+      name: cfg && cfg.deviceName || os.hostname(),
+      location: cfg && cfg.deviceLocation || '',
+      timezone: cfg && cfg.deviceTimezone || (Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Jakarta')
+    },
     appVersion: app.getVersion(),
     bypass: !!(cfg && cfg.bypass),
     serverURL: cfg && cfg.serverURL || '',
@@ -532,11 +560,11 @@ async function performPairing({ serverURL, enrollmentCode }) {
   return { url, data, installId };
 }
 
-ipcMain.handle('get-pairing-defaults', async () => ({
-  serverURL: CFG.SERVER_URL,
-  appVersion: app.getVersion(),
-  testModeEnabled: isTestModeEnabled()
-}));
+ipcMain.handle('get-pairing-defaults', async () => {
+  const notice = pairingNotice;
+  pairingNotice = '';
+  return { serverURL: CFG.SERVER_URL, appVersion: app.getVersion(), testModeEnabled: isTestModeEnabled(), notice };
+});
 
 ipcMain.handle('setup-login', async (_event, payload) => {
   try {
@@ -576,7 +604,8 @@ ipcMain.handle('claim-player', async (_event, payload) => {
     await client.operatorLogout(setupSession.token).catch(() => {});
     const next = {
       serverURL: setupSession.serverURL, installId, deviceId: data.device_id,
-      deviceName: data.device_name || os.hostname(), token: data.token, bypass: false
+      deviceName: data.device_name || os.hostname(), deviceLocation: data.device_location || '',
+      deviceTimezone: data.device_timezone || 'Asia/Jakarta', token: data.token, bypass: false
     };
     setupSession = null;
     saveConfig(next);
@@ -636,6 +665,8 @@ ipcMain.handle('pair-player', async (_e, payload) => {
       installId,
       deviceId: data.device_id,
       deviceName: data.device_name || os.hostname(),
+      deviceLocation: data.device_location || '',
+      deviceTimezone: data.device_timezone || 'Asia/Jakarta',
       token: data.token,
       bypass: false
     };
@@ -657,6 +688,9 @@ ipcMain.handle('login-bypass', async () => {
       serverURL: url,
       username: CFG.TEST_USERNAME,
       deviceId: CFG.TEST_DEVICE_ID,
+      deviceName: 'Development Player',
+      deviceLocation: 'Local testing',
+      deviceTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Jakarta',
       token: CFG.TEST_TOKEN,
       user: { username: CFG.TEST_USERNAME },
       bypass: true
@@ -1212,33 +1246,9 @@ ipcMain.handle('add-test-schedule', async (_e, payload) => {
 });
 
 ipcMain.handle('logout', async () => {
+  if (!cfg || !cfg.bypass) return { ok: false, error: 'Pairing can only be revoked by a CMS administrator.' };
   logout();
   return { ok: true };
-});
-
-ipcMain.handle('reset-pairing', async () => {
-  if (!cfg || cfg.bypass) {
-    logout();
-    return { ok: true };
-  }
-  const denied = operatorAccessError(); if (denied) return denied;
-  try {
-    const client = new CmsClient({ serverURL: cfg.serverURL });
-    await client.unregister(cfg.token);
-    logout();
-    return { ok: true };
-  } catch (error) {
-    if (error instanceof CmsApiError && error.status === 401) {
-      // The CMS already considers this token invalid, so keeping it locally
-      // cannot recover the pairing. Clearing it lets the operator pair again.
-      logout();
-      return { ok: true };
-    }
-    return {
-      ok: false,
-      error: `CMS could not revoke this pairing. Local credentials were kept: ${error.message || error}`
-    };
-  }
 });
 
 ipcMain.handle('quit', async () => {
@@ -1481,7 +1491,7 @@ function startCmsConnection() {
   cmsClient.on('heartbeat', data => {
     cmsState.lastHeartbeatAt = new Date().toISOString();
     cmsState.lastError = null;
-    if (data && data.device_id) cfg.deviceId = data.device_id;
+    applyDeviceMetadata(data);
     pushDashboard();
   });
   cmsClient.on('connection-error', error => {
@@ -1492,6 +1502,14 @@ function startCmsConnection() {
   cmsClient.on('authentication-error', error => {
     cmsState.lastError = error.message || String(error);
     appendVlcLog(`[cms] authentication failed: ${cmsState.lastError}`);
+    if (error && error.code === 'invalid_player_token') {
+      const notice = 'This Player was revoked by the CMS administrator. Pairing is required before it can be used again.';
+      logout(notice);
+      if (loginWin && !loginWin.isDestroyed()) {
+        void dialog.showMessageBox(loginWin, { type: 'warning', title: 'Player revoked', message: 'Player revoked', detail: notice, buttons: ['Continue'] });
+      }
+      return;
+    }
     pushDashboard();
   });
   cmsClient.start(cfg.token, {
@@ -1640,7 +1658,8 @@ function mergeAssets(current, incoming) {
   return Array.from(byId.values());
 }
 
-function logout() {
+function logout(notice = '') {
+  pairingNotice = notice;
   isShuttingDown = true;
   setupSession = null;
   operatorSession = null;

@@ -93,14 +93,6 @@ class CmsClient extends EventEmitter {
     });
   }
 
-  async unregister(token) {
-    return this.#request('/api/player/unregister', {
-      method: 'POST',
-      token,
-      body: {}
-    });
-  }
-
   start(token, metadata = {}) {
     this.stop();
     this.running = true;

@@ -85,7 +85,10 @@ test('heartbeat authenticates with Bearer token and reports online', async () =>
     heartbeatIntervalMs: 60000,
     fetch: async (_url, options) => {
       authorization = options.headers.Authorization;
-      return response(200, { data: { device_id: 'device-1', connection_status: 'online' } });
+      return response(200, { data: {
+        device_id: 'device-1', device_name: 'Player Jakarta', device_location: 'Jakarta',
+        device_timezone: 'Asia/Jakarta', connection_status: 'online'
+      } });
     }
   });
 
@@ -96,6 +99,8 @@ test('heartbeat authenticates with Bearer token and reports online', async () =>
 
   assert.equal(authorization, 'Bearer secret-token');
   assert.equal(data.connection_status, 'online');
+  assert.equal(data.device_name, 'Player Jakarta');
+  assert.equal(data.device_location, 'Jakarta');
   assert.equal(client.status, 'online');
 });
 
