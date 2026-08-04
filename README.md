@@ -12,7 +12,7 @@ Socket.IO from the CMS and plays local media files fullscreen through VLC.
 - Deterministic overlap handling with schedule priority
 - Versioned schedule/media contract with payload validation
 - Resumable media download to local storage with size + SHA-256 verification
-- Searchable local Media Library for preloaded films in Test Mode
+- Searchable Media Folder for preloaded films in Test Mode
 - Persistent Test Mode Schedule Manager with edit, duplicate, enable/disable,
   delete, search, and status filters
 - One-time, daily, and weekly schedule creation from the local UI
@@ -128,7 +128,7 @@ internal metadata fallback when ffprobe is unavailable. Set `FFPROBE_PATH` to
 an explicit executable path when needed.
 
 Set `PLAYER_MEDIA_LIBRARY` before launching the app to override the Media
-Library path. The configured value is also available as `MEDIA_LIBRARY_DIR`
+Folder path. The configured value is also available as `MEDIA_LIBRARY_DIR`
 in `config.cjs`.
 
 ## Test Mode Schedule Manager

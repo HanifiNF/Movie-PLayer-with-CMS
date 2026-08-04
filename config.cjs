@@ -23,8 +23,8 @@ module.exports = {
 
   VLC_MONITOR: 2,
 
-  // "Folder A": files placed here are discovered by Test Mode and shown in
-  // the searchable Media Library picker. Override with PLAYER_MEDIA_LIBRARY.
+  // Media Folder: files placed here are discovered by Test Mode and shown in
+  // the searchable media picker. Override with PLAYER_MEDIA_LIBRARY.
   MEDIA_LIBRARY_DIR: process.env.PLAYER_MEDIA_LIBRARY || path.join(
     process.env.PUBLIC || 'C:\\Users\\Public',
     'Videos',

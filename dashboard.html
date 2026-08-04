@@ -290,9 +290,9 @@
         </section>
 
         <section id="view-assets" class="view hidden">
-          <div class="page-heading"><div><h2>Assets</h2><p>Browse media available in Folder A and downloaded assets.</p></div><button id="btnRefreshAssets" class="btn primary">Refresh Assets</button></div>
+          <div class="page-heading"><div><h2>Assets</h2><p>Browse media available in the Media Folder and downloaded assets.</p></div><button id="btnRefreshAssets" class="btn primary">Refresh Assets</button></div>
           <div class="summary-grid"><article class="card summary-card"><span>Total</span><strong id="assetTotal">0</strong></article><article class="card summary-card"><span>Ready</span><strong id="assetReady">0</strong></article><article class="card summary-card"><span>Problems</span><strong id="assetProblems" class="red">0</strong></article><article class="card summary-card"><span>Showing</span><strong id="assetShowing">0</strong></article></div>
-          <div class="toolbar"><div class="search-wrap"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16 16l5 5"/></svg><input id="assetSearch" type="search" placeholder="Search title, filename, or path..." /></div><select id="assetFilter" aria-label="Filter assets"><option value="all">All assets</option><option value="ready">Ready to play</option><option value="problem">Has problems</option><option value="local">Folder A</option><option value="managed">Downloaded</option></select></div>
+          <div class="toolbar"><div class="search-wrap"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16 16l5 5"/></svg><input id="assetSearch" type="search" placeholder="Search title, filename, or path..." /></div><select id="assetFilter" aria-label="Filter assets"><option value="all">All assets</option><option value="ready">Ready to play</option><option value="problem">Has problems</option><option value="local">Media Folder</option><option value="managed">Downloaded</option></select></div>
           <div id="assetDirectory" class="directory-note"></div>
           <div class="card table-card"><table class="table"><thead><tr><th style="width:42%">Media</th><th style="width:16%">Source</th><th style="width:14%">Duration</th><th style="width:14%">Size</th><th style="width:14%">Status</th></tr></thead><tbody id="assetRows"></tbody></table><div id="assetEmpty" class="empty-state">Open this page to scan available media.</div></div>
         </section>
@@ -418,7 +418,7 @@
       });
       $('assetTotal').textContent = all.length; $('assetReady').textContent = readyCount;
       $('assetProblems').textContent = all.length - readyCount; $('assetShowing').textContent = filtered.length;
-      $('assetDirectory').textContent = assetState.directory ? `Folder A: ${assetState.directory}` : '';
+      $('assetDirectory').textContent = assetState.directory ? `Media Folder: ${assetState.directory}` : '';
       const rows = $('assetRows'); rows.innerHTML = '';
       for (const item of filtered) {
         const tr = document.createElement('tr');
@@ -426,7 +426,7 @@
         main.className = 'asset-main'; main.textContent = item.title || item.filename || 'Untitled';
         path.className = 'asset-path'; path.textContent = item.relativePath || item.path || '';
         media.append(main, path); tr.appendChild(media);
-        const source = document.createElement('td'); source.textContent = item.sourceLabel || (item.source === 'managed' ? 'Downloaded' : 'Folder A'); tr.appendChild(source);
+        const source = document.createElement('td'); source.textContent = item.sourceLabel || (item.source === 'managed' ? 'Downloaded' : 'Media Folder'); tr.appendChild(source);
         const duration = document.createElement('td'); duration.textContent = Number(item.durationMs) > 0 ? fmtPlaybackTime(Number(item.durationMs) / 1000) : '—'; tr.appendChild(duration);
         const size = document.createElement('td'); size.textContent = fmtBytes(item.size); tr.appendChild(size);
         const status = document.createElement('td'); const pill = document.createElement('span'); pill.className = `status-pill ${item.healthStatus}`; pill.textContent = item.healthStatus; status.appendChild(pill); tr.appendChild(status);

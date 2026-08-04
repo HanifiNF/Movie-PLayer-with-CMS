@@ -40,7 +40,7 @@ function scanMediaLibrary(rootDir, options = {}) {
       items.push({
         id: makeLocalMediaId(relativePath),
         source: 'library',
-        sourceLabel: 'Folder A',
+        sourceLabel: 'Media Folder',
         title: path.basename(entry.name, extension),
         filename: entry.name,
         relativePath,

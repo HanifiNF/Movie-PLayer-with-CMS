@@ -810,7 +810,7 @@ ipcMain.handle('get-media-duration', async (_event, payload) => {
     } else {
       const selected = scanMediaLibrary(CFG.MEDIA_LIBRARY_DIR)
         .find(item => item.id === mediaId);
-      if (!selected) throw new Error('Selected film is no longer available in Folder A');
+      if (!selected) throw new Error('Selected film is no longer available in the Media Folder');
       filePath = selected.path;
     }
 
@@ -904,7 +904,7 @@ async function resolveTestMediaItem(mediaId, order = 0) {
   const selected = scanMediaLibrary(CFG.MEDIA_LIBRARY_DIR)
     .find(item => item.id === normalizedId);
   if (!selected) {
-    throw new Error('A playlist item is no longer available in Folder A. Refresh the list.');
+    throw new Error('A playlist item is no longer available in the Media Folder. Refresh the list.');
   }
   return {
     localPath: selected.path,
