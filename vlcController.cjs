@@ -421,6 +421,27 @@ class VlcController extends EventEmitter {
     this.send('status');
   }
 
+  async seekTo(positionSeconds) {
+    if (!this.ready) throw new Error('VLC RC is not ready');
+    const length = Math.max(0, Math.floor(Number(this.playback.lengthSeconds) || 0));
+    if (length <= 0) throw new Error('Current media duration is not available');
+    const target = Math.max(0, Math.min(
+      length - 1,
+      Math.floor(Number(positionSeconds) || 0)
+    ));
+    this.send(`seek ${target}`);
+    await sleep(120);
+    this.playback.positionSeconds = target;
+    this._emitPlaybackProgress();
+    this._pollPlayback();
+    return this.getPlaybackStatus();
+  }
+
+  async seekRelative(deltaSeconds) {
+    const current = Math.max(0, Number(this.playback.positionSeconds) || 0);
+    return this.seekTo(current + Number(deltaSeconds || 0));
+  }
+
   async resumePlaylistAt(index, positionSeconds = 0) {
     if (!this.ready) throw new Error('VLC RC is not ready');
     if (!this.currentPlaylist.length) throw new Error('Cannot resume an empty playlist');

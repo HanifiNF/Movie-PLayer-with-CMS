@@ -126,3 +126,23 @@ test('resumePlaylistAt never seeks when VLC does not confirm the target item', a
   );
   assert.deepEqual(commands, ['goto 2']);
 });
+
+test('relative and absolute seek clamp positions to the current media', async () => {
+  const controller = new VlcController();
+  const commands = [];
+  controller.ready = true;
+  controller.playback.positionSeconds = 42;
+  controller.playback.lengthSeconds = 60;
+  controller.send = command => commands.push(command);
+
+  await controller.seekRelative(10);
+  await controller.seekRelative(-100);
+  await controller.seekTo(999);
+
+  assert.deepEqual(commands, [
+    'seek 52', 'status', 'get_time', 'get_length',
+    'seek 0', 'status', 'get_time', 'get_length',
+    'seek 59', 'status', 'get_time', 'get_length'
+  ]);
+  assert.equal(controller.getPlaybackStatus().positionSeconds, 59);
+});

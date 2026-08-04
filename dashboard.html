@@ -112,6 +112,37 @@
     .btn.danger { background: #7f1d1d; color: #fecaca; border-color: #7f1d1d; }
     .btn.danger:hover { background: #991b1b; }
     .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .icon-btn {
+      position: relative; width: 38px; height: 36px; padding: 7px;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .icon-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .icon-btn svg .solid { fill: currentColor; stroke: none; }
+    .icon-btn::after {
+      content: attr(data-tooltip); position: absolute; z-index: 20;
+      left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%);
+      padding: 5px 7px; border-radius: 5px; background: #020617; color: #e2e8f0;
+      font-size: 10px; font-weight: 500; white-space: nowrap;
+      opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .12s;
+      box-shadow: 0 4px 12px rgba(0,0,0,.4);
+    }
+    .icon-btn:hover::after, .icon-btn:focus-visible::after { opacity: 1; visibility: visible; }
+    .jump-panel {
+      margin-top: 12px; padding: 12px; border: 1px solid #334155;
+      background: #0f172a; border-radius: 9px;
+    }
+    .jump-panel.hidden { display: none; }
+    .jump-top { display: flex; justify-content: space-between; gap: 10px; color: #94a3b8; font-size: 11px; }
+    .jump-top strong { color: #38bdf8; font-variant-numeric: tabular-nums; }
+    .jump-panel input[type="range"] { width: 100%; margin: 10px 0 5px; accent-color: #38bdf8; }
+    .jump-row { display: flex; align-items: flex-end; gap: 8px; margin-top: 7px; }
+    .jump-field { width: 92px; }
+    .jump-field label { display: block; color: #64748b; font-size: 10px; margin-bottom: 4px; }
+    .jump-field input {
+      width: 100%; padding: 7px 8px; border: 1px solid #334155;
+      border-radius: 6px; background: #111c33; color: #e2e8f0;
+    }
+    .jump-actions { display: flex; gap: 6px; margin-left: auto; }
 
     .skipped-panel { margin-top: 16px; }
     .skipped-panel li { align-items: flex-start; }
@@ -163,9 +194,40 @@
         <div class="row">
           <div id="nowCountdown" class="countdown"></div>
           <div class="actions">
-            <button id="btnPause" class="btn" disabled>Pause</button>
-            <button id="btnResume" class="btn" disabled>Resume</button>
-            <button id="btnSkip" class="btn" disabled>Skip</button>
+            <button id="btnRewind" class="btn icon-btn" data-tooltip="Rewind 10 seconds" aria-label="Rewind 10 seconds" disabled>
+              <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v6h6"/><path d="M9.5 11v4"/><path d="M13 11.5a1.5 1.5 0 0 1 3 0v2a1.5 1.5 0 0 1-3 0z"/></svg>
+            </button>
+            <button id="btnPause" class="btn icon-btn" data-tooltip="Pause" aria-label="Pause" disabled>
+              <svg viewBox="0 0 24 24"><rect class="solid" x="6" y="4" width="4" height="16"/><rect class="solid" x="14" y="4" width="4" height="16"/></svg>
+            </button>
+            <button id="btnResume" class="btn icon-btn" data-tooltip="Resume" aria-label="Resume" disabled>
+              <svg viewBox="0 0 24 24"><path class="solid" d="M7 4l13 8-13 8z"/></svg>
+            </button>
+            <button id="btnForward" class="btn icon-btn" data-tooltip="Forward 10 seconds" aria-label="Forward 10 seconds" disabled>
+              <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v6h-6"/><path d="M8 11v4"/><path d="M11.5 11.5a1.5 1.5 0 0 1 3 0v2a1.5 1.5 0 0 1-3 0z"/></svg>
+            </button>
+            <button id="btnJump" class="btn icon-btn" data-tooltip="Jump To" aria-label="Jump to position" disabled>
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/><path d="M8 2h8"/></svg>
+            </button>
+            <button id="btnSkip" class="btn icon-btn" data-tooltip="Skip Schedule" aria-label="Skip schedule" disabled>
+              <svg viewBox="0 0 24 24"><path class="solid" d="M5 4l11 8-11 8z"/><path d="M19 5v14"/></svg>
+            </button>
+          </div>
+        </div>
+        <div id="jumpPanel" class="jump-panel hidden">
+          <div class="jump-top"><span>Jump to position</span><strong id="jumpTargetLabel">00:00</strong></div>
+          <input id="jumpSlider" type="range" min="0" max="0" value="0" step="1" />
+          <div class="jump-row">
+            <div class="jump-field"><label for="jumpMinutes">Minute</label><input id="jumpMinutes" type="number" min="0" value="0" /></div>
+            <div class="jump-field"><label for="jumpSeconds">Second</label><input id="jumpSeconds" type="number" min="0" max="59" value="0" /></div>
+            <div class="jump-actions">
+              <button id="btnJumpApply" class="btn icon-btn primary" data-tooltip="Go" aria-label="Go to position">
+                <svg viewBox="0 0 24 24"><path d="M5 12h13"/><path d="M13 6l6 6-6 6"/></svg>
+              </button>
+              <button id="btnJumpCancel" class="btn icon-btn" data-tooltip="Cancel" aria-label="Cancel jump">
+                <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+              </button>
+            </div>
           </div>
         </div>
       </section>
@@ -270,6 +332,10 @@
       mediaHealth: null,
       bypass: false
     };
+    let jumpPanelOpen = false;
+    let jumpMaxSeconds = 0;
+    let jumpMediaKey = '';
+    let controlError = '';
 
     ipcRenderer.on('dashboard:update', (_e, payload) => {
       state = Object.assign({}, state, payload);
@@ -285,6 +351,68 @@
       return hours > 0
         ? `${pad(hours)}:${pad(minutes)}:${pad(secs)}`
         : `${pad(minutes)}:${pad(secs)}`;
+    }
+
+    function currentPlayback() {
+      return state.vlc && state.vlc.playback ? state.vlc.playback : {};
+    }
+
+    function playbackMediaKey(playback) {
+      return `${Number.isInteger(playback.currentIndex) ? playback.currentIndex : -1}|${playback.currentPath || ''}`;
+    }
+
+    function clampJumpTarget(seconds) {
+      const target = Math.floor(Number(seconds) || 0);
+      return Math.max(0, Math.min(jumpMaxSeconds, target));
+    }
+
+    function setJumpTarget(seconds) {
+      const target = clampJumpTarget(seconds);
+      $('jumpSlider').value = String(target);
+      $('jumpMinutes').value = String(Math.floor(target / 60));
+      $('jumpSeconds').value = String(target % 60);
+      $('jumpTargetLabel').textContent = `${fmtPlaybackTime(target)} / ${fmtPlaybackTime(jumpMaxSeconds + 1)}`;
+      return target;
+    }
+
+    function syncJumpTargetFromInputs() {
+      const minutes = Math.max(0, Math.floor(Number($('jumpMinutes').value) || 0));
+      const seconds = Math.max(0, Math.min(59, Math.floor(Number($('jumpSeconds').value) || 0)));
+      return setJumpTarget((minutes * 60) + seconds);
+    }
+
+    function openJumpPanel() {
+      const playback = currentPlayback();
+      jumpMaxSeconds = Math.max(0, Math.floor(Number(playback.lengthSeconds) || 0) - 1);
+      jumpMediaKey = playbackMediaKey(playback);
+      $('jumpSlider').max = String(jumpMaxSeconds);
+      $('jumpMinutes').max = String(Math.floor(jumpMaxSeconds / 60));
+      setJumpTarget(playback.positionSeconds);
+      jumpPanelOpen = true;
+      $('jumpPanel').classList.remove('hidden');
+    }
+
+    function closeJumpPanel() {
+      jumpPanelOpen = false;
+      jumpMediaKey = '';
+      $('jumpPanel').classList.add('hidden');
+    }
+
+    async function invokePlaybackControl(channel, value) {
+      controlError = '';
+      try {
+        const result = value === undefined
+          ? await ipcRenderer.invoke(channel)
+          : await ipcRenderer.invoke(channel, value);
+        if (result && result.ok === false) {
+          throw new Error(result.error || 'Playback control failed');
+        }
+        return result;
+      } catch (error) {
+        controlError = error && error.message ? error.message : String(error);
+        render();
+        return null;
+      }
     }
 
     function fmtBytes(bytes) {
@@ -413,6 +541,8 @@
           (watchdog.lastError ? ` ${watchdog.lastError}` : '');
       } else if (watchdog.state === 'degraded') {
         $('vlcNote').textContent = 'Playback health check failed. Waiting for confirmation before recovery.';
+      } else if (controlError) {
+        $('vlcNote').textContent = `Playback control failed: ${controlError}`;
       } else if (state.recoveryResume && now && state.recoveryResume.scheduleId === now.scheduleId) {
         $('vlcNote').textContent =
           `Recovered: resumed ${state.recoveryResume.title} at ` +
@@ -427,9 +557,27 @@
       const isIdleMode = !!vlc.idleMode;
       const playing = vlc.state === 'playing';
       const paused = vlc.state === 'paused';
+      const playback = vlc.playback || {};
+      const hasDuration = Number.isFinite(Number(playback.lengthSeconds)) && Number(playback.lengthSeconds) > 0;
+      const hasCurrentItem = Number.isInteger(playback.currentIndex) && playback.currentIndex >= 0;
+      const canSeek = hasNow && !isIdleMode && (playing || paused) && hasDuration && hasCurrentItem;
       $('btnPause').disabled = !(hasNow && playing && !isIdleMode);
       $('btnResume').disabled = !(hasNow && paused && !isIdleMode);
+      $('btnRewind').disabled = !canSeek;
+      $('btnForward').disabled = !canSeek;
+      $('btnJump').disabled = !canSeek;
       $('btnSkip').disabled = !hasNow;
+      if (jumpPanelOpen) {
+        const mediaChanged = jumpMediaKey !== playbackMediaKey(playback);
+        if (!canSeek || mediaChanged) {
+          closeJumpPanel();
+        } else {
+          jumpMaxSeconds = Math.max(0, Math.floor(Number(playback.lengthSeconds)) - 1);
+          $('jumpSlider').max = String(jumpMaxSeconds);
+          $('jumpMinutes').max = String(Math.floor(jumpMaxSeconds / 60));
+          setJumpTarget($('jumpSlider').value);
+        }
+      }
 
       const upEl = $('upcoming');
       upEl.innerHTML = '';
@@ -476,8 +624,22 @@
       }
     }
 
-    $('btnPause').onclick  = () => ipcRenderer.invoke('vlc-pause');
-    $('btnResume').onclick = () => ipcRenderer.invoke('vlc-resume');
+    $('btnRewind').onclick = () => invokePlaybackControl('vlc-seek-relative', -10);
+    $('btnPause').onclick  = () => invokePlaybackControl('vlc-pause');
+    $('btnResume').onclick = () => invokePlaybackControl('vlc-resume');
+    $('btnForward').onclick = () => invokePlaybackControl('vlc-seek-relative', 10);
+    $('btnJump').onclick = () => jumpPanelOpen ? closeJumpPanel() : openJumpPanel();
+    $('jumpSlider').oninput = () => setJumpTarget($('jumpSlider').value);
+    $('jumpMinutes').oninput = syncJumpTargetFromInputs;
+    $('jumpSeconds').oninput = syncJumpTargetFromInputs;
+    $('btnJumpCancel').onclick = closeJumpPanel;
+    $('btnJumpApply').onclick = async () => {
+      const target = syncJumpTargetFromInputs();
+      $('btnJumpApply').disabled = true;
+      const result = await invokePlaybackControl('vlc-seek-to', target);
+      $('btnJumpApply').disabled = false;
+      if (result) closeJumpPanel();
+    };
     $('btnSkip').onclick   = () => ipcRenderer.invoke('vlc-skip');
     $('btnRetry').onclick  = () => ipcRenderer.invoke('vlc-retry');
     $('btnAddSchedule').onclick = () => ipcRenderer.invoke('open-schedule-adder');

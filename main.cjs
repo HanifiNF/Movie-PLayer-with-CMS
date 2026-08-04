@@ -544,6 +544,32 @@ ipcMain.handle('vlc-resume', async () => {
   return { ok: true };
 });
 
+ipcMain.handle('vlc-seek-relative', async (_event, deltaSeconds) => {
+  if (!vlc) return { ok: false, error: 'VLC controller not initialized' };
+  try {
+    const delta = Number(deltaSeconds);
+    if (!Number.isFinite(delta)) throw new Error('Seek offset is invalid');
+    const playback = await vlc.seekRelative(delta);
+    pushDashboard();
+    return { ok: true, playback };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('vlc-seek-to', async (_event, positionSeconds) => {
+  if (!vlc) return { ok: false, error: 'VLC controller not initialized' };
+  try {
+    const position = Number(positionSeconds);
+    if (!Number.isFinite(position) || position < 0) throw new Error('Jump position is invalid');
+    const playback = await vlc.seekTo(position);
+    pushDashboard();
+    return { ok: true, playback };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
 ipcMain.handle('vlc-skip', async () => {
   if (scheduler) scheduler.skip();
   pushDashboard();
