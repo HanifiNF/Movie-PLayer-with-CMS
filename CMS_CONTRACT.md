@@ -10,6 +10,10 @@ Before Socket.IO is enabled, an operator authenticates through
 `POST /api/auth/login`, lists assigned pending devices through
 `GET /api/operator/devices/available`, and claims one through
 `POST /api/player/claim`. The short-lived operator token is then discarded.
+Unassigned devices are never listed or claimable; both listing and claim
+require an exact assignment to the authenticated operator. Dashboard unlock
+also requires `POST /api/operator/devices/{deviceId}/control-access` so an
+operator cannot control a Player assigned to another account.
 The resulting device token is used for `POST /api/player/heartbeat` every ten
 seconds. Pairing can only be revoked by an authenticated CMS administrator;
 the Player has no unregister endpoint.

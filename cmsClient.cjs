@@ -87,6 +87,12 @@ class CmsClient extends EventEmitter {
     });
   }
 
+  async authorizeDeviceControl(operatorToken, deviceId) {
+    return this.#request(`/api/operator/devices/${encodeURIComponent(deviceId)}/control-access`, {
+      method: 'POST', token: operatorToken, body: {}
+    });
+  }
+
   async claim(operatorToken, payload) {
     return this.#request('/api/player/claim', {
       method: 'POST', token: operatorToken, body: payload

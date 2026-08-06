@@ -78,6 +78,24 @@ test('operator login, available devices, and claim use separate operator token',
   assert.equal(requests[2].options.headers.Authorization, 'Bearer operator-token');
 });
 
+test('dashboard control authorization is scoped to a specific device', async () => {
+  let request;
+  const client = new CmsClient({
+    serverURL: 'http://localhost:8080',
+    fetch: async (url, options) => {
+      request = { url, options };
+      return response(200, { data: { authorized: true, device_id: 'device-1' } });
+    }
+  });
+
+  const result = await client.authorizeDeviceControl('operator-token', 'device-1');
+
+  assert.equal(result.authorized, true);
+  assert.equal(request.url, 'http://localhost:8080/api/operator/devices/device-1/control-access');
+  assert.equal(request.options.method, 'POST');
+  assert.equal(request.options.headers.Authorization, 'Bearer operator-token');
+});
+
 test('heartbeat authenticates with Bearer token and reports online', async () => {
   let authorization;
   const client = new CmsClient({

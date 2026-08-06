@@ -66,6 +66,8 @@ encrypted at rest and sent as a Bearer token to
 `POST /api/player/heartbeat` every ten seconds. Only a CMS administrator can
 revoke pairing. A revoked Player stops playback, clears its local credentials,
 shows a notification, and returns to the pairing screen on its next heartbeat.
+Pending Players without an assigned operator are hidden and cannot be claimed.
+Each dashboard unlock is authorized against the current device assignment.
 
 ### Socket
 

@@ -630,9 +630,11 @@ ipcMain.handle('setup-cancel', async () => {
 
 ipcMain.handle('operator-login', async (_event, payload) => {
   if (!cfg || cfg.bypass) return { ok: true, bypass: true };
+  const client = new CmsClient({ serverURL: cfg.serverURL });
+  let auth = null;
   try {
-    const client = new CmsClient({ serverURL: cfg.serverURL });
-    const auth = await client.operatorLogin(String(payload && payload.email || '').trim(), String(payload && payload.password || ''));
+    auth = await client.operatorLogin(String(payload && payload.email || '').trim(), String(payload && payload.password || ''));
+    await client.authorizeDeviceControl(auth.token, cfg.deviceId);
     operatorSession = {
       token: auth.token, user: auth.user,
       expiresAt: parseSessionExpiry(auth.expires_at),
@@ -641,6 +643,7 @@ ipcMain.handle('operator-login', async (_event, payload) => {
     pushDashboard();
     return { ok: true, user: auth.user };
   } catch (error) {
+    if (auth && auth.token) await client.operatorLogout(auth.token).catch(() => {});
     operatorSession = null;
     return { ok: false, error: error.message || String(error) };
   }
