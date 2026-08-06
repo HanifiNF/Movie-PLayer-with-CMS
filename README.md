@@ -202,6 +202,12 @@ downloads. Each file is written as `.part`, checked against the CMS byte size
 and SHA-256 digest, and renamed only after verification succeeds. The Player
 then reports `ready`, `missing`, `corrupt`, or `unreadable` back to the CMS.
 
+Interrupted downloads retain both `.part` data and a small ETag metadata file.
+On the next startup or refresh, the Player requests only the remaining bytes
+with `Range` and protects the resume with `If-Range`. A mismatched range or
+`416` response clears the stale partial state and safely restarts once from
+zero. A final checksum mismatch is also retried once from zero before failure.
+
 The device Bearer token is attached only to download URLs on the configured CMS
 origin. Removing an assignment stops the asset from appearing in the managed
 catalog; the existing local file is retained until a separate safe-cleanup
@@ -217,6 +223,26 @@ The **Assets → Remote Downloads** panel shows every CMS assignment and its
 `queued`, `downloading`, `verifying`, `ready`, or `failed` state. Downloading
 items include byte and percentage progress; failed items can be retried. The
 local Assets inventory refreshes automatically after a download completes.
+Local Media Folder scans return immediately while remote downloads continue in
+the background, so an assigned large film does not hide already available
+media or block the dashboard and tray refresh actions.
+
+### Test an interrupted download locally
+
+Localhost downloads can finish too quickly to interrupt. Source runs support an
+optional per-file development speed limit. In PowerShell, set the limit before
+starting the Player:
+
+```powershell
+$env:PLAYER_DOWNLOAD_LIMIT_KBPS="2048"
+npm start
+```
+
+This limits each download to approximately 2 MB/s. Force-close the Player while
+an item is downloading, start it again with the same environment variable, and
+the retained `.part` file should continue from its saved byte position. Remove
+the variable with `Remove-Item Env:PLAYER_DOWNLOAD_LIMIT_KBPS`, or open a new
+terminal, to restore normal speed. Packaged builds ignore this variable.
 
 ## Development run
 

@@ -17,7 +17,7 @@ function removeManagedAsset(options = {}) {
   }
 
   const removed = [];
-  for (const candidate of [target, `${target}.part`]) {
+  for (const candidate of [target, `${target}.part`, `${target}.part.meta.json`]) {
     if (!fs.existsSync(candidate)) continue;
     const stat = fs.lstatSync(candidate);
     if (!stat.isFile()) throw new Error(`Managed media cleanup refused a non-file path: ${candidate}`);

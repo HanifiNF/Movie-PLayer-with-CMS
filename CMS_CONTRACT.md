@@ -51,6 +51,12 @@ The snapshot is authoritative for one Player: reported records are upserted,
 while previously known records omitted from the snapshot become `missing`.
 The CMS retains missing records for schedule history and diagnostics.
 
+CMS-managed download endpoints support authenticated single byte ranges.
+Players persist the response `ETag`, send `Range: bytes=<partial-size>-` and
+`If-Range: <etag>` after interruption, and append only when the CMS returns
+`206` with a matching `Content-Range` start and total size. Invalid or stale
+partial state is discarded before one full retry.
+
 After connecting to the `/player` namespace, the player emits:
 
 ```json

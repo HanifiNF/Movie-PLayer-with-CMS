@@ -101,3 +101,101 @@ test('pre-downloads assigned assets with device authorization', async t => {
   assert.deepEqual(result.failed, []);
   assert.equal(fs.readFileSync(result.ready[0].localPath, 'utf8'), content.toString());
 });
+
+test('resumes an interrupted download from the saved partial byte', async t => {
+  const content = Buffer.from('0123456789-resumable-media-content');
+  const sha256 = crypto.createHash('sha256').update(content).digest('hex');
+  const etag = `"${sha256}"`;
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wir-player-resume-'));
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  let receivedRange = '';
+  let receivedIfRange = '';
+  const manager = new MediaManager({ mediaDir: path.join(tempDir, 'media') });
+  const asset = { id: 'resume-asset', filename: 'film.mp4', size: content.length, sha256 };
+  const target = manager.getAssetPath(asset);
+  const partialBytes = 11;
+  fs.writeFileSync(`${target}.part`, content.subarray(0, partialBytes));
+  fs.writeFileSync(`${target}.part.meta.json`, JSON.stringify({ etag }));
+  const server = http.createServer((request, response) => {
+    receivedRange = request.headers.range || '';
+    receivedIfRange = request.headers['if-range'] || '';
+    response.writeHead(206, {
+      etag, 'content-length': content.length - partialBytes,
+      'content-range': `bytes ${partialBytes}-${content.length - 1}/${content.length}`
+    });
+    response.end(content.subarray(partialBytes));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  asset.downloadUrl = `http://127.0.0.1:${server.address().port}/film.mp4`;
+
+  const result = await manager.prepareAsset(asset);
+
+  assert.equal(receivedRange, `bytes=${partialBytes}-`);
+  assert.equal(receivedIfRange, etag);
+  assert.deepEqual(fs.readFileSync(result), content);
+  assert.equal(fs.existsSync(`${target}.part`), false);
+  assert.equal(fs.existsSync(`${target}.part.meta.json`), false);
+});
+
+test('restarts safely when the server rejects a stale partial range', async t => {
+  const content = Buffer.from('fresh-complete-media');
+  const sha256 = crypto.createHash('sha256').update(content).digest('hex');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wir-player-range-reset-'));
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  const manager = new MediaManager({ mediaDir: path.join(tempDir, 'media') });
+  const asset = { id: 'reset-asset', filename: 'film.mp4', size: content.length, sha256 };
+  const target = manager.getAssetPath(asset);
+  fs.writeFileSync(`${target}.part`, Buffer.from('stale'));
+  fs.writeFileSync(`${target}.part.meta.json`, JSON.stringify({ etag: '"old"' }));
+  const ranges = [];
+  const server = http.createServer((request, response) => {
+    ranges.push(request.headers.range || '');
+    if (ranges.length === 1) {
+      response.writeHead(416, { 'content-range': `bytes */${content.length}` });
+      response.end();
+      return;
+    }
+    response.writeHead(200, { etag: `"${sha256}"`, 'content-length': content.length });
+    response.end(content);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  asset.downloadUrl = `http://127.0.0.1:${server.address().port}/film.mp4`;
+
+  const result = await manager.prepareAsset(asset);
+
+  assert.deepEqual(ranges, ['bytes=5-', '']);
+  assert.deepEqual(fs.readFileSync(result), content);
+});
+
+test('can throttle downloads for reliable interruption testing', async t => {
+  const content = Buffer.alloc(32 * 1024, 7);
+  const sha256 = crypto.createHash('sha256').update(content).digest('hex');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wir-player-throttle-'));
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  const server = http.createServer((_request, response) => {
+    response.writeHead(200, { 'content-length': content.length });
+    response.end(content);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const manager = new MediaManager({
+    mediaDir: path.join(tempDir, 'media'),
+    getDownloadOptions: () => ({ limitBytesPerSecond: 64 * 1024 })
+  });
+  const asset = {
+    id: 'throttled-asset', filename: 'film.mp4', size: content.length, sha256,
+    downloadUrl: `http://127.0.0.1:${server.address().port}/film.mp4`
+  };
+  let reportedLimit = null;
+  manager.on('download-start', event => { reportedLimit = event.speedLimitKbps; });
+
+  const startedAt = Date.now();
+  const result = await manager.prepareAsset(asset);
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.ok(elapsedMs >= 400, `expected a throttled download, completed in ${elapsedMs}ms`);
+  assert.equal(reportedLimit, 64);
+  assert.deepEqual(fs.readFileSync(result), content);
+});

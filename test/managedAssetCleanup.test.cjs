@@ -15,12 +15,14 @@ test('managed cleanup deletes only the final file and its partial file', t => {
   const target = mediaManager.getAssetPath(asset);
   fs.writeFileSync(target, 'film');
   fs.writeFileSync(`${target}.part`, 'partial');
+  fs.writeFileSync(`${target}.part.meta.json`, '{"etag":"test"}');
 
   const result = removeManagedAsset({ asset, mediaManager, activePath: '' });
 
   assert.equal(result.status, 'removed');
   assert.equal(fs.existsSync(target), false);
   assert.equal(fs.existsSync(`${target}.part`), false);
+  assert.equal(fs.existsSync(`${target}.part.meta.json`), false);
 });
 
 test('managed cleanup defers deletion while VLC is using the exact file', t => {

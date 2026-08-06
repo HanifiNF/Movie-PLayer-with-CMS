@@ -530,7 +530,13 @@
         const row = document.createElement('div'); row.className = 'remote-download-item';
         const name = document.createElement('div'); name.className = 'remote-download-name';
         const strong = document.createElement('strong'); strong.textContent = item.filename || item.assetId || 'Assigned film';
-        const status = document.createElement('small'); status.textContent = item.cached && item.status === 'ready' ? 'Already downloaded' : item.status;
+        const status = document.createElement('small');
+        const speedLimitKbps = Number(item.speedLimitKbps) || 0;
+        status.textContent = item.cached && item.status === 'ready'
+          ? 'Already downloaded'
+          : (item.status === 'downloading' && speedLimitKbps > 0
+              ? `downloading · limited to ${fmtBytes(speedLimitKbps * 1024)}/s`
+              : item.status);
         name.append(strong, status);
         const progress = document.createElement('div');
         const copy = document.createElement('div'); copy.className = 'download-progress-copy';

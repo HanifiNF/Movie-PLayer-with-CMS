@@ -38,6 +38,7 @@
       "mediaManager.cjs",
       "mediaLibrary.cjs",
       "assetInventory.cjs",
+      "assetRefresh.cjs",
       "mediaProbe.cjs",
       "mediaHealth.cjs",
       "playbackWatchdog.cjs",

@@ -15,6 +15,7 @@ const {
 const { MediaManager } = require('./mediaManager.cjs');
 const { scanMediaLibrary } = require('./mediaLibrary.cjs');
 const { buildAssetInventory } = require('./assetInventory.cjs');
+const { scanBeforeRemoteDistribution } = require('./assetRefresh.cjs');
 const { MediaProbe } = require('./mediaProbe.cjs');
 const { PlaybackWatchdog } = require('./playbackWatchdog.cjs');
 const { resolveResumeTarget } = require('./playbackResume.cjs');
@@ -81,6 +82,14 @@ const DASHBOARD_IDLE_LOCK_MS = 15 * 60 * 1000;
 
 function isTestModeEnabled() {
   return !app.isPackaged && process.env.PLAYER_ENABLE_TEST_MODE === '1';
+}
+
+function getDevelopmentDownloadLimitBytesPerSecond() {
+  if (app.isPackaged) return 0;
+  const kilobytesPerSecond = Number(process.env.PLAYER_DOWNLOAD_LIMIT_KBPS);
+  return Number.isFinite(kilobytesPerSecond) && kilobytesPerSecond > 0
+    ? Math.round(kilobytesPerSecond * 1024)
+    : 0;
 }
 
 function operatorAccessError(touch = true) {
@@ -574,6 +583,18 @@ async function syncAssetInventory() {
   const inventory = await collectAssetInventory();
   const summary = await uploadAssetInventory(inventory);
   return { inventory, summary };
+}
+
+async function scanVisibleAssetsAndContinueInBackground() {
+  return scanBeforeRemoteDistribution({
+    collectInventory: collectAssetInventory,
+    onInventory: sendAssetInventory,
+    uploadInventory: uploadAssetInventory,
+    synchronizeDistribution: syncRemoteDistribution,
+    onBackgroundError: (error, phase) => {
+      appendVlcLog(`[assets] background ${phase} failed: ${error.message || error}`);
+    }
+  });
 }
 
 function replaceRemoteAssignments(assets) {
@@ -1154,14 +1175,10 @@ ipcMain.handle('list-local-media', async () => {
     let sync = null;
     let syncError = '';
     if (cfg && !cfg.bypass) {
-      try {
-        const result = await syncRemoteDistribution();
-        inventory = result.inventory;
-        sync = result.summary;
-      } catch (error) {
-        syncError = error.message || String(error);
-        inventory = await collectAssetInventory();
-      }
+      const scan = await scanVisibleAssetsAndContinueInBackground();
+      inventory = scan.inventory;
+      sync = assetSyncState.summary;
+      syncError = assetSyncState.lastError || '';
     } else {
       inventory = await collectAssetInventory();
     }
@@ -1514,22 +1531,23 @@ async function startRuntime() {
     mediaDir: path.join(DATA_DIR, 'media'),
     concurrency: 2,
     getDownloadOptions: asset => {
+      const limitBytesPerSecond = getDevelopmentDownloadLimitBytesPerSecond();
       try {
         const cmsOrigin = new URL(cfg.serverURL).origin;
         return new URL(asset.downloadUrl).origin === cmsOrigin
-          ? { headers: { Authorization: `Bearer ${cfg.token}` }, authOrigin: cmsOrigin }
-          : {};
+          ? { headers: { Authorization: `Bearer ${cfg.token}` }, authOrigin: cmsOrigin, limitBytesPerSecond }
+          : { limitBytesPerSecond };
       } catch (_) {
-        return {};
+        return { limitBytesPerSecond };
       }
     }
   });
   mediaHealthMonitor = new MediaHealthMonitor({ storagePath: mediaManager.mediaDir });
   mediaHealthSnapshot = mediaHealthMonitor.getSnapshot();
   mediaProbe = new MediaProbe({ cachePath: DURATION_CACHE_PATH });
-  mediaManager.on('download-start', ({ asset }) => {
+  mediaManager.on('download-start', ({ asset, speedLimitKbps }) => {
     appendVlcLog(`[media] downloading ${asset.id}`);
-    updateRemoteDownload(asset, { status: 'downloading', cached: false, error: null });
+    updateRemoteDownload(asset, { status: 'downloading', cached: false, error: null, speedLimitKbps });
   });
   mediaManager.on('download-progress', ({ asset, downloadedBytes, totalBytes }) => {
     const now = Date.now();
@@ -1540,6 +1558,9 @@ async function startRuntime() {
   });
   mediaManager.on('verifying', ({ asset }) => {
     updateRemoteDownload(asset, { status: 'verifying', downloadedBytes: asset.size, totalBytes: asset.size });
+  });
+  mediaManager.on('download-retry', ({ asset, reason }) => {
+    appendVlcLog(`[media] retrying ${asset.id} from zero after ${reason}`);
   });
   mediaManager.on('ready', ({ asset, cached }) => {
     appendVlcLog(`[media] ready ${asset.id} (${cached ? 'cached' : 'downloaded'})`);
@@ -1869,16 +1890,16 @@ async function performPlayerRefresh(source) {
         appendVlcLog(`[cms] dashboard locked after refresh: ${error.message || error}`);
       }
     }
-    const assetResult = await syncRemoteDistribution();
-    const downloadFailures = assetResult.downloads.failed.length;
+    const scan = await scanVisibleAssetsAndContinueInBackground();
+    const assetCount = scan.inventory.assets.length;
     const result = {
       ok: true,
       mode: 'dashboard',
       dashboardLocked: operatorAccessRevoked,
-      assetCount: assetResult.inventory.assets.length,
+      assetCount,
       message: operatorAccessRevoked
-        ? 'Player and assets refreshed. Operator access changed, so the dashboard was locked.'
-        : `Player refreshed from CMS. ${assetResult.inventory.assets.length} assets synchronized${downloadFailures ? `; ${downloadFailures} downloads failed` : ''}.`
+        ? 'Player refreshed. Operator access changed, so the dashboard was locked; remote downloads continue in the background.'
+        : `Player refreshed. ${assetCount} local assets scanned; remote downloads continue in the background.`
     };
     refreshState = { status: 'success', lastRefreshedAt: new Date().toISOString(), lastError: null };
     return result;
