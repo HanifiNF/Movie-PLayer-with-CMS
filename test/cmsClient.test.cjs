@@ -122,6 +122,27 @@ test('heartbeat authenticates with Bearer token and reports online', async () =>
   assert.equal(client.status, 'online');
 });
 
+test('heartbeatNow performs an immediate authenticated refresh without waiting for timer', async () => {
+  let requestCount = 0;
+  const client = new CmsClient({
+    serverURL: 'http://localhost:8080',
+    heartbeatIntervalMs: 60000,
+    fetch: async () => {
+      requestCount += 1;
+      return response(200, { data: { device_id: 'device-1', connection_status: 'online' } });
+    }
+  });
+
+  const firstHeartbeat = once(client, 'heartbeat');
+  client.start('device-token', { app_version: '1.1.0' });
+  await firstHeartbeat;
+  const refreshed = await client.heartbeatNow();
+
+  assert.equal(requestCount, 2);
+  assert.equal(refreshed.device_id, 'device-1');
+  client.stop();
+});
+
 test('invalid player token stops heartbeat and exposes authentication error', async () => {
   const client = new CmsClient({
     serverURL: 'http://localhost:8080',

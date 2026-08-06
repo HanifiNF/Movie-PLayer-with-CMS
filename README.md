@@ -9,6 +9,8 @@ Socket.IO from the CMS and plays local media files fullscreen through VLC.
 - Operator login followed by assigned-device selection
 - Encrypted player token storage through Electron `safeStorage`
 - Ten-second CMS heartbeat with bounded reconnect backoff
+- Manual CMS refresh from the dashboard or system tray, including assigned
+  Player list refresh while pairing
 - Single persistent VLC instance, fullscreen, playlist swap without restart
 - Supports recurring schedules (daily / weekly) and one-shot
 - Deterministic overlap handling with schedule priority
@@ -66,6 +68,9 @@ encrypted at rest and sent as a Bearer token to
 `POST /api/player/heartbeat` every ten seconds. Only a CMS administrator can
 revoke pairing. A revoked Player stops playback, clears its local credentials,
 shows a notification, and returns to the pairing screen on its next heartbeat.
+The **Refresh from CMS** action sends that heartbeat immediately. While pairing,
+the tray action instead reloads the assigned Player list using the current
+short-lived setup session. Refresh never interrupts local VLC playback.
 Pending Players without an assigned operator are hidden and cannot be claimed.
 Each dashboard unlock is authorized against the current device assignment.
 

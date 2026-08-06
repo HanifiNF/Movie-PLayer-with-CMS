@@ -61,6 +61,8 @@ let mediaHealthSnapshot = null;
 let mediaHealthCheck = null;
 let syncQueue = Promise.resolve();
 let pairingNotice = '';
+let refreshPromise = null;
+let refreshState = { status: 'idle', lastRefreshedAt: null, lastError: null };
 const credentialStore = new DeviceCredentials({
   configPath: CONFIG_PATH,
   installationPath: INSTALLATION_PATH,
@@ -181,7 +183,12 @@ function buildTrayMenu() {
     items.push({ label: 'VLC not found — drop vlc.exe in vlc-portable/', enabled: false });
   }
   items.push({ type: 'separator' });
-  items.push({ label: 'Show Dashboard', click: () => showDashboard() });
+  items.push({ label: 'Open Player', click: () => showPlayerWindow() });
+  items.push({
+    label: refreshState.status === 'refreshing' ? 'Refreshing from CMS...' : 'Refresh from CMS',
+    enabled: refreshState.status !== 'refreshing',
+    click: () => { void refreshPlayer('tray'); }
+  });
   items.push({
     label: 'Reconnect CMS',
     click: () => {
@@ -296,6 +303,18 @@ function showDashboard() {
   if (dashboardWin && !dashboardWin.isDestroyed()) {
     dashboardWin.show();
     dashboardWin.focus();
+  }
+}
+
+function showPlayerWindow() {
+  if (cfg && cfg.token) {
+    showDashboard();
+    return;
+  }
+  createLoginWindow();
+  if (loginWin && !loginWin.isDestroyed()) {
+    loginWin.show();
+    loginWin.focus();
   }
 }
 
@@ -512,6 +531,7 @@ function pushDashboard() {
     bypass: !!(cfg && cfg.bypass),
     serverURL: cfg && cfg.serverURL || '',
     cms: { ...cmsState },
+    refresh: { ...refreshState },
     operator: {
       unlocked: Boolean(!operatorAccessError(false)),
       user: operatorSession && operatorSession.user || null
@@ -627,6 +647,8 @@ ipcMain.handle('setup-cancel', async () => {
   }
   return { ok: true };
 });
+
+ipcMain.handle('refresh-player', async () => refreshPlayer('dashboard'));
 
 ipcMain.handle('operator-login', async (_event, payload) => {
   if (!cfg || cfg.bypass) return { ok: true, bypass: true };
@@ -1520,6 +1542,102 @@ function startCmsConnection() {
     platform: `${process.platform}-${process.arch}`,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Jakarta'
   });
+}
+
+function sendPairingRefresh(result) {
+  if (!loginWin || loginWin.isDestroyed() || !loginWin.webContents) return;
+  loginWin.webContents.send('pairing:refresh-result', result);
+}
+
+async function performPlayerRefresh(source) {
+  refreshState = {
+    status: 'refreshing',
+    lastRefreshedAt: refreshState.lastRefreshedAt,
+    lastError: null
+  };
+  refreshTray();
+  pushDashboard();
+  sendPairingRefresh({ ok: true, refreshing: true, source });
+
+  try {
+    if (!cfg || !cfg.token) {
+      if (!setupSession) {
+        const result = {
+          ok: true,
+          mode: 'pairing',
+          requiresLogin: true,
+          message: 'Pairing page refreshed. Sign in to retrieve assigned Players.'
+        };
+        refreshState = { status: 'success', lastRefreshedAt: new Date().toISOString(), lastError: null };
+        sendPairingRefresh(result);
+        return result;
+      }
+      if (Date.now() >= setupSession.expiresAt) {
+        setupSession = null;
+        throw new Error('Operator setup session expired. Sign in again.');
+      }
+      const client = new CmsClient({ serverURL: setupSession.serverURL });
+      const devices = await client.availableDevices(setupSession.token);
+      const result = {
+        ok: true,
+        mode: 'pairing',
+        devices: Array.isArray(devices) ? devices : [],
+        message: 'Assigned Players refreshed from CMS.'
+      };
+      refreshState = { status: 'success', lastRefreshedAt: new Date().toISOString(), lastError: null };
+      sendPairingRefresh(result);
+      return result;
+    }
+
+    if (cfg.bypass) {
+      const cache = readJson(CACHE_PATH, { schedules: [], assets: [] });
+      await refreshMediaHealth(cache.schedules || [], cache.assets || [], { force: true });
+      const result = { ok: true, mode: 'test', message: 'Local Player data refreshed.' };
+      refreshState = { status: 'success', lastRefreshedAt: new Date().toISOString(), lastError: null };
+      return result;
+    }
+
+    if (!cmsClient) startCmsConnection();
+    if (!cmsClient) throw new Error('CMS connection is unavailable.');
+    await cmsClient.heartbeatNow();
+    let operatorAccessRevoked = false;
+    if (operatorSession) {
+      const client = new CmsClient({ serverURL: cfg.serverURL });
+      try {
+        await client.authorizeDeviceControl(operatorSession.token, cfg.deviceId);
+        operatorSession.lastActivityAt = Date.now();
+      } catch (error) {
+        operatorSession = null;
+        operatorAccessRevoked = true;
+        appendVlcLog(`[cms] dashboard locked after refresh: ${error.message || error}`);
+      }
+    }
+    const result = {
+      ok: true,
+      mode: 'dashboard',
+      dashboardLocked: operatorAccessRevoked,
+      message: operatorAccessRevoked
+        ? 'Player refreshed. Operator access changed, so the dashboard was locked.'
+        : 'Player refreshed from CMS.'
+    };
+    refreshState = { status: 'success', lastRefreshedAt: new Date().toISOString(), lastError: null };
+    return result;
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error);
+    refreshState = { status: 'error', lastRefreshedAt: refreshState.lastRefreshedAt, lastError: message };
+    const result = { ok: false, error: message };
+    sendPairingRefresh(result);
+    return result;
+  } finally {
+    refreshTray();
+    pushDashboard();
+  }
+}
+
+function refreshPlayer(source = 'manual') {
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = performPlayerRefresh(source).finally(() => { refreshPromise = null; });
+  return refreshPromise;
 }
 
 async function applySyncPayload(payload, mode = 'replace') {

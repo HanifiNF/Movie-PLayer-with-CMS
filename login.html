@@ -88,6 +88,8 @@
     .err.show { display: block; }
     .hidden { display: none !important; }
     .footnote { margin: 17px 0 0; color: var(--subtle); font-size: 9px; line-height: 1.5; text-align: center; }
+    .sync-note { display: none; margin-top: 12px; color: var(--muted); font-size: 10px; line-height: 1.4; text-align: center; }
+    .sync-note.show { display: block; }
   </style>
 </head>
 <body>
@@ -126,6 +128,7 @@
     <button type="button" id="btnTest" class="btn-secondary hidden">Test Mode (development only)</button>
 
     <div class="err" id="err" role="alert"></div>
+    <div class="sync-note" id="syncNote" role="status"></div>
     <p class="footnote">Scheduled playback continues locally when the CMS connection is temporarily unavailable.</p>
   </form>
 
@@ -137,6 +140,21 @@
     const btnClaim = document.getElementById('btnClaim');
     const btnBack = document.getElementById('btnBack');
     const errEl = document.getElementById('err');
+    const syncNote = document.getElementById('syncNote');
+
+    function refreshDeviceOptions(devices) {
+      const select = document.getElementById('deviceId');
+      const selected = select.value;
+      select.replaceChildren();
+      for (const device of devices || []) {
+        const option = document.createElement('option');
+        option.value = device.id;
+        option.textContent = `${device.name}${device.location ? ` — ${device.location}` : ''}`;
+        select.appendChild(option);
+      }
+      if (selected && Array.from(select.options).some(option => option.value === selected)) select.value = selected;
+      return select.options.length;
+    }
 
     function setBusy(busy) {
       btn.disabled = busy;
@@ -205,6 +223,31 @@
         errEl.classList.add('show');
       }
     }).catch(() => {});
+
+    ipcRenderer.on('pairing:refresh-result', (_event, result) => {
+      syncNote.classList.remove('show');
+      if (result && result.refreshing) {
+        syncNote.textContent = 'Refreshing from CMS...';
+        syncNote.classList.add('show');
+        return;
+      }
+      if (!result || !result.ok) {
+        errEl.textContent = result && result.error || 'Refresh failed.';
+        errEl.classList.add('show');
+        return;
+      }
+      if (Array.isArray(result.devices)) {
+        const count = refreshDeviceOptions(result.devices);
+        if (!count) {
+          errEl.textContent = 'No pending device is assigned to this operator.';
+          errEl.classList.add('show');
+        } else {
+          errEl.classList.remove('show');
+        }
+      }
+      syncNote.textContent = result.message || 'Pairing data refreshed.';
+      syncNote.classList.add('show');
+    });
 
     btnTest.onclick = async () => {
       errEl.classList.remove('show');

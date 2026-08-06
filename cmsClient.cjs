@@ -56,6 +56,7 @@ class CmsClient extends EventEmitter {
     this.retryDelaysMs = options.retryDelaysMs || [2000, 5000, 10000, 15000, 30000];
     this.requestTimeoutMs = options.requestTimeoutMs || 8000;
     this.timer = null;
+    this.heartbeatPromise = null;
     this.running = false;
     this.failureCount = 0;
     this.token = '';
@@ -106,7 +107,7 @@ class CmsClient extends EventEmitter {
     this.metadata = { ...metadata };
     this.failureCount = 0;
     this.#setStatus('connecting');
-    void this.#heartbeat();
+    void this.#heartbeat().catch(() => {});
   }
 
   stop() {
@@ -115,7 +116,27 @@ class CmsClient extends EventEmitter {
     this.timer = null;
   }
 
+  async heartbeatNow() {
+    if (!this.running) {
+      throw new CmsApiError('CMS connection is not running.', { code: 'cms_not_running' });
+    }
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    return this.#heartbeat();
+  }
+
   async #heartbeat() {
+    if (!this.running) return;
+    if (this.heartbeatPromise) return this.heartbeatPromise;
+    this.heartbeatPromise = this.#performHeartbeat();
+    try {
+      return await this.heartbeatPromise;
+    } finally {
+      this.heartbeatPromise = null;
+    }
+  }
+
+  async #performHeartbeat() {
     if (!this.running) return;
     try {
       const data = await this.#request('/api/player/heartbeat', {
@@ -127,13 +148,14 @@ class CmsClient extends EventEmitter {
       this.#setStatus('online');
       this.emit('heartbeat', data);
       this.#schedule(this.heartbeatIntervalMs);
+      return data;
     } catch (error) {
       if (!this.running) return;
       if (error instanceof CmsApiError && error.status === 401) {
         this.stop();
         this.#setStatus('authentication-error');
         this.emit('authentication-error', error);
-        return;
+        throw error;
       }
 
       const delayIndex = Math.min(this.failureCount, this.retryDelaysMs.length - 1);
@@ -142,12 +164,13 @@ class CmsClient extends EventEmitter {
       this.#setStatus('reconnecting');
       this.emit('connection-error', error);
       this.#schedule(retryDelay);
+      throw error;
     }
   }
 
   #schedule(delay) {
     if (!this.running) return;
-    this.timer = setTimeout(() => void this.#heartbeat(), delay);
+    this.timer = setTimeout(() => void this.#heartbeat().catch(() => {}), delay);
     if (this.timer.unref) this.timer.unref();
   }
 

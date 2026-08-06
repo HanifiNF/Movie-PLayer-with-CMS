@@ -76,6 +76,11 @@
     }
     .topbar h1 { margin: 0; font-size: 19px; letter-spacing: -.35px; }
     .topbar-right { display: flex; align-items: center; gap: 12px; }
+    .topbar-refresh { width: 34px; height: 34px; color: var(--muted); }
+    .topbar-refresh.refreshing svg { animation: spin .8s linear infinite; }
+    .refresh-message { max-width: 220px; color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .refresh-message.error { color: var(--red-dark); }
+    @keyframes spin { to { transform: rotate(360deg); } }
     .location-pill { display: flex; align-items: center; gap: 6px; max-width: 170px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-soft); color: var(--muted); font-size: 10px; font-weight: 650; }
     .location-pill svg { flex: 0 0 auto; width: 13px; height: 13px; fill: none; stroke: var(--red); stroke-width: 2; }
     .location-pill span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -279,6 +284,8 @@
         </form>
       </div>
       <header class="topbar"><h1 id="pageTitle">Home</h1><div class="topbar-right">
+        <span id="refreshMessage" class="refresh-message"></span>
+        <button id="btnRefreshPlayer" class="btn icon-btn topbar-refresh" data-tooltip="Refresh from CMS" aria-label="Refresh from CMS"><svg viewBox="0 0 24 24"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M6.1 9a7 7 0 0 1 11.5-2.6L20 9M4 15l2.4 2.6A7 7 0 0 0 17.9 15"/></svg></button>
         <div id="topbarLocation" class="location-pill"><svg viewBox="0 0 24 24"><path d="M12 21s7-6.1 7-12a7 7 0 1 0-14 0c0 5.9 7 12 7 12z"/><circle cx="12" cy="9" r="2.3"/></svg><span>Location not set</span></div>
         <div class="operator-profile"><span id="operatorAvatar" class="operator-avatar">—</span><span class="operator-copy"><strong id="operatorName" class="operator-name">Dashboard locked</strong><small id="operatorRole" class="operator-role">Operator session</small></span></div>
         <span id="clock" class="clock">--:--:--</span>
@@ -370,7 +377,7 @@
     const pauseIcon = '<rect class="solid" x="6" y="4" width="4" height="16"/><rect class="solid" x="14" y="4" width="4" height="16"/>';
     const playIcon = '<path class="solid" d="M7 4l13 8-13 8z"/>';
     let activeView = 'home';
-    let state = { status: 'offline', deviceId: '', device: { id: '', name: 'Player', location: '', timezone: '' }, appVersion: '1.0.0', serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, operator: { unlocked: false, user: null }, now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
+    let state = { status: 'offline', deviceId: '', device: { id: '', name: 'Player', location: '', timezone: '' }, appVersion: '1.0.0', serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, refresh: { status: 'idle', lastRefreshedAt: null, lastError: null }, operator: { unlocked: false, user: null }, now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
     let assetState = { loaded: false, loading: false, error: '', directory: '', items: [] };
     let jumpPanelOpen = false;
     let jumpMaxSeconds = 0;
@@ -557,6 +564,11 @@
       const operatorRole = state.bypass ? 'Test mode' : operatorUser && operatorUser.role || 'Operator session';
       const initials = operatorName.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase() || '—';
       $('operatorAvatar').textContent = initials; $('operatorName').textContent = operatorName; $('operatorName').title = operatorName; $('operatorRole').textContent = operatorRole;
+      const refresh = state.refresh || {}; const refreshing = refresh.status === 'refreshing';
+      $('btnRefreshPlayer').disabled = refreshing; $('btnRefreshPlayer').classList.toggle('refreshing', refreshing);
+      $('refreshMessage').className = `refresh-message${refresh.status === 'error' ? ' error' : ''}`;
+      const refreshedTime = refresh.lastRefreshedAt ? new Date(refresh.lastRefreshedAt).toLocaleTimeString() : '';
+      $('refreshMessage').textContent = refreshing ? 'Refreshing...' : (refresh.status === 'error' ? refresh.lastError || 'Refresh failed' : (refreshedTime ? `Synced ${refreshedTime}` : ''));
       $('sidebarVersion').textContent = `v${state.appVersion || '1.0.0'}`; $('btnAddSchedule').style.display = state.bypass ? 'inline-block' : 'none'; $('btnManageSchedules').style.display = state.bypass ? 'inline-block' : 'none';
       const now = state.now;
       if (now) { $('nowTitle').textContent = now.title || now.scheduleId; $('nowTitle').classList.remove('empty'); $('nowFile').textContent = (now.files || []).map(titleFor).join(' → '); $('nowCountdown').textContent = fmtCountdown(now.endMs ? now.endMs - Date.now() : null); }
@@ -595,6 +607,7 @@
     $('btnJumpApply').onclick = async () => { const target = syncJumpTargetFromInputs(); $('btnJumpApply').disabled = true; const result = await invokePlaybackControl('vlc-seek-to', target); $('btnJumpApply').disabled = false; if (result) closeJumpPanel(); };
     $('btnSkip').onclick = () => ipcRenderer.invoke('vlc-skip'); $('btnRetry').onclick = () => ipcRenderer.invoke('vlc-retry'); $('btnAddSchedule').onclick = () => ipcRenderer.invoke('open-schedule-adder'); $('btnManageSchedules').onclick = () => ipcRenderer.invoke('open-schedule-manager');
     $('btnRecheckMedia').onclick = async () => { healthError = ''; $('btnRecheckMedia').disabled = true; $('btnRecheckMedia').textContent = 'Checking...'; const result = await ipcRenderer.invoke('recheck-media-health'); if (!result || !result.ok) healthError = result && result.error || 'Media health check failed'; render(); };
+    $('btnRefreshPlayer').onclick = async () => { await ipcRenderer.invoke('refresh-player'); };
     $('btnConfig').onclick = () => ipcRenderer.invoke('open-config-folder'); $('btnLock').onclick = () => ipcRenderer.invoke('operator-logout'); $('btnQuit').onclick = () => ipcRenderer.invoke('quit');
     function updateClock() { const now = new Date(); const pad = n => String(n).padStart(2, '0'); $('clock').textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`; }
     setInterval(updateClock, 1000); updateClock(); render();
