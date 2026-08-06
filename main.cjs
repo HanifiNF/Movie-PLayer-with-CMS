@@ -13,13 +13,15 @@ const {
   normalizeSyncPayload
 } = require('./contracts.cjs');
 const { MediaManager } = require('./mediaManager.cjs');
-const { listManagedAssets, scanMediaLibrary } = require('./mediaLibrary.cjs');
+const { scanMediaLibrary } = require('./mediaLibrary.cjs');
+const { buildAssetInventory } = require('./assetInventory.cjs');
 const { MediaProbe } = require('./mediaProbe.cjs');
 const { PlaybackWatchdog } = require('./playbackWatchdog.cjs');
 const { resolveResumeTarget } = require('./playbackResume.cjs');
 const { MediaHealthMonitor } = require('./mediaHealth.cjs');
 const { CmsClient, normalizeServerUrl, parseSessionExpiry } = require('./cmsClient.cjs');
 const { DeviceCredentials } = require('./deviceCredentials.cjs');
+const { removeManagedAsset } = require('./managedAssetCleanup.cjs');
 const CFG = require('./config.cjs');
 
 if (process.env.PLAYER_USER_DATA) {
@@ -63,6 +65,13 @@ let syncQueue = Promise.resolve();
 let pairingNotice = '';
 let refreshPromise = null;
 let refreshState = { status: 'idle', lastRefreshedAt: null, lastError: null };
+let assetUploadPromise = null;
+let remoteDistributionPromise = null;
+let initialAssetSyncStarted = false;
+let nextAssetSyncAttemptAt = 0;
+let assetSyncState = { status: 'idle', lastSyncedAt: null, lastError: null, summary: null };
+let remoteDownloadState = { status: 'idle', assignedCount: 0, updatedAt: null, lastError: null, items: [] };
+const downloadProgressBroadcastAt = new Map();
 const credentialStore = new DeviceCredentials({
   configPath: CONFIG_PATH,
   installationPath: INSTALLATION_PATH,
@@ -503,6 +512,176 @@ function getCachedAssets() {
   }
 }
 
+async function collectAssetInventory() {
+  if (!mediaProbe) throw new Error('Media inventory is not initialized');
+  return buildAssetInventory({
+    mediaLibraryDir: CFG.MEDIA_LIBRARY_DIR,
+    cachedAssets: getCachedAssets(),
+    mediaManager,
+    mediaProbe,
+    probeConcurrency: 2
+  });
+}
+
+async function uploadAssetInventory(inventory) {
+  if (!cfg || cfg.bypass) return null;
+  if (assetUploadPromise) return assetUploadPromise;
+  if (inventory.assets.length > 2000) {
+    throw new Error('The Media Folder contains more than the 2,000 assets allowed in one sync.');
+  }
+
+  assetSyncState = {
+    status: 'syncing',
+    lastSyncedAt: assetSyncState.lastSyncedAt,
+    lastError: null,
+    summary: assetSyncState.summary
+  };
+  pushDashboard();
+  const client = cmsClient || new CmsClient({ serverURL: cfg.serverURL });
+  assetUploadPromise = client.syncAssets(cfg.token, { assets: inventory.assets })
+    .then(summary => {
+      initialAssetSyncStarted = true;
+      nextAssetSyncAttemptAt = 0;
+      assetSyncState = {
+        status: 'synced',
+        lastSyncedAt: summary.synced_at || new Date().toISOString(),
+        lastError: null,
+        summary
+      };
+      appendVlcLog(`[assets] synced ${summary.reported} items at revision ${summary.inventory_revision}`);
+      return summary;
+    })
+    .catch(error => {
+      initialAssetSyncStarted = false;
+      nextAssetSyncAttemptAt = Date.now() + 60000;
+      assetSyncState = {
+        status: 'error',
+        lastSyncedAt: assetSyncState.lastSyncedAt,
+        lastError: error.message || String(error),
+        summary: assetSyncState.summary
+      };
+      appendVlcLog(`[assets] sync failed: ${assetSyncState.lastError}`);
+      throw error;
+    })
+    .finally(() => {
+      assetUploadPromise = null;
+      pushDashboard();
+    });
+  return assetUploadPromise;
+}
+
+async function syncAssetInventory() {
+  const inventory = await collectAssetInventory();
+  const summary = await uploadAssetInventory(inventory);
+  return { inventory, summary };
+}
+
+function replaceRemoteAssignments(assets) {
+  const previous = new Map(remoteDownloadState.items.map(item => [item.assetId, item]));
+  remoteDownloadState = {
+    status: assets.length ? 'syncing' : 'complete',
+    assignedCount: assets.length,
+    updatedAt: new Date().toISOString(),
+    lastError: null,
+    items: assets.map(asset => {
+      const old = previous.get(asset.id);
+      return {
+        assetId: asset.id,
+        filename: asset.filename,
+        totalBytes: asset.size,
+        downloadedBytes: old && old.status === 'ready' ? asset.size : 0,
+        status: old && old.status === 'ready' ? 'ready' : 'queued',
+        cached: Boolean(old && old.cached),
+        error: null
+      };
+    })
+  };
+  pushDashboard();
+}
+
+function updateRemoteDownload(asset, changes, broadcast = true) {
+  const assetId = String(asset && asset.id || '');
+  const index = remoteDownloadState.items.findIndex(item => item.assetId === assetId);
+  const current = index >= 0 ? remoteDownloadState.items[index] : {
+    assetId, filename: asset && asset.filename || assetId,
+    totalBytes: Number(asset && asset.size) || 0, downloadedBytes: 0,
+    status: 'queued', cached: false, error: null
+  };
+  const next = { ...current, ...changes };
+  const items = [...remoteDownloadState.items];
+  if (index >= 0) items[index] = next; else items.push(next);
+  remoteDownloadState = { ...remoteDownloadState, updatedAt: new Date().toISOString(), items };
+  if (broadcast) pushDashboard();
+}
+
+function sendAssetInventory(inventory) {
+  if (!dashboardWin || dashboardWin.isDestroyed() || !dashboardWin.webContents) return;
+  dashboardWin.webContents.send('assets:inventory-updated', {
+    directory: inventory.directory || '',
+    items: Array.isArray(inventory.displayItems) ? inventory.displayItems : []
+  });
+}
+
+async function syncRemoteDistribution() {
+  if (!cfg || cfg.bypass) return syncAssetInventory();
+  if (remoteDistributionPromise) return remoteDistributionPromise;
+  remoteDistributionPromise = (async () => {
+    const client = cmsClient || new CmsClient({ serverURL: cfg.serverURL });
+    const [assignedResponse, removals] = await Promise.all([
+      client.assignedAssets(cfg.token), client.pendingAssetRemovals(cfg.token)
+    ]);
+    const assigned = assignedResponse.map(normalizeAsset);
+    replaceRemoteAssignments(assigned);
+    const current = normalizeSyncPayload(readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] }));
+    writeJson(CACHE_PATH, {
+      revision: current.revision,
+      updatedAt: new Date().toISOString(),
+      schedules: current.schedules,
+      assets: assigned
+    });
+
+    for (const removal of removals) {
+      const activePath = vlc && vlc.getPlaybackStatus ? vlc.getPlaybackStatus().currentPath : '';
+      const result = removeManagedAsset({ asset: removal, mediaManager, activePath });
+      if (result.status === 'deferred') {
+        appendVlcLog(`[media] removal deferred while playing ${removal.id}`);
+        continue;
+      }
+      await client.acknowledgeAssetRemoval(cfg.token, removal.id);
+      appendVlcLog(`[media] removed unassigned asset ${removal.id}`);
+    }
+
+    const downloads = await mediaManager.prepareAssets(assigned);
+    let preparedSchedules = [];
+    try {
+      preparedSchedules = await mediaManager.prepareSchedules(current.schedules, assigned);
+      if (scheduler) scheduler.update(preparedSchedules);
+    } catch (error) {
+      appendVlcLog(`[assets] cached schedule disabled after assignment change: ${error.message}`);
+      if (scheduler) scheduler.update([]);
+    }
+    await refreshMediaHealth(preparedSchedules, assigned, { force: true });
+    const assetSync = await syncAssetInventory();
+    sendAssetInventory(assetSync.inventory);
+    remoteDownloadState = {
+      ...remoteDownloadState,
+      status: downloads.failed.length ? 'warning' : 'complete',
+      updatedAt: new Date().toISOString(),
+      lastError: downloads.failed.length ? `${downloads.failed.length} download(s) failed.` : null
+    };
+    pushDashboard();
+    return { ...assetSync, assigned, downloads };
+  })().catch(error => {
+    remoteDownloadState = {
+      ...remoteDownloadState, status: 'error', updatedAt: new Date().toISOString(),
+      lastError: error.message || String(error)
+    };
+    pushDashboard();
+    throw error;
+  }).finally(() => { remoteDistributionPromise = null; });
+  return remoteDistributionPromise;
+}
+
 async function waitForVlcRecovery(timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -532,6 +711,8 @@ function pushDashboard() {
     serverURL: cfg && cfg.serverURL || '',
     cms: { ...cmsState },
     refresh: { ...refreshState },
+    assetSync: { ...assetSyncState },
+    remoteDownloads: { ...remoteDownloadState, items: remoteDownloadState.items.map(item => ({ ...item })) },
     operator: {
       unlocked: Boolean(!operatorAccessError(false)),
       user: operatorSession && operatorSession.user || null
@@ -969,25 +1150,55 @@ ipcMain.handle('duplicate-test-schedule', async (_event, scheduleId) => {
 
 ipcMain.handle('list-local-media', async () => {
   try {
-    fs.mkdirSync(CFG.MEDIA_LIBRARY_DIR, { recursive: true });
-    const cached = normalizeSyncPayload(
-      readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] })
-    );
-    const libraryItems = scanMediaLibrary(CFG.MEDIA_LIBRARY_DIR);
-    const managedItems = mediaManager
-      ? listManagedAssets(cached.assets, asset => mediaManager.getAssetPath(asset))
-      : [];
-    const items = [...libraryItems, ...managedItems].sort((a, b) => (
-      a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }) ||
-      a.sourceLabel.localeCompare(b.sourceLabel) ||
-      a.relativePath.localeCompare(b.relativePath)
-    ));
+    let inventory;
+    let sync = null;
+    let syncError = '';
+    if (cfg && !cfg.bypass) {
+      try {
+        const result = await syncRemoteDistribution();
+        inventory = result.inventory;
+        sync = result.summary;
+      } catch (error) {
+        syncError = error.message || String(error);
+        inventory = await collectAssetInventory();
+      }
+    } else {
+      inventory = await collectAssetInventory();
+    }
     return {
       ok: true,
-      directory: CFG.MEDIA_LIBRARY_DIR,
-      items
+      directory: inventory.directory,
+      items: inventory.displayItems,
+      sync,
+      syncError
     };
   } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('retry-asset-download', async (_event, assetId) => {
+  let asset = null;
+  try {
+    if (!cfg || cfg.bypass) throw new Error('Remote downloads require a paired CMS Player.');
+    const cache = normalizeSyncPayload(readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] }));
+    asset = cache.assets.find(item => item.id === String(assetId || ''));
+    if (!asset) throw new Error('This asset is no longer assigned to the Player. Refresh Assets.');
+    updateRemoteDownload(asset, { status: 'queued', downloadedBytes: 0, cached: false, error: null });
+    await mediaManager.prepareAsset(asset);
+    const result = await syncAssetInventory();
+    sendAssetInventory(result.inventory);
+    remoteDownloadState = {
+      ...remoteDownloadState,
+      status: remoteDownloadState.items.some(item => item.status === 'failed') ? 'warning' : 'complete',
+      updatedAt: new Date().toISOString(), lastError: null
+    };
+    pushDashboard();
+    return { ok: true };
+  } catch (error) {
+    if (asset) updateRemoteDownload(asset, { status: 'failed', cached: false, error: error.message || String(error) });
+    remoteDownloadState = { ...remoteDownloadState, status: 'warning', lastError: error.message || String(error) };
+    pushDashboard();
     return { ok: false, error: error.message || String(error) };
   }
 });
@@ -1283,6 +1494,14 @@ ipcMain.handle('quit', async () => {
 
 async function startRuntime() {
   if (!cfg || !cfg.token) return;
+  remoteDownloadState = { status: 'idle', assignedCount: 0, updatedAt: null, lastError: null, items: [] };
+  downloadProgressBroadcastAt.clear();
+  try {
+    fs.mkdirSync(CFG.MEDIA_LIBRARY_DIR, { recursive: true });
+  } catch (error) {
+    assetSyncState = { status: 'error', lastSyncedAt: null, lastError: `Media Folder unavailable: ${error.message}`, summary: null };
+    appendVlcLog(`[assets] ${assetSyncState.lastError}`);
+  }
   playbackCheckpoint = null;
   lastResumeInfo = null;
   mediaHealthMonitor = null;
@@ -1293,19 +1512,48 @@ async function startRuntime() {
   if (vlc) vlc.quit();
   mediaManager = new MediaManager({
     mediaDir: path.join(DATA_DIR, 'media'),
-    concurrency: 2
+    concurrency: 2,
+    getDownloadOptions: asset => {
+      try {
+        const cmsOrigin = new URL(cfg.serverURL).origin;
+        return new URL(asset.downloadUrl).origin === cmsOrigin
+          ? { headers: { Authorization: `Bearer ${cfg.token}` }, authOrigin: cmsOrigin }
+          : {};
+      } catch (_) {
+        return {};
+      }
+    }
   });
   mediaHealthMonitor = new MediaHealthMonitor({ storagePath: mediaManager.mediaDir });
   mediaHealthSnapshot = mediaHealthMonitor.getSnapshot();
   mediaProbe = new MediaProbe({ cachePath: DURATION_CACHE_PATH });
   mediaManager.on('download-start', ({ asset }) => {
     appendVlcLog(`[media] downloading ${asset.id}`);
+    updateRemoteDownload(asset, { status: 'downloading', cached: false, error: null });
+  });
+  mediaManager.on('download-progress', ({ asset, downloadedBytes, totalBytes }) => {
+    const now = Date.now();
+    const last = downloadProgressBroadcastAt.get(asset.id) || 0;
+    const shouldBroadcast = now - last >= 250 || downloadedBytes >= totalBytes;
+    updateRemoteDownload(asset, { status: 'downloading', downloadedBytes, totalBytes }, shouldBroadcast);
+    if (shouldBroadcast) downloadProgressBroadcastAt.set(asset.id, now);
+  });
+  mediaManager.on('verifying', ({ asset }) => {
+    updateRemoteDownload(asset, { status: 'verifying', downloadedBytes: asset.size, totalBytes: asset.size });
   });
   mediaManager.on('ready', ({ asset, cached }) => {
     appendVlcLog(`[media] ready ${asset.id} (${cached ? 'cached' : 'downloaded'})`);
+    downloadProgressBroadcastAt.delete(asset.id);
+    const existing = remoteDownloadState.items.find(item => item.assetId === asset.id);
+    updateRemoteDownload(asset, {
+      status: 'ready', downloadedBytes: asset.size, totalBytes: asset.size,
+      cached: existing && existing.status === 'ready' ? existing.cached : Boolean(cached), error: null
+    });
   });
   mediaManager.on('download-error', ({ asset, error }) => {
     appendVlcLog(`[media] failed ${asset.id}: ${error.message}`);
+    downloadProgressBroadcastAt.delete(asset.id);
+    updateRemoteDownload(asset, { status: 'failed', cached: false, error: error.message || String(error) });
     console.error('Media download failed', asset.id, error);
   });
   createTransitionWindow();
@@ -1498,6 +1746,8 @@ function stopCmsConnection() {
 
 function startCmsConnection() {
   stopCmsConnection();
+  initialAssetSyncStarted = false;
+  nextAssetSyncAttemptAt = 0;
   if (!cfg || cfg.bypass) {
     cmsState = { status: 'test-mode (no server)', lastHeartbeatAt: null, lastError: null };
     setStatus(cmsState.status);
@@ -1518,6 +1768,12 @@ function startCmsConnection() {
     cmsState.lastError = null;
     applyDeviceMetadata(data);
     pushDashboard();
+    if (!initialAssetSyncStarted && Date.now() >= nextAssetSyncAttemptAt) {
+      initialAssetSyncStarted = true;
+      void syncRemoteDistribution().catch(error => {
+        console.error('Initial remote asset sync failed', error);
+      });
+    }
   });
   cmsClient.on('connection-error', error => {
     cmsState.lastError = error.message || String(error);
@@ -1592,6 +1848,7 @@ async function performPlayerRefresh(source) {
     if (cfg.bypass) {
       const cache = readJson(CACHE_PATH, { schedules: [], assets: [] });
       await refreshMediaHealth(cache.schedules || [], cache.assets || [], { force: true });
+      await collectAssetInventory();
       const result = { ok: true, mode: 'test', message: 'Local Player data refreshed.' };
       refreshState = { status: 'success', lastRefreshedAt: new Date().toISOString(), lastError: null };
       return result;
@@ -1612,13 +1869,16 @@ async function performPlayerRefresh(source) {
         appendVlcLog(`[cms] dashboard locked after refresh: ${error.message || error}`);
       }
     }
+    const assetResult = await syncRemoteDistribution();
+    const downloadFailures = assetResult.downloads.failed.length;
     const result = {
       ok: true,
       mode: 'dashboard',
       dashboardLocked: operatorAccessRevoked,
+      assetCount: assetResult.inventory.assets.length,
       message: operatorAccessRevoked
-        ? 'Player refreshed. Operator access changed, so the dashboard was locked.'
-        : 'Player refreshed from CMS.'
+        ? 'Player and assets refreshed. Operator access changed, so the dashboard was locked.'
+        : `Player refreshed from CMS. ${assetResult.inventory.assets.length} assets synchronized${downloadFailures ? `; ${downloadFailures} downloads failed` : ''}.`
     };
     refreshState = { status: 'success', lastRefreshedAt: new Date().toISOString(), lastError: null };
     return result;

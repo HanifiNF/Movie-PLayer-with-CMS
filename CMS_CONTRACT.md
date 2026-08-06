@@ -18,6 +18,39 @@ The resulting device token is used for `POST /api/player/heartbeat` every ten
 seconds. Pairing can only be revoked by an authenticated CMS administrator;
 the Player has no unregister endpoint.
 
+## Asset inventory snapshot
+
+After the first successful heartbeat, and whenever an operator refreshes the
+Player or its Assets page, the Player sends its current inventory to:
+
+```text
+POST /api/player/assets/sync
+Authorization: Bearer <device-token>
+```
+
+```json
+{
+  "assets": [{
+    "media_key": "local:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "source": "local",
+    "title": "Lobby Campaign",
+    "filename": "Lobby Campaign.mp4",
+    "relative_path": "Campaign/Lobby Campaign.mp4",
+    "size_bytes": 482971200,
+    "duration_ms": 120000,
+    "sha256": null,
+    "status": "ready",
+    "modified_at": "2026-08-06T09:30:00.000Z"
+  }]
+}
+```
+
+`local:` keys are SHA-256 hashes of normalized relative paths. Managed CMS
+downloads use `managed:<asset-id>`. Absolute PC paths are never transmitted.
+The snapshot is authoritative for one Player: reported records are upserted,
+while previously known records omitted from the snapshot become `missing`.
+The CMS retains missing records for schedule history and diagnostics.
+
 After connecting to the `/player` namespace, the player emits:
 
 ```json

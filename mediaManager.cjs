@@ -25,10 +25,12 @@ function hashFile(filePath) {
   });
 }
 
-function requestDownload(url, destination, expectedSize, redirectsLeft = 5) {
+function requestDownload(url, destination, expectedSize, options = {}, redirectsLeft = 5) {
   return new Promise((resolve, reject) => {
     const partialSize = fileExists(destination) ? fs.statSync(destination).size : 0;
-    const headers = partialSize > 0 ? { Range: `bytes=${partialSize}-` } : {};
+    const headers = { ...(options.headers || {}) };
+    if (options.authOrigin && new URL(url).origin !== options.authOrigin) delete headers.Authorization;
+    if (partialSize > 0) headers.Range = `bytes=${partialSize}-`;
     const transport = url.startsWith('https:') ? https : http;
     const request = transport.get(url, { headers }, response => {
       if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
@@ -38,7 +40,7 @@ function requestDownload(url, destination, expectedSize, redirectsLeft = 5) {
           return;
         }
         const redirectUrl = new URL(response.headers.location, url).toString();
-        requestDownload(redirectUrl, destination, expectedSize, redirectsLeft - 1)
+        requestDownload(redirectUrl, destination, expectedSize, options, redirectsLeft - 1)
           .then(resolve, reject);
         return;
       }
@@ -50,7 +52,16 @@ function requestDownload(url, destination, expectedSize, redirectsLeft = 5) {
       }
 
       const shouldAppend = response.statusCode === 206 && partialSize > 0;
+      const startingBytes = shouldAppend ? partialSize : 0;
+      let receivedBytes = 0;
       const output = fs.createWriteStream(destination, { flags: shouldAppend ? 'a' : 'w' });
+      if (typeof options.onProgress === 'function') {
+        options.onProgress({ downloadedBytes: startingBytes, totalBytes: expectedSize || 0 });
+        response.on('data', chunk => {
+          receivedBytes += chunk.length;
+          options.onProgress({ downloadedBytes: startingBytes + receivedBytes, totalBytes: expectedSize || 0 });
+        });
+      }
       response.pipe(output);
       output.on('error', reject);
       response.on('error', reject);
@@ -76,6 +87,9 @@ class MediaManager extends EventEmitter {
     if (!options.mediaDir) throw new Error('MediaManager requires mediaDir');
     this.mediaDir = options.mediaDir;
     this.concurrency = Math.max(1, Number(options.concurrency) || 2);
+    this.getDownloadOptions = typeof options.getDownloadOptions === 'function'
+      ? options.getDownloadOptions
+      : () => ({});
     fs.mkdirSync(this.mediaDir, { recursive: true });
   }
 
@@ -118,7 +132,12 @@ class MediaManager extends EventEmitter {
     }
 
     this.emit('download-start', { asset, path: target });
-    await requestDownload(asset.downloadUrl, partial, asset.size);
+    const downloadOptions = this.getDownloadOptions(asset);
+    await requestDownload(asset.downloadUrl, partial, asset.size, {
+      ...downloadOptions,
+      onProgress: progress => this.emit('download-progress', { asset, ...progress })
+    });
+    this.emit('verifying', { asset, path: partial });
     const digest = await hashFile(partial);
     if (digest !== asset.sha256) {
       fs.unlinkSync(partial);
@@ -188,6 +207,23 @@ class MediaManager extends EventEmitter {
       };
     });
   }
+
+  async prepareAssets(assets) {
+    const failed = [];
+    const paths = await this._mapWithConcurrency(assets || [], async asset => {
+      try {
+        return await this.prepareAsset(asset);
+      } catch (error) {
+        failed.push({ assetId: asset.id, error: error.message || String(error) });
+        this.emit('download-error', { asset, error });
+        return null;
+      }
+    });
+    return {
+      ready: [...paths.entries()].filter(([, value]) => value !== null).map(([assetId, localPath]) => ({ assetId, localPath })),
+      failed
+    };
+  }
 }
 
-module.exports = { MediaManager, hashFile };
+module.exports = { MediaManager, hashFile, requestDownload };

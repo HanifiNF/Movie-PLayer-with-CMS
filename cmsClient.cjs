@@ -100,6 +100,39 @@ class CmsClient extends EventEmitter {
     });
   }
 
+  async syncAssets(token, payload) {
+    return this.#request('/api/player/assets/sync', {
+      method: 'POST', token, body: payload
+    });
+  }
+
+  async assignedAssets(token) {
+    const assets = await this.#request('/api/player/assets/assigned', { method: 'GET', token });
+    return (Array.isArray(assets) ? assets : []).map(asset => ({
+      id: String(asset.id || ''),
+      filename: String(asset.filename || ''),
+      downloadUrl: new URL(String(asset.download_url || ''), `${this.serverURL}/`).toString(),
+      size: Number(asset.size),
+      sha256: String(asset.sha256 || '').toLowerCase(),
+      mimeType: String(asset.mime_type || 'application/octet-stream'),
+      durationMs: Math.max(0, Number(asset.duration_ms) || 0),
+      revision: Math.max(0, Number(asset.revision) || 0)
+    }));
+  }
+
+  async pendingAssetRemovals(token) {
+    const removals = await this.#request('/api/player/assets/removals', { method: 'GET', token });
+    return (Array.isArray(removals) ? removals : []).map(asset => ({
+      id: String(asset.id || ''), filename: String(asset.filename || '')
+    })).filter(asset => asset.id && asset.filename);
+  }
+
+  async acknowledgeAssetRemoval(token, assetId) {
+    return this.#request(`/api/player/assets/${encodeURIComponent(assetId)}/removed`, {
+      method: 'POST', token, body: {}
+    });
+  }
+
   start(token, metadata = {}) {
     this.stop();
     this.running = true;

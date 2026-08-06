@@ -199,6 +199,27 @@
     .status-pill.missing, .status-pill.corrupt, .status-pill.unreadable { background: #fbe5e4; color: var(--red-dark); }
     .status-pill.checking, .status-pill.idle { background: #eee9e5; color: var(--muted); }
     .directory-note { margin: -5px 0 13px; color: var(--muted); font-family: ui-monospace, Consolas, monospace; font-size: 9px; overflow-wrap: anywhere; }
+    .directory-note.error { color: var(--red-dark); }
+    .remote-downloads { margin-bottom: 15px; padding: 17px 18px; }
+    .remote-download-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+    .remote-download-head h3 { margin: 0 0 4px; font-size: 15px; }
+    .remote-download-head p { margin: 0; color: var(--muted); font-size: 10px; }
+    .remote-download-list { display: grid; gap: 9px; margin-top: 14px; }
+    .remote-download-item { display: grid; grid-template-columns: minmax(150px, 1.2fr) minmax(180px, 2fr) auto; align-items: center; gap: 14px; padding: 11px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-soft); }
+    .remote-download-name { min-width: 0; }
+    .remote-download-name strong,.remote-download-name small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .remote-download-name strong { font-size: 11px; }
+    .remote-download-name small { margin-top: 3px; color: var(--muted); font-size: 9px; text-transform: capitalize; }
+    .download-progress-copy { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 5px; color: var(--muted); font-size: 9px; }
+    .download-track { height: 6px; overflow: hidden; border-radius: 999px; background: #e8dfda; }
+    .download-fill { height: 100%; border-radius: inherit; background: var(--red); transition: width .2s ease; }
+    .download-fill.ready { background: var(--green); }
+    .download-fill.failed { background: var(--red-dark); }
+    .download-error { margin-top: 5px; color: var(--red-dark); font-size: 9px; overflow-wrap: anywhere; }
+    .remote-download-empty { padding: 13px 0 2px; color: var(--subtle); font-size: 10px; }
+    .status-pill.queued,.status-pill.verifying { background: #f6ecd9; color: var(--amber); }
+    .status-pill.downloading { background: var(--red-soft); color: var(--red-dark); }
+    .status-pill.failed { background: #fbe5e4; color: var(--red-dark); }
 
     .health-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .health-state { font-size: 10px; font-weight: 800; text-transform: uppercase; }
@@ -237,6 +258,7 @@
       .location-pill { display: none; }
       .operator-profile { min-width: 0; }
       .operator-copy { display: none; }
+      .remote-download-item { grid-template-columns: 1fr; gap: 9px; }
     }
   </style>
 </head>
@@ -339,6 +361,11 @@
 
         <section id="view-assets" class="view hidden">
           <div class="page-heading"><div><h2>Assets</h2><p>Browse media available in the Media Folder and downloaded assets.</p></div><button id="btnRefreshAssets" class="btn primary">Refresh Assets</button></div>
+          <article class="card remote-downloads">
+            <div class="remote-download-head"><div><h3>Remote Downloads</h3><p>Films assigned to this Player by the CMS.</p></div><span id="remoteAssignedCount" class="badge offline">0 assigned</span></div>
+            <div id="remoteDownloadList" class="remote-download-list"></div>
+            <div id="remoteDownloadEmpty" class="remote-download-empty">No films are currently assigned by the CMS.</div>
+          </article>
           <div class="summary-grid"><article class="card summary-card"><span>Total</span><strong id="assetTotal">0</strong></article><article class="card summary-card"><span>Ready</span><strong id="assetReady">0</strong></article><article class="card summary-card"><span>Problems</span><strong id="assetProblems" class="red">0</strong></article><article class="card summary-card"><span>Showing</span><strong id="assetShowing">0</strong></article></div>
           <div class="toolbar"><div class="search-wrap"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16 16l5 5"/></svg><input id="assetSearch" type="search" placeholder="Search title, filename, or path..." /></div><select id="assetFilter" aria-label="Filter assets"><option value="all">All assets</option><option value="ready">Ready to play</option><option value="problem">Has problems</option><option value="local">Media Folder</option><option value="managed">Downloaded</option></select></div>
           <div id="assetDirectory" class="directory-note"></div>
@@ -377,7 +404,7 @@
     const pauseIcon = '<rect class="solid" x="6" y="4" width="4" height="16"/><rect class="solid" x="14" y="4" width="4" height="16"/>';
     const playIcon = '<path class="solid" d="M7 4l13 8-13 8z"/>';
     let activeView = 'home';
-    let state = { status: 'offline', deviceId: '', device: { id: '', name: 'Player', location: '', timezone: '' }, appVersion: '1.0.0', serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, refresh: { status: 'idle', lastRefreshedAt: null, lastError: null }, operator: { unlocked: false, user: null }, now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
+    let state = { status: 'offline', deviceId: '', device: { id: '', name: 'Player', location: '', timezone: '' }, appVersion: '1.0.0', serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, refresh: { status: 'idle', lastRefreshedAt: null, lastError: null }, remoteDownloads: { status: 'idle', assignedCount: 0, items: [] }, operator: { unlocked: false, user: null }, now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
     let assetState = { loaded: false, loading: false, error: '', directory: '', items: [] };
     let jumpPanelOpen = false;
     let jumpMaxSeconds = 0;
@@ -437,7 +464,7 @@
       try {
         const result = await ipcRenderer.invoke('list-local-media');
         if (!result || !result.ok) throw new Error(result && result.error || 'Could not scan assets');
-        assetState = { loaded: true, loading: false, error: '', directory: result.directory || '', items: Array.isArray(result.items) ? result.items : [] };
+        assetState = { loaded: true, loading: false, error: result.syncError || '', directory: result.directory || '', items: Array.isArray(result.items) ? result.items : [] };
       } catch (error) {
         assetState.loading = false; assetState.error = error.message || String(error);
       }
@@ -468,7 +495,8 @@
       });
       $('assetTotal').textContent = all.length; $('assetReady').textContent = readyCount;
       $('assetProblems').textContent = all.length - readyCount; $('assetShowing').textContent = filtered.length;
-      $('assetDirectory').textContent = assetState.directory ? `Media Folder: ${assetState.directory}` : '';
+      $('assetDirectory').className = `directory-note${assetState.error ? ' error' : ''}`;
+      $('assetDirectory').textContent = [assetState.directory ? `Media Folder: ${assetState.directory}` : '', assetState.error ? `CMS sync failed: ${assetState.error}` : ''].filter(Boolean).join(' · ');
       const rows = $('assetRows'); rows.innerHTML = '';
       for (const item of filtered) {
         const tr = document.createElement('tr');
@@ -486,6 +514,46 @@
       $('assetEmpty').textContent = assetState.loading ? 'Scanning assets...' : assetState.error || (assetState.loaded ? 'No assets match the current search and filter.' : 'Open this page to scan available media.');
       $('btnRefreshAssets').disabled = assetState.loading;
       $('btnRefreshAssets').textContent = assetState.loading ? 'Scanning...' : 'Refresh Assets';
+    }
+
+    function renderRemoteDownloads() {
+      const remote = state.remoteDownloads || { status: 'idle', assignedCount: 0, items: [] };
+      const items = Array.isArray(remote.items) ? remote.items : [];
+      const count = Number(remote.assignedCount) || items.length;
+      $('remoteAssignedCount').textContent = `${count} assigned`;
+      $('remoteAssignedCount').className = `badge ${remote.status === 'complete' ? 'online' : (remote.status === 'error' || remote.status === 'warning' ? 'offline' : 'connecting')}`;
+      const list = $('remoteDownloadList'); list.innerHTML = '';
+      for (const item of items) {
+        const total = Math.max(0, Number(item.totalBytes) || 0);
+        const downloaded = Math.min(total || Infinity, Math.max(0, Number(item.downloadedBytes) || 0));
+        const percent = total > 0 ? Math.min(100, Math.round(downloaded / total * 100)) : (item.status === 'ready' ? 100 : 0);
+        const row = document.createElement('div'); row.className = 'remote-download-item';
+        const name = document.createElement('div'); name.className = 'remote-download-name';
+        const strong = document.createElement('strong'); strong.textContent = item.filename || item.assetId || 'Assigned film';
+        const status = document.createElement('small'); status.textContent = item.cached && item.status === 'ready' ? 'Already downloaded' : item.status;
+        name.append(strong, status);
+        const progress = document.createElement('div');
+        const copy = document.createElement('div'); copy.className = 'download-progress-copy';
+        const bytes = document.createElement('span'); bytes.textContent = `${fmtBytes(downloaded)} / ${fmtBytes(total)}`;
+        const percentage = document.createElement('strong'); percentage.textContent = `${percent}%`;
+        copy.append(bytes, percentage);
+        const track = document.createElement('div'); track.className = 'download-track';
+        const fill = document.createElement('div'); fill.className = `download-fill ${item.status}`; fill.style.width = `${percent}%`; track.appendChild(fill);
+        progress.append(copy, track);
+        if (item.error) { const error = document.createElement('div'); error.className = 'download-error'; error.textContent = item.error; progress.appendChild(error); }
+        const action = document.createElement('div');
+        if (item.status === 'failed') {
+          const retry = document.createElement('button'); retry.className = 'btn'; retry.textContent = 'Retry';
+          retry.onclick = async () => { retry.disabled = true; const result = await ipcRenderer.invoke('retry-asset-download', item.assetId); if (!result || !result.ok) { item.error = result && result.error || 'Retry failed'; renderRemoteDownloads(); } };
+          action.appendChild(retry);
+        } else {
+          const pill = document.createElement('span'); pill.className = `status-pill ${item.status}`; pill.textContent = item.status; action.appendChild(pill);
+        }
+        row.append(name, progress, action); list.appendChild(row);
+      }
+      $('remoteDownloadEmpty').style.display = items.length ? 'none' : 'block';
+      if (!items.length && remote.lastError) { $('remoteDownloadEmpty').textContent = `Could not load assignments: ${remote.lastError}`; }
+      else if (!items.length) { $('remoteDownloadEmpty').textContent = remote.status === 'syncing' ? 'Checking CMS assignments...' : 'No films are currently assigned by the CMS.'; }
     }
 
     function renderMediaHealth() {
@@ -592,11 +660,15 @@
       const upcoming = $('upcoming'); upcoming.innerHTML = '';
       if (!(state.upcoming || []).length) { const li = document.createElement('li'); li.innerHTML = '<div class="empty-state" style="width:100%">No upcoming schedules.</div>'; upcoming.appendChild(li); }
       for (const item of state.upcoming || []) { const li = document.createElement('li'); const time = document.createElement('span'); const title = document.createElement('span'); const meta = document.createElement('span'); time.className = 'time'; title.className = 'title'; meta.className = 'meta'; time.textContent = fmtDate(item.startMs); title.textContent = item.title; meta.textContent = item.freqLabel || ''; li.append(time, title, meta); upcoming.appendChild(li); }
-      renderMediaHealth(); renderSkipped(); if (assetState.loaded || assetState.loading || assetState.error) renderAssets();
+      renderMediaHealth(); renderSkipped(); renderRemoteDownloads(); if (assetState.loaded || assetState.loading || assetState.error) renderAssets();
       $('aboutVersion').textContent = state.appVersion || '1.0.0'; $('aboutDevice').textContent = state.deviceId || 'Not registered'; $('aboutMode').textContent = badgeLabel(state.status); $('aboutHeartbeat').textContent = state.cms && state.cms.lastHeartbeatAt ? new Date(state.cms.lastHeartbeatAt).toLocaleString() : '—'; $('aboutServer').textContent = state.serverURL || (state.bypass ? 'Test mode' : '—'); $('aboutVlc').textContent = displayState; $('aboutRc').textContent = vlc.rcReady ? 'Ready' : 'Unavailable';
     }
 
     ipcRenderer.on('dashboard:update', (_event, payload) => { state = Object.assign({}, state, payload); render(); });
+    ipcRenderer.on('assets:inventory-updated', (_event, payload) => {
+      assetState = { loaded: true, loading: false, error: '', directory: payload && payload.directory || '', items: payload && Array.isArray(payload.items) ? payload.items : [] };
+      renderAssets();
+    });
     $('operatorLoginForm').onsubmit = async event => { event.preventDefault(); $('operatorLoginError').textContent = ''; $('btnOperatorLogin').disabled = true; const result = await ipcRenderer.invoke('operator-login', { email: $('operatorEmail').value, password: $('operatorPassword').value }); $('btnOperatorLogin').disabled = false; if (!result || !result.ok) { $('operatorLoginError').textContent = result && result.error || 'Login failed'; return; } $('operatorPassword').value = ''; };
     document.querySelectorAll('.nav-btn').forEach(button => button.onclick = () => setView(button.dataset.view));
     $('btnRefreshAssets').onclick = loadAssets; $('assetSearch').oninput = renderAssets; $('assetFilter').onchange = renderAssets; $('skippedSearch').oninput = renderSkipped;

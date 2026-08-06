@@ -74,6 +74,14 @@ short-lived setup session. Refresh never interrupts local VLC playback.
 Pending Players without an assigned operator are hidden and cannot be claimed.
 Each dashboard unlock is authorized against the current device assignment.
 
+The Media Folder is created automatically at startup. After the first
+successful heartbeat, the Player scans local and managed media and sends an
+authenticated snapshot to `POST /api/player/assets/sync`. The same sync runs
+from **Refresh from CMS** and **Refresh Assets**. Local items receive a
+deterministic `local:<sha256-of-normalized-relative-path>` media key; no
+absolute Windows path is sent to the CMS. Duration probing uses the existing
+size/modified-time cache, so unchanged films are not probed again.
+
 ### Socket
 
 Namespace `/player`, websocket transport, auth via `auth: { token }`.
@@ -184,6 +192,31 @@ current time while retaining its duration, media, recurrence, and priority.
 4. Distribute the NSIS installer to each player PC. End users only need
    to run the installer, enter the CMS URL, sign in as an operator, and select
    the assigned device.
+
+## CMS-assigned media downloads
+
+After pairing, the Player requests its assigned asset manifest on startup and
+whenever **Refresh** or **Refresh Assets** is selected. Assigned films download
+into Electron's managed `userData/media` directory with at most two concurrent
+downloads. Each file is written as `.part`, checked against the CMS byte size
+and SHA-256 digest, and renamed only after verification succeeds. The Player
+then reports `ready`, `missing`, `corrupt`, or `unreadable` back to the CMS.
+
+The device Bearer token is attached only to download URLs on the configured CMS
+origin. Removing an assignment stops the asset from appearing in the managed
+catalog; the existing local file is retained until a separate safe-cleanup
+policy is implemented.
+
+When an administrator chooses **Unassign & Remove** in the CMS, the next Player
+startup or manual refresh removes the exact managed asset file and any matching
+`.part` file, then acknowledges the removal. Cleanup is deferred while VLC is
+actively using that file. A normal **Unassign** deliberately retains the local
+cache.
+
+The **Assets → Remote Downloads** panel shows every CMS assignment and its
+`queued`, `downloading`, `verifying`, `ready`, or `failed` state. Downloading
+items include byte and percentage progress; failed items can be retried. The
+local Assets inventory refreshes automatically after a download completes.
 
 ## Development run
 

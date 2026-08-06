@@ -19,6 +19,7 @@ test('scans supported films recursively and ignores unrelated files', t => {
   assert.deepEqual(items.map(item => item.title), ['Film A', 'Film B']);
   assert.equal(items[1].relativePath, path.join('Campaign A', 'Film B.mkv'));
   assert.match(items[0].id, /^local-[a-f0-9]{40}$/);
+  assert.match(items[0].mediaKey, /^local:[a-f0-9]{64}$/);
 });
 
 test('uses relative path identity so duplicate titles remain selectable', t => {
@@ -53,6 +54,7 @@ test('lists managed downloads with reusable asset identity and readiness', t => 
   }], asset => path.join(root, `${asset.id}.mp4`));
 
   assert.equal(items[0].id, 'asset:asset-1');
+  assert.equal(items[0].mediaKey, 'managed:asset-1');
   assert.equal(items[0].sourceLabel, 'Downloaded');
   assert.equal(items[0].status, 'downloaded');
   assert.equal(items[1].status, 'missing');

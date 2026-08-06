@@ -15,6 +15,13 @@ function makeLocalMediaId(relativePath) {
     .digest('hex')}`;
 }
 
+function makeLocalMediaKey(relativePath) {
+  return `local:${crypto
+    .createHash('sha256')
+    .update(relativePath.replace(/\\/g, '/').toLowerCase())
+    .digest('hex')}`;
+}
+
 function scanMediaLibrary(rootDir, options = {}) {
   const maxDepth = Math.max(0, Number(options.maxDepth) || 5);
   const root = path.resolve(rootDir);
@@ -39,6 +46,7 @@ function scanMediaLibrary(rootDir, options = {}) {
       const stat = fs.statSync(absolutePath);
       items.push({
         id: makeLocalMediaId(relativePath),
+        mediaKey: makeLocalMediaKey(relativePath),
         source: 'library',
         sourceLabel: 'Media Folder',
         title: path.basename(entry.name, extension),
@@ -74,6 +82,7 @@ function listManagedAssets(assets, getAssetPath) {
     const extension = path.extname(asset.filename || '');
     return {
       id: `asset:${asset.id}`,
+      mediaKey: `managed:${asset.id}`,
       source: 'managed',
       sourceLabel: 'Downloaded',
       assetId: asset.id,
@@ -83,6 +92,7 @@ function listManagedAssets(assets, getAssetPath) {
       path: localPath,
       size: asset.size,
       durationMs: Number(asset.durationMs) || 0,
+      sha256: asset.sha256 || null,
       modifiedAt: null,
       status
     };
@@ -93,5 +103,6 @@ module.exports = {
   MEDIA_EXTENSIONS,
   listManagedAssets,
   makeLocalMediaId,
+  makeLocalMediaKey,
   scanMediaLibrary
 };

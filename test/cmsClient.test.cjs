@@ -96,6 +96,68 @@ test('dashboard control authorization is scoped to a specific device', async () 
   assert.equal(request.options.headers.Authorization, 'Bearer operator-token');
 });
 
+test('asset inventory sync uses the Player token and snapshot endpoint', async () => {
+  let request;
+  const client = new CmsClient({
+    serverURL: 'http://localhost:8080',
+    fetch: async (url, options) => {
+      request = { url, options };
+      return response(200, { data: { inventory_revision: 2, reported: 1 } });
+    }
+  });
+  const snapshot = { assets: [{ media_key: `local:${'a'.repeat(64)}` }] };
+
+  const result = await client.syncAssets('player-token', snapshot);
+
+  assert.equal(request.url, 'http://localhost:8080/api/player/assets/sync');
+  assert.equal(request.options.headers.Authorization, 'Bearer player-token');
+  assert.deepEqual(JSON.parse(request.options.body), snapshot);
+  assert.equal(result.inventory_revision, 2);
+});
+
+test('assigned asset manifest resolves relative download URLs against the configured CMS', async () => {
+  let request;
+  const client = new CmsClient({
+    serverURL: 'http://192.168.1.10:8080',
+    fetch: async (url, options) => {
+      request = { url, options };
+      return response(200, { data: [{
+        id: 'asset-1', filename: 'Film A.mp4',
+        download_url: '/api/player/assets/asset-1/download', size: 123,
+        sha256: 'a'.repeat(64), mime_type: 'video/mp4', duration_ms: 1000, revision: 1
+      }] });
+    }
+  });
+
+  const assets = await client.assignedAssets('player-token');
+
+  assert.equal(request.url, 'http://192.168.1.10:8080/api/player/assets/assigned');
+  assert.equal(request.options.headers.Authorization, 'Bearer player-token');
+  assert.equal(assets[0].downloadUrl, 'http://192.168.1.10:8080/api/player/assets/asset-1/download');
+  assert.equal(assets[0].size, 123);
+});
+
+test('pending removal and acknowledgment use the Player token', async () => {
+  const requests = [];
+  const client = new CmsClient({
+    serverURL: 'http://localhost:8080',
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      if (url.endsWith('/removals')) return response(200, { data: [{ id: 'asset-1', filename: 'Film.mp4' }] });
+      return response(200, { data: { removed: true, asset_id: 'asset-1' } });
+    }
+  });
+
+  const removals = await client.pendingAssetRemovals('device-token');
+  const acknowledgment = await client.acknowledgeAssetRemoval('device-token', removals[0].id);
+
+  assert.deepEqual(removals, [{ id: 'asset-1', filename: 'Film.mp4' }]);
+  assert.equal(requests[0].options.headers.Authorization, 'Bearer device-token');
+  assert.equal(requests[1].url, 'http://localhost:8080/api/player/assets/asset-1/removed');
+  assert.equal(requests[1].options.method, 'POST');
+  assert.equal(acknowledgment.removed, true);
+});
+
 test('heartbeat authenticates with Bearer token and reports online', async () => {
   let authorization;
   const client = new CmsClient({
