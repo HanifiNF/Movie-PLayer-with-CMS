@@ -133,6 +133,14 @@ class CmsClient extends EventEmitter {
     });
   }
 
+  async schedules(token) {
+    const payload = await this.#request('/api/player/schedules', { method: 'GET', token });
+    return {
+      revision: Math.max(0, Number(payload && payload.revision) || 0),
+      schedules: Array.isArray(payload && payload.schedules) ? payload.schedules : []
+    };
+  }
+
   start(token, metadata = {}) {
     this.stop();
     this.running = true;

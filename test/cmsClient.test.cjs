@@ -158,6 +158,19 @@ test('pending removal and acknowledgment use the Player token', async () => {
   assert.equal(acknowledgment.removed, true);
 });
 
+test('schedule snapshot uses Player authentication and preserves its revision', async () => {
+  let request = null;
+  const client = new CmsClient({ serverURL: 'http://cms.test', fetch: async (url, options) => {
+    request = { url, options };
+    return response(200, { data: { revision: 7, schedules: [{ id: 'schedule-1' }] } });
+  }});
+  const result = await client.schedules('player-token');
+  assert.equal(request.url, 'http://cms.test/api/player/schedules');
+  assert.equal(request.options.headers.Authorization, 'Bearer player-token');
+  assert.equal(result.revision, 7);
+  assert.equal(result.schedules[0].id, 'schedule-1');
+});
+
 test('heartbeat authenticates with Bearer token and reports online', async () => {
   let authorization;
   const client = new CmsClient({

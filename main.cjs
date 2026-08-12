@@ -68,6 +68,7 @@ let refreshPromise = null;
 let refreshState = { status: 'idle', lastRefreshedAt: null, lastError: null };
 let assetUploadPromise = null;
 let remoteDistributionPromise = null;
+let scheduleSyncQueue = Promise.resolve();
 let initialAssetSyncStarted = false;
 let nextAssetSyncAttemptAt = 0;
 let assetSyncState = { status: 'idle', lastSyncedAt: null, lastError: null, summary: null };
@@ -532,6 +533,17 @@ async function collectAssetInventory() {
   });
 }
 
+function readyMediaPaths(inventory) {
+  return new Map((inventory && Array.isArray(inventory.displayItems) ? inventory.displayItems : [])
+    .filter(item => ['available', 'downloaded'].includes(item.status) && item.mediaKey && item.path)
+    .map(item => [item.mediaKey, item.path]));
+}
+
+async function prepareRuntimeSchedules(schedules, assets, inventory = null, options = {}) {
+  const resolvedInventory = inventory || await collectAssetInventory();
+  return mediaManager.prepareSchedules(schedules, assets, readyMediaPaths(resolvedInventory), options);
+}
+
 async function uploadAssetInventory(inventory) {
   if (!cfg || cfg.bypass) return null;
   if (assetUploadPromise) return assetUploadPromise;
@@ -643,6 +655,36 @@ function sendAssetInventory(inventory) {
   });
 }
 
+function syncScheduleSnapshot(options = {}) {
+  const task = scheduleSyncQueue.then(async () => {
+    if (!cfg || cfg.bypass) return { revision: 0, schedules: [] };
+    const client = cmsClient || new CmsClient({ serverURL: cfg.serverURL });
+    const snapshot = await client.schedules(cfg.token);
+    const cached = normalizeSyncPayload(readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] }));
+    const assets = Array.isArray(options.assets) ? options.assets : cached.assets;
+    const incoming = normalizeSyncPayload({
+      revision: snapshot.revision,
+      schedules: snapshot.schedules,
+      assets
+    });
+    const inventory = options.inventory || await collectAssetInventory();
+    const prepared = await prepareRuntimeSchedules(incoming.schedules, assets, inventory, { downloadMissing: false });
+    writeJson(CACHE_PATH, {
+      revision: incoming.revision,
+      updatedAt: new Date().toISOString(),
+      schedules: prepared,
+      assets
+    });
+    await refreshMediaHealth(prepared, assets, { force: true });
+    if (scheduler) scheduler.update(prepared);
+    appendVlcLog(`[schedules] synchronized revision ${incoming.revision} (${prepared.length} schedules)`);
+    pushDashboard();
+    return { revision: incoming.revision, schedules: prepared };
+  });
+  scheduleSyncQueue = task.catch(() => {});
+  return task;
+}
+
 async function syncRemoteDistribution() {
   if (!cfg || cfg.bypass) return syncAssetInventory();
   if (remoteDistributionPromise) return remoteDistributionPromise;
@@ -653,11 +695,11 @@ async function syncRemoteDistribution() {
     ]);
     const assigned = assignedResponse.map(normalizeAsset);
     replaceRemoteAssignments(assigned);
-    const current = normalizeSyncPayload(readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] }));
+    const cached = normalizeSyncPayload(readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] }));
     writeJson(CACHE_PATH, {
-      revision: current.revision,
+      revision: cached.revision,
       updatedAt: new Date().toISOString(),
-      schedules: current.schedules,
+      schedules: cached.schedules,
       assets: assigned
     });
 
@@ -673,17 +715,10 @@ async function syncRemoteDistribution() {
     }
 
     const downloads = await mediaManager.prepareAssets(assigned);
-    let preparedSchedules = [];
-    try {
-      preparedSchedules = await mediaManager.prepareSchedules(current.schedules, assigned);
-      if (scheduler) scheduler.update(preparedSchedules);
-    } catch (error) {
-      appendVlcLog(`[assets] cached schedule disabled after assignment change: ${error.message}`);
-      if (scheduler) scheduler.update([]);
-    }
-    await refreshMediaHealth(preparedSchedules, assigned, { force: true });
-    const assetSync = await syncAssetInventory();
-    sendAssetInventory(assetSync.inventory);
+    const inventory = await collectAssetInventory();
+    const summary = await uploadAssetInventory(inventory);
+    sendAssetInventory(inventory);
+    const scheduleResult = await syncScheduleSnapshot({ assets: assigned, inventory });
     remoteDownloadState = {
       ...remoteDownloadState,
       status: downloads.failed.length ? 'warning' : 'complete',
@@ -691,7 +726,7 @@ async function syncRemoteDistribution() {
       lastError: downloads.failed.length ? `${downloads.failed.length} download(s) failed.` : null
     };
     pushDashboard();
-    return { ...assetSync, assigned, downloads };
+    return { inventory, summary, assigned, downloads, scheduleRevision: scheduleResult.revision };
   })().catch(error => {
     remoteDownloadState = {
       ...remoteDownloadState, status: 'error', updatedAt: new Date().toISOString(),
@@ -1030,7 +1065,7 @@ ipcMain.handle('recheck-media-health', async () => {
       readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] })
     );
     const activeId = scheduler && scheduler.getNow() && scheduler.getNow().scheduleId;
-    const prepared = await mediaManager.prepareSchedules(cache.schedules, cache.assets);
+    const prepared = await prepareRuntimeSchedules(cache.schedules, cache.assets);
     const snapshot = await refreshMediaHealth(prepared, cache.assets, { force: true });
     if (scheduler) {
       scheduler.update(prepared);
@@ -1740,7 +1775,7 @@ async function startRuntime() {
   const cache = readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] });
   try {
     const normalizedCache = normalizeSyncPayload(cache);
-    const prepared = await mediaManager.prepareSchedules(
+    const prepared = await prepareRuntimeSchedules(
       normalizedCache.schedules,
       normalizedCache.assets
     );
@@ -1891,6 +1926,7 @@ async function performPlayerRefresh(source) {
       }
     }
     const scan = await scanVisibleAssetsAndContinueInBackground();
+    const scheduleResult = await syncScheduleSnapshot({ inventory: scan.inventory });
     const assetCount = scan.inventory.assets.length;
     const result = {
       ok: true,
@@ -1899,7 +1935,7 @@ async function performPlayerRefresh(source) {
       assetCount,
       message: operatorAccessRevoked
         ? 'Player refreshed. Operator access changed, so the dashboard was locked; remote downloads continue in the background.'
-        : `Player refreshed. ${assetCount} local assets scanned; remote downloads continue in the background.`
+        : `Player refreshed. ${assetCount} local assets scanned and schedule revision ${scheduleResult.revision} synchronized; remote downloads continue in the background.`
     };
     refreshState = { status: 'success', lastRefreshedAt: new Date().toISOString(), lastError: null };
     return result;
@@ -1935,7 +1971,7 @@ async function applySyncPayload(payload, mode = 'replace') {
     ? mergeSchedules(current.schedules, incoming.schedules)
     : incoming.schedules;
   const assets = mergeAssets(current.assets, incoming.assets);
-  const prepared = await mediaManager.prepareSchedules(schedules, assets);
+  const prepared = await prepareRuntimeSchedules(schedules, assets);
   const revision = incoming.revision || current.revision;
 
   writeJson(CACHE_PATH, {
@@ -1956,7 +1992,7 @@ async function applyClearPayload(payload) {
   const ids = payload && Array.isArray(payload.ids) ? payload.ids : [];
   const revision = Math.max(current.revision, Number(payload && payload.revision) || 0);
   const remaining = current.schedules.filter(schedule => !ids.includes(schedule.id));
-  const prepared = await mediaManager.prepareSchedules(remaining, current.assets);
+  const prepared = await prepareRuntimeSchedules(remaining, current.assets);
   writeJson(CACHE_PATH, {
     revision,
     updatedAt: new Date().toISOString(),

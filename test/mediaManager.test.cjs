@@ -199,3 +199,42 @@ test('can throttle downloads for reliable interruption testing', async t => {
   assert.equal(reportedLimit, 64);
   assert.deepEqual(fs.readFileSync(result), content);
 });
+
+test('resolves a CMS schedule local media key without exposing its path to the CMS', async t => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wir-player-local-schedule-'));
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  const localPath = path.join(tempDir, 'local-film.mp4');
+  fs.writeFileSync(localPath, 'local film');
+  const manager = new MediaManager({ mediaDir: path.join(tempDir, 'managed') });
+  const mediaKey = `local:${'b'.repeat(64)}`;
+
+  const prepared = await manager.prepareSchedules([{
+    id: 'local-schedule', playlist: [{ mediaKey, title: 'Local film' }]
+  }], [], new Map([[mediaKey, localPath]]));
+
+  assert.equal(prepared[0].playlist[0].path, localPath);
+  assert.equal(prepared[0].playlist[0].mediaKey, mediaKey);
+});
+
+test('schedule-only sync does not start a second managed download', async t => {
+  const content = Buffer.from('not downloaded by schedule sync');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wir-player-schedule-no-download-'));
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  let requests = 0;
+  const server = http.createServer((_request, response) => { requests++; response.end(content); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const manager = new MediaManager({ mediaDir: path.join(tempDir, 'managed') });
+  const asset = {
+    id: 'managed-not-ready', filename: 'film.mp4', size: content.length,
+    sha256: crypto.createHash('sha256').update(content).digest('hex'),
+    downloadUrl: `http://127.0.0.1:${server.address().port}/film.mp4`
+  };
+
+  const prepared = await manager.prepareSchedules([{
+    id: 'schedule', playlist: [{ assetId: asset.id }]
+  }], [asset], new Map(), { downloadMissing: false });
+
+  assert.equal(prepared[0].playlist[0].path, null);
+  assert.equal(requests, 0);
+});

@@ -69,6 +69,18 @@ After connecting to the `/player` namespace, the player emits:
 
 ## Schedule snapshot
 
+Before realtime delivery is enabled, the Player retrieves the authoritative
+snapshot with its device token:
+
+```text
+GET /api/player/schedules
+Authorization: Bearer <device-token>
+```
+
+The HTTP response is `{ "data": { "revision": ..., "schedules": [...] } }`.
+Manual refresh synchronizes this snapshot independently from long-running media
+downloads. The future Socket.IO events use the same schedule envelope.
+
 The server sends the same envelope with `sync:initial`,
 `schedule:replaceAll`, or `schedule:set`. `schedule:set` merges schedules by
 ID; the other two events replace the schedule collection.
@@ -92,7 +104,12 @@ ID; the other two events replace the schedule collection.
       "playlist": [
         {
           "assetId": "asset-001",
+          "mediaKey": "managed:asset-001",
           "order": 0
+        },
+        {
+          "mediaKey": "local:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "order": 1
         }
       ]
     }
@@ -120,6 +137,8 @@ Rules:
 - When priorities match, the occurrence with the latest start time wins.
 - Weekly days use `1` for Monday through `7` for Sunday.
 - Assets require an HTTP(S) URL, byte size, and SHA-256 digest.
+- Local playlist entries use a `mediaKey` and are resolved to an absolute path
+  only inside the Player. The CMS never receives or returns that path.
 - Legacy `files[].path` schedules remain accepted for local Test Mode.
 
 ## Removal

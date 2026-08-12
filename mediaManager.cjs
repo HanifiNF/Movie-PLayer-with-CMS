@@ -257,7 +257,7 @@ class MediaManager extends EventEmitter {
     return result;
   }
 
-  async prepareSchedules(schedules, assets) {
+  async prepareSchedules(schedules, assets, localMediaPaths = new Map(), options = {}) {
     const assetById = new Map((assets || []).map(asset => [asset.id, asset]));
     const requiredIds = new Set();
 
@@ -276,6 +276,9 @@ class MediaManager extends EventEmitter {
       requiredAssets,
       async asset => {
         try {
+          if (options.downloadMissing === false) {
+            return await this.isReady(asset) ? this.getAssetPath(asset) : null;
+          }
           return await this.prepareAsset(asset);
         } catch (error) {
           this.emit('download-error', { asset, error });
@@ -288,7 +291,9 @@ class MediaManager extends EventEmitter {
       const playlist = (schedule.playlist || schedule.files || []).map(item => {
         const localPath = item.assetId
           ? (localPaths.get(item.assetId) || null)
-          : (item.localPath || item.path || null);
+          : (item.mediaKey
+              ? (localMediaPaths.get(item.mediaKey) || null)
+              : (item.localPath || item.path || null));
         return { ...item, localPath, path: localPath };
       });
       return {

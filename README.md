@@ -227,6 +227,20 @@ Local Media Folder scans return immediately while remote downloads continue in
 the background, so an assigned large film does not hide already available
 media or block the dashboard and tray refresh actions.
 
+## CMS schedules
+
+On startup and manual refresh, a paired Player requests its device-scoped
+schedule snapshot from `GET /api/player/schedules`. Schedule synchronization is
+separate from remote download work, so a large unrelated download does not
+delay a new schedule revision. CMS-managed playlist items resolve through their
+catalog asset ID; Media Folder items resolve through the stable `local:` media
+key. Absolute paths remain local to this PC.
+
+The accepted snapshot is written to the local schedule cache before the
+scheduler is updated. VLC starts the resolved ordered playlist when the
+one-time schedule becomes active. If the CMS later becomes unavailable, the
+Player continues using the last valid cached revision.
+
 ### Test an interrupted download locally
 
 Localhost downloads can finish too quickly to interrupt. Source runs support an

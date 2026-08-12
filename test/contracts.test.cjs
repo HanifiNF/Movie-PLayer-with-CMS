@@ -86,3 +86,13 @@ test('invalid payload is rejected before reaching the scheduler', () => {
     }]
   }), ContractError);
 });
+
+test('CMS playlist items may reference local Player media by media key', () => {
+  const payload = normalizeSyncPayload({ revision: 4, schedules: [{
+    id: 'cms-schedule', title: 'Local playlist',
+    startTime: '2026-08-12T10:00:00+07:00', endTime: '2026-08-12T10:01:00+07:00',
+    playlist: [{ mediaKey: `local:${'a'.repeat(64)}`, title: 'Local film', durationMs: 60000 }]
+  }] });
+  assert.equal(payload.schedules[0].playlist[0].mediaKey, `local:${'a'.repeat(64)}`);
+  assert.equal(payload.schedules[0].playlist[0].durationMs, 60000);
+});

@@ -58,22 +58,25 @@ function normalizeRecurrence(value, errors) {
 function normalizePlaylistItem(value, index, errors) {
   const item = value && typeof value === 'object' ? value : {};
   const assetId = typeof item.assetId === 'string' ? item.assetId.trim() : '';
+  const mediaKey = typeof item.mediaKey === 'string' ? item.mediaKey.trim() : '';
   const localPath = typeof item.localPath === 'string'
     ? item.localPath.trim()
     : (typeof item.path === 'string' ? item.path.trim() : '');
 
-  if (!assetId && !localPath) {
-    errors.push(`playlist[${index}] requires assetId or localPath`);
+  if (!assetId && !mediaKey && !localPath) {
+    errors.push(`playlist[${index}] requires assetId, mediaKey, or localPath`);
   }
 
   return {
     assetId: assetId || null,
+    mediaKey: mediaKey || null,
     localPath: localPath || null,
     path: localPath || null,
     title: typeof item.title === 'string' && item.title.trim()
       ? item.title.trim()
-      : (localPath ? path.basename(localPath) : assetId),
-    order: Number.isFinite(Number(item.order)) ? Number(item.order) : index
+      : (localPath ? path.basename(localPath) : (assetId || mediaKey)),
+    order: Number.isFinite(Number(item.order)) ? Number(item.order) : index,
+    durationMs: Math.max(0, Number(item.durationMs) || 0)
   };
 }
 
@@ -119,10 +122,12 @@ function normalizeSchedule(value) {
     // Preserve the old property until every CMS/player deployment uses playlist.
     files: playlist.map(item => ({
       assetId: item.assetId,
+      mediaKey: item.mediaKey,
       localPath: item.localPath,
       path: item.localPath,
       title: item.title,
-      order: item.order
+      order: item.order,
+      durationMs: item.durationMs
     }))
   };
 }
