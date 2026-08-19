@@ -23,6 +23,7 @@ const { MediaHealthMonitor } = require('./mediaHealth.cjs');
 const { CmsClient, normalizeServerUrl, parseSessionExpiry } = require('./cmsClient.cjs');
 const { DeviceCredentials } = require('./deviceCredentials.cjs');
 const { removeManagedAsset } = require('./managedAssetCleanup.cjs');
+const { normalizeRevision, revisionSyncAction } = require('./revisionSync.cjs');
 const CFG = require('./config.cjs');
 
 if (process.env.PLAYER_USER_DATA) {
@@ -71,6 +72,10 @@ let remoteDistributionPromise = null;
 let scheduleSyncQueue = Promise.resolve();
 let initialAssetSyncStarted = false;
 let nextAssetSyncAttemptAt = 0;
+let appliedAssetRevision = null;
+let appliedScheduleRevision = null;
+let heartbeatRevisionSyncPromise = null;
+let pendingRemovalRetry = false;
 let assetSyncState = { status: 'idle', lastSyncedAt: null, lastError: null, summary: null };
 let remoteDownloadState = { status: 'idle', assignedCount: 0, updatedAt: null, lastError: null, items: [] };
 const downloadProgressBroadcastAt = new Map();
@@ -703,16 +708,19 @@ async function syncRemoteDistribution() {
       assets: assigned
     });
 
+    let deferredRemoval = false;
     for (const removal of removals) {
       const activePath = vlc && vlc.getPlaybackStatus ? vlc.getPlaybackStatus().currentPath : '';
       const result = removeManagedAsset({ asset: removal, mediaManager, activePath });
       if (result.status === 'deferred') {
+        deferredRemoval = true;
         appendVlcLog(`[media] removal deferred while playing ${removal.id}`);
         continue;
       }
       await client.acknowledgeAssetRemoval(cfg.token, removal.id);
-      appendVlcLog(`[media] removed unassigned asset ${removal.id}`);
+      appendVlcLog(`[media] removed expired or unassigned asset ${removal.id}`);
     }
+    pendingRemovalRetry = deferredRemoval;
 
     const downloads = await mediaManager.prepareAssets(assigned);
     const inventory = await collectAssetInventory();
@@ -736,6 +744,40 @@ async function syncRemoteDistribution() {
     throw error;
   }).finally(() => { remoteDistributionPromise = null; });
   return remoteDistributionPromise;
+}
+
+function synchronizeHeartbeatRevisions(data = {}) {
+  if (!cfg || cfg.bypass) return Promise.resolve();
+  if (heartbeatRevisionSyncPromise) return heartbeatRevisionSyncPromise;
+
+  const assetRevision = normalizeRevision(data.asset_revision);
+  const scheduleRevision = normalizeRevision(data.schedule_revision);
+  const initialSyncNeeded = !initialAssetSyncStarted;
+  if (initialSyncNeeded && Date.now() < nextAssetSyncAttemptAt) return Promise.resolve();
+  const action = revisionSyncAction({
+    initialSyncNeeded, pendingRemovalRetry, assetRevision, appliedAssetRevision,
+    scheduleRevision, appliedScheduleRevision
+  });
+  if (action === null) return Promise.resolve();
+
+  heartbeatRevisionSyncPromise = (async () => {
+    if (action === 'assets') {
+      await syncRemoteDistribution();
+      appliedAssetRevision = assetRevision;
+      appliedScheduleRevision = scheduleRevision;
+      return;
+    }
+    if (action === 'schedules') {
+      await syncScheduleSnapshot();
+      appliedScheduleRevision = scheduleRevision;
+    }
+  })().catch(error => {
+    nextAssetSyncAttemptAt = Date.now() + 60000;
+    appendVlcLog(`[cms] automatic revision sync failed: ${error.message || error}`);
+  }).finally(() => {
+    heartbeatRevisionSyncPromise = null;
+  });
+  return heartbeatRevisionSyncPromise;
 }
 
 async function waitForVlcRecovery(timeoutMs = 10000) {
@@ -1804,6 +1846,10 @@ function startCmsConnection() {
   stopCmsConnection();
   initialAssetSyncStarted = false;
   nextAssetSyncAttemptAt = 0;
+  appliedAssetRevision = null;
+  appliedScheduleRevision = null;
+  heartbeatRevisionSyncPromise = null;
+  pendingRemovalRetry = false;
   if (!cfg || cfg.bypass) {
     cmsState = { status: 'test-mode (no server)', lastHeartbeatAt: null, lastError: null };
     setStatus(cmsState.status);
@@ -1824,12 +1870,7 @@ function startCmsConnection() {
     cmsState.lastError = null;
     applyDeviceMetadata(data);
     pushDashboard();
-    if (!initialAssetSyncStarted && Date.now() >= nextAssetSyncAttemptAt) {
-      initialAssetSyncStarted = true;
-      void syncRemoteDistribution().catch(error => {
-        console.error('Initial remote asset sync failed', error);
-      });
-    }
+    void synchronizeHeartbeatRevisions(data);
   });
   cmsClient.on('connection-error', error => {
     cmsState.lastError = error.message || String(error);

@@ -196,8 +196,9 @@ current time while retaining its duration, media, recurrence, and priority.
 
 ## CMS-assigned media downloads
 
-After pairing, the Player requests its assigned asset manifest on startup and
-whenever **Refresh** or **Refresh Assets** is selected. Assigned films download
+After pairing, the Player requests its assigned asset manifest on startup,
+whenever the CMS `asset_revision` changes on heartbeat, and whenever **Refresh**
+or **Refresh Assets** is selected. Assigned films download
 into Electron's managed `userData/media` directory with at most two concurrent
 downloads. Each file is written as `.part`, checked against the CMS byte size
 and SHA-256 digest, and renamed only after verification succeeds. The Player
@@ -214,11 +215,13 @@ origin. Removing an assignment stops the asset from appearing in the managed
 catalog; the existing local file is retained until a separate safe-cleanup
 policy is implemented.
 
-When an administrator chooses **Unassign & Remove** in the CMS, the next Player
-startup or manual refresh removes the exact managed asset file and any matching
-`.part` file, then acknowledges the removal. Cleanup is deferred while VLC is
-actively using that file. A normal **Unassign** deliberately retains the local
-cache.
+When an administrator chooses **Unassign & Remove**, or a film reaches its CMS
+valid-through date, the next heartbeat/startup/manual refresh removes the exact
+managed asset file and matching `.part` metadata, then acknowledges the
+removal. Cleanup is deferred while VLC is actively using that file and retried
+on following heartbeats. A normal **Unassign** deliberately retains the local
+cache. Expiry also advances the schedule revision so the film disappears from
+the active schedule cache before deferred cleanup is retried.
 
 The **Assets → Remote Downloads** panel shows every CMS assignment and its
 `queued`, `downloading`, `verifying`, `ready`, or `failed` state. Downloading
@@ -230,8 +233,9 @@ media or block the dashboard and tray refresh actions.
 
 ## CMS schedules
 
-On startup and manual refresh, a paired Player requests its device-scoped
-schedule snapshot from `GET /api/player/schedules`. Schedule synchronization is
+On startup, manual refresh, and any changed heartbeat `schedule_revision`, a
+paired Player requests its device-scoped schedule snapshot from
+`GET /api/player/schedules`. Schedule synchronization is
 separate from remote download work, so a large unrelated download does not
 delay a new schedule revision. CMS-managed playlist items resolve through their
 catalog asset ID; Media Folder items resolve through the stable `local:` media

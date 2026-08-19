@@ -18,6 +18,11 @@ The resulting device token is used for `POST /api/player/heartbeat` every ten
 seconds. Pairing can only be revoked by an authenticated CMS administrator;
 the Player has no unregister endpoint.
 
+Heartbeat data includes `asset_revision` and `schedule_revision`. The Player
+requests a fresh asset manifest when the former changes and a fresh schedule
+snapshot when the latter changes. This is the automatic synchronization path
+until Socket.IO announcements are enabled.
+
 ## Asset inventory snapshot
 
 After the first successful heartbeat, and whenever an operator refreshes the
@@ -56,6 +61,13 @@ Players persist the response `ETag`, send `Range: bytes=<partial-size>-` and
 `If-Range: <etag>` after interruption, and append only when the CMS returns
 `206` with a matching `Content-Range` start and total size. Invalid or stale
 partial state is discarded before one full retry.
+
+Expired CMS films are omitted from the assigned manifest and download access is
+denied. Their assignments appear in `GET /api/player/assets/removals`. The
+Player removes the final file, `.part`, and `.part.meta.json` only when VLC is
+not using the target, then acknowledges through
+`POST /api/player/assets/{assetId}/removed`. Deferred removals are retried on
+following heartbeats.
 
 After connecting to the `/player` namespace, the player emits:
 
