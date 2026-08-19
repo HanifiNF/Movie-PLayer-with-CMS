@@ -154,6 +154,14 @@ function normalizeAsset(value) {
   if (!Number.isSafeInteger(size) || size <= 0) {
     errors.push(`asset ${id}.size must be a positive integer`);
   }
+  const encryption = asset.encryption && typeof asset.encryption === 'object' ? asset.encryption : null;
+  if (encryption && encryption.format === 'ldg-v1') {
+    if (Number(encryption.headerSize) !== 128) errors.push(`asset ${id}.encryption.headerSize must be 128`);
+    if (!Number.isSafeInteger(Number(encryption.chunkSize)) || Number(encryption.chunkSize) <= 0) errors.push(`asset ${id}.encryption.chunkSize is invalid`);
+    if (!Number.isSafeInteger(Number(encryption.plaintextSize)) || Number(encryption.plaintextSize) <= 0) errors.push(`asset ${id}.encryption.plaintextSize is invalid`);
+    if (!/^[a-f0-9]{64}$/.test(String(encryption.plaintextSha256 || ''))) errors.push(`asset ${id}.encryption.plaintextSha256 is invalid`);
+    if (!encryption.license || encryption.license.algorithm !== 'A256GCM') errors.push(`asset ${id}.encryption.license is invalid`);
+  }
   if (errors.length) throw new ContractError(`Invalid asset ${id || '(unknown)'}`, errors);
 
   return {
@@ -167,6 +175,19 @@ function normalizeAsset(value) {
     mimeType: typeof asset.mimeType === 'string' ? asset.mimeType : 'application/octet-stream',
     durationMs: Math.max(0, Number(asset.durationMs) || 0),
     revision: Math.max(0, Number(asset.revision) || 0)
+    ,displayFilename: typeof asset.displayFilename === 'string' && asset.displayFilename.trim()
+      ? path.basename(asset.displayFilename.trim()) : (asset.filename || `${id}.bin`)
+    ,encryptionFormat: encryption && encryption.format === 'ldg-v1' ? 'ldg-v1' : null
+    ,encryption: encryption && encryption.format === 'ldg-v1' ? {
+      format: 'ldg-v1',
+      headerSize: 128,
+      chunkSize: Number(encryption.chunkSize),
+      plaintextSize: Number(encryption.plaintextSize),
+      plaintextSha256: String(encryption.plaintextSha256).toLowerCase(),
+      originalMimeType: String(encryption.originalMimeType || 'application/octet-stream'),
+      encryptionRevision: Math.max(1, Number(encryption.encryptionRevision) || Number(asset.revision) || 1),
+      license: { ...encryption.license }
+    } : null
   };
 }
 

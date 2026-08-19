@@ -13,6 +13,12 @@ test('VLC startup disables Qt resume prompts and recent-play history', () => {
   assert.ok(args.includes('--no-qt-error-dialogs'));
 });
 
+test('VLC preserves the localhost LDG gateway URL instead of converting it to a file MRL', () => {
+  const controller = new VlcController();
+  const url = 'http://127.0.0.1:43210/ldg/v1/secret-token';
+  assert.equal(controller._toMrl(url), url);
+});
+
 test('replacePlaylist enqueues every item before starting the first one', async () => {
   const controller = new VlcController();
   const commands = [];

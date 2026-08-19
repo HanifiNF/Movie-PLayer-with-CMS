@@ -137,6 +137,31 @@ test('assigned asset manifest resolves relative download URLs against the config
   assert.equal(assets[0].size, 123);
 });
 
+test('assigned LDG manifest preserves the device license and original filename', async () => {
+  const client = new CmsClient({
+    serverURL: 'https://cms.example.test',
+    fetch: async () => response(200, { data: [{
+      id: 'asset-ldg', filename: 'Protected.ldg', display_filename: 'Protected.mp4',
+      download_url: '/api/player/assets/asset-ldg/download', size: 4096,
+      sha256: 'b'.repeat(64), mime_type: 'application/vnd.wirgroup.ldg', duration_ms: 5000, revision: 2,
+      encryption: {
+        format: 'ldg-v1', header_size: 128, chunk_size: 1048576,
+        plaintext_size: 4000, plaintext_sha256: 'c'.repeat(64),
+        original_mime_type: 'video/mp4', encryption_revision: 1,
+        license: {
+          algorithm: 'A256GCM', wrapped_key: 'wrapped', nonce: 'nonce', tag: 'tag',
+          expires_at: '2026-08-20T00:00:00+00:00'
+        }
+      }
+    }] })
+  });
+  const [asset] = await client.assignedAssets('player-token');
+  assert.equal(asset.displayFilename, 'Protected.mp4');
+  assert.equal(asset.encryption.format, 'ldg-v1');
+  assert.equal(asset.encryption.encryptionRevision, 1);
+  assert.equal(asset.encryption.license.expiresAt, '2026-08-20T00:00:00+00:00');
+});
+
 test('pending removal and acknowledgment use the Player token', async () => {
   const requests = [];
   const client = new CmsClient({

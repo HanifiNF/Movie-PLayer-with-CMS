@@ -16,6 +16,7 @@ Socket.IO from the CMS and plays local media files fullscreen through VLC.
 - Deterministic overlap handling with schedule priority
 - Versioned schedule/media contract with payload validation
 - Resumable media download to local storage with size + SHA-256 verification
+- LDG v1 encrypted media with device-bound licenses and local range decryption
 - Searchable Media Folder for preloaded films in Test Mode
 - Persistent Test Mode Schedule Manager with edit, duplicate, enable/disable,
   delete, search, and status filters
@@ -33,6 +34,7 @@ player/
 ├── main.cjs              Electron main: login window, tray, socket, runtime
 ├── login.html            Login form
 ├── vlcController.cjs     VLC singleton + RC interface
+├── ldg.cjs               LDG validation + localhost decryption gateway
 ├── scheduler.cjs         Recurring timer engine
 └── vlc-portable/         Put portable VLC build here (vlc.exe)
 ```
@@ -97,7 +99,8 @@ Server pushes to that client (room `device:<deviceId>`):
 
 The recommended CMS contract is documented in `CMS_CONTRACT.md`. The player
 accepts a versioned envelope containing schedules plus an asset catalog. Media
-is downloaded and verified before VLC receives a local path.
+is downloaded and verified before playback. Legacy media gives VLC a local
+path; LDG media remains encrypted and gives VLC a temporary localhost URL.
 
 The original local-path `Schedule` remains supported for Test Mode and older
 CMS integrations:
@@ -230,6 +233,22 @@ local Assets inventory refreshes automatically after a download completes.
 Local Media Folder scans return immediately while remote downloads continue in
 the background, so an assigned large film does not hide already available
 media or block the dashboard and tray refresh actions.
+
+### Encrypted LDG playback
+
+CMS uploads created after LDG support are stored locally as `.ldg`. Renaming
+one to `.mp4` or opening it directly in raw VLC does not decrypt it. The Player
+unwraps the device-bound license using its DPAPI-protected pairing token,
+validates the LDG header and authenticated chunks, and starts an HTTP server
+bound only to `127.0.0.1`. VLC receives a random unguessable URL and requests
+plaintext byte ranges for playback, seek, rewind, jump-to, resume, and
+playlists. No decrypted film is written to disk. The gateway and in-memory keys
+are cleared when the Player logs out or exits.
+
+Licenses are renewed automatically before expiry. The default offline window
+is 24 hours and is configured by the CMS. HTTPS is mandatory when the CMS is
+deployed outside a trusted development machine because device authentication
+and license envelopes travel between the CMS and Player.
 
 ## CMS schedules
 

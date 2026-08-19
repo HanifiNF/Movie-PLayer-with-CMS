@@ -168,11 +168,16 @@ class MediaManager extends EventEmitter {
     this.getDownloadOptions = typeof options.getDownloadOptions === 'function'
       ? options.getDownloadOptions
       : () => ({});
+    this.resolvePlaybackSource = typeof options.resolvePlaybackSource === 'function'
+      ? options.resolvePlaybackSource
+      : async (_asset, localPath) => localPath;
     fs.mkdirSync(this.mediaDir, { recursive: true });
   }
 
   getAssetPath(asset) {
-    const extension = path.extname(asset.filename || '').slice(0, 16);
+    const extension = asset && (asset.encryptionFormat === 'ldg-v1' || asset.encryption_format === 'ldg-v1')
+      ? '.ldg'
+      : path.extname(asset.filename || '').slice(0, 16);
     const safeId = String(asset.id).replace(/[^a-zA-Z0-9._-]/g, '_');
     return path.join(this.mediaDir, `${safeId}${extension}`);
   }
@@ -287,21 +292,28 @@ class MediaManager extends EventEmitter {
       }
     );
 
-    return (schedules || []).map(schedule => {
-      const playlist = (schedule.playlist || schedule.files || []).map(item => {
+    const preparedSchedules = [];
+    for (const schedule of schedules || []) {
+      const playlist = [];
+      for (const item of schedule.playlist || schedule.files || []) {
         const localPath = item.assetId
           ? (localPaths.get(item.assetId) || null)
           : (item.mediaKey
               ? (localMediaPaths.get(item.mediaKey) || null)
               : (item.localPath || item.path || null));
-        return { ...item, localPath, path: localPath };
-      });
-      return {
+        const asset = item.assetId ? assetById.get(item.assetId) : null;
+        const playbackSource = asset && localPath
+          ? await this.resolvePlaybackSource(asset, localPath)
+          : localPath;
+        playlist.push({ ...item, localPath, path: localPath, playbackSource });
+      }
+      preparedSchedules.push({
         ...schedule,
         playlist,
         files: playlist.map(item => ({ ...item }))
-      };
-    });
+      });
+    }
+    return preparedSchedules;
   }
 
   async prepareAssets(assets) {

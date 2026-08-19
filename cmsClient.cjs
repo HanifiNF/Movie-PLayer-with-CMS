@@ -117,13 +117,31 @@ class CmsClient extends EventEmitter {
       mimeType: String(asset.mime_type || 'application/octet-stream'),
       durationMs: Math.max(0, Number(asset.duration_ms) || 0),
       revision: Math.max(0, Number(asset.revision) || 0)
+      ,displayFilename: String(asset.display_filename || asset.filename || '')
+      ,encryption: asset.encryption && typeof asset.encryption === 'object' ? {
+        format: String(asset.encryption.format || ''),
+        headerSize: Number(asset.encryption.header_size) || 0,
+        chunkSize: Number(asset.encryption.chunk_size) || 0,
+        plaintextSize: Number(asset.encryption.plaintext_size) || 0,
+        plaintextSha256: String(asset.encryption.plaintext_sha256 || '').toLowerCase(),
+        originalMimeType: String(asset.encryption.original_mime_type || 'application/octet-stream'),
+        encryptionRevision: Math.max(1, Number(asset.encryption.encryption_revision) || Number(asset.revision) || 1),
+        license: asset.encryption.license && typeof asset.encryption.license === 'object' ? {
+          algorithm: String(asset.encryption.license.algorithm || ''),
+          wrappedKey: String(asset.encryption.license.wrapped_key || ''),
+          nonce: String(asset.encryption.license.nonce || ''),
+          tag: String(asset.encryption.license.tag || ''),
+          expiresAt: String(asset.encryption.license.expires_at || '')
+        } : null
+      } : null
     }));
   }
 
   async pendingAssetRemovals(token) {
     const removals = await this.#request('/api/player/assets/removals', { method: 'GET', token });
     return (Array.isArray(removals) ? removals : []).map(asset => ({
-      id: String(asset.id || ''), filename: String(asset.filename || '')
+      id: String(asset.id || ''), filename: String(asset.filename || ''),
+      ...(asset.encryption_format ? { encryptionFormat: String(asset.encryption_format) } : {})
     })).filter(asset => asset.id && asset.filename);
   }
 

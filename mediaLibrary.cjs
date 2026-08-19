@@ -79,15 +79,15 @@ function listManagedAssets(assets, getAssetPath) {
     } catch (_) {
       status = 'invalid';
     }
-    const extension = path.extname(asset.filename || '');
+    const extension = path.extname(asset.displayFilename || asset.filename || '');
     return {
       id: `asset:${asset.id}`,
       mediaKey: `managed:${asset.id}`,
       source: 'managed',
       sourceLabel: 'Downloaded',
       assetId: asset.id,
-      title: path.basename(asset.filename || asset.id, extension),
-      filename: asset.filename || asset.id,
+      title: path.basename(asset.displayFilename || asset.filename || asset.id, extension),
+      filename: asset.displayFilename || asset.filename || asset.id,
       relativePath: asset.filename || asset.id,
       path: localPath,
       size: asset.size,

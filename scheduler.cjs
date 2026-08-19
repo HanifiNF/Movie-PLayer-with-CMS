@@ -277,7 +277,7 @@ class Scheduler extends EventEmitter {
       this.emit('media-unavailable', { schedule, files: unavailableFiles });
     }
     const files = readyFiles
-      .map(file => file.localPath || file.path)
+      .map(file => file.playbackSource || file.localPath || file.path)
       .filter(Boolean);
 
     if (files.length) {

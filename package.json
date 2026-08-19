@@ -46,6 +46,7 @@
       "cmsClient.cjs",
       "deviceCredentials.cjs",
       "managedAssetCleanup.cjs",
+      "ldg.cjs",
       "config.cjs",
       "login.html",
       "dashboard.html",

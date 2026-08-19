@@ -12,7 +12,7 @@ function samePath(left, right) {
 function removeManagedAsset(options = {}) {
   if (!options.asset || !options.mediaManager) throw new Error('asset and mediaManager are required');
   const target = options.mediaManager.getAssetPath(options.asset);
-  if (samePath(target, options.activePath)) {
+  if (samePath(target, options.activePath) || String(options.activeAssetId || '') === String(options.asset.id || '')) {
     return { status: 'deferred', assetId: options.asset.id, path: target, reason: 'currently-playing' };
   }
 

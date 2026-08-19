@@ -24,6 +24,7 @@ const { CmsClient, normalizeServerUrl, parseSessionExpiry } = require('./cmsClie
 const { DeviceCredentials } = require('./deviceCredentials.cjs');
 const { removeManagedAsset } = require('./managedAssetCleanup.cjs');
 const { normalizeRevision, revisionSyncAction } = require('./revisionSync.cjs');
+const { LdgGateway } = require('./ldg.cjs');
 const CFG = require('./config.cjs');
 
 if (process.env.PLAYER_USER_DATA) {
@@ -56,6 +57,7 @@ let secondDisplay = null;
 let transitionWin = null;
 let isShuttingDown = false;
 let mediaManager = null;
+let ldgGateway = null;
 let mediaProbe = null;
 let playbackWatchdog = null;
 let playbackCheckpoint = null;
@@ -72,6 +74,7 @@ let remoteDistributionPromise = null;
 let scheduleSyncQueue = Promise.resolve();
 let initialAssetSyncStarted = false;
 let nextAssetSyncAttemptAt = 0;
+let nextLdgLicenseRefreshAt = 0;
 let appliedAssetRevision = null;
 let appliedScheduleRevision = null;
 let heartbeatRevisionSyncPromise = null;
@@ -699,6 +702,13 @@ async function syncRemoteDistribution() {
       client.assignedAssets(cfg.token), client.pendingAssetRemovals(cfg.token)
     ]);
     const assigned = assignedResponse.map(normalizeAsset);
+    const licenseExpiries = assigned
+      .filter(asset => asset.encryptionFormat === 'ldg-v1')
+      .map(asset => Date.parse(asset.encryption.license.expiresAt))
+      .filter(Number.isFinite);
+    nextLdgLicenseRefreshAt = licenseExpiries.length
+      ? Math.max(Date.now() + 60000, Math.min(...licenseExpiries) - 60 * 60 * 1000)
+      : 0;
     replaceRemoteAssignments(assigned);
     const cached = normalizeSyncPayload(readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] }));
     writeJson(CACHE_PATH, {
@@ -711,12 +721,17 @@ async function syncRemoteDistribution() {
     let deferredRemoval = false;
     for (const removal of removals) {
       const activePath = vlc && vlc.getPlaybackStatus ? vlc.getPlaybackStatus().currentPath : '';
-      const result = removeManagedAsset({ asset: removal, mediaManager, activePath });
+      const activeSchedule = scheduler ? scheduler.getNow() : null;
+      const activeAssetId = activeSchedule && activeSchedule.files
+        ? (activeSchedule.files.find(file => String(file.assetId || '') === String(removal.id)) || {}).assetId
+        : null;
+      const result = removeManagedAsset({ asset: removal, mediaManager, activePath, activeAssetId });
       if (result.status === 'deferred') {
         deferredRemoval = true;
         appendVlcLog(`[media] removal deferred while playing ${removal.id}`);
         continue;
       }
+      if (ldgGateway) ldgGateway.unregister(removal.id);
       await client.acknowledgeAssetRemoval(cfg.token, removal.id);
       appendVlcLog(`[media] removed expired or unassigned asset ${removal.id}`);
     }
@@ -752,7 +767,8 @@ function synchronizeHeartbeatRevisions(data = {}) {
 
   const assetRevision = normalizeRevision(data.asset_revision);
   const scheduleRevision = normalizeRevision(data.schedule_revision);
-  const initialSyncNeeded = !initialAssetSyncStarted;
+  const licenseRefreshNeeded = nextLdgLicenseRefreshAt > 0 && Date.now() >= nextLdgLicenseRefreshAt;
+  const initialSyncNeeded = !initialAssetSyncStarted || licenseRefreshNeeded;
   if (initialSyncNeeded && Date.now() < nextAssetSyncAttemptAt) return Promise.resolve();
   const action = revisionSyncAction({
     initialSyncNeeded, pendingRemovalRetry, assetRevision, appliedAssetRevision,
@@ -851,6 +867,7 @@ async function performPairing({ serverURL, enrollmentCode }) {
     device_fingerprint: installId,
     app_version: app.getVersion(),
     platform: `${process.platform}-${process.arch}`,
+    ldg_version: 'ldg-v1',
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Jakarta'
   });
   if (!data || !data.token || !data.device_id) {
@@ -898,6 +915,7 @@ ipcMain.handle('claim-player', async (_event, payload) => {
       device_fingerprint: installId,
       app_version: app.getVersion(),
       platform: `${process.platform}-${process.arch}`,
+      ldg_version: 'ldg-v1',
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Jakarta'
     });
     await client.operatorLogout(setupSession.token).catch(() => {});
@@ -1604,6 +1622,11 @@ async function startRuntime() {
   if (playbackWatchdog) playbackWatchdog.stop();
   playbackWatchdog = null;
   if (vlc) vlc.quit();
+  if (ldgGateway) { void ldgGateway.close(); ldgGateway = null; }
+  if (!cfg.bypass) {
+    ldgGateway = new LdgGateway({ playerToken: cfg.token, deviceId: cfg.deviceId });
+    ldgGateway.onError = error => appendVlcLog(`[ldg] playback gateway failed: ${error.message || error}`);
+  }
   mediaManager = new MediaManager({
     mediaDir: path.join(DATA_DIR, 'media'),
     concurrency: 2,
@@ -1617,6 +1640,11 @@ async function startRuntime() {
       } catch (_) {
         return { limitBytesPerSecond };
       }
+    },
+    resolvePlaybackSource: async (asset, localPath) => {
+      if (asset.encryptionFormat !== 'ldg-v1') return localPath;
+      if (!ldgGateway) throw new Error('LDG decryption gateway is unavailable');
+      return ldgGateway.register(asset, localPath);
     }
   });
   mediaHealthMonitor = new MediaHealthMonitor({ storagePath: mediaManager.mediaDir });
@@ -1846,6 +1874,7 @@ function startCmsConnection() {
   stopCmsConnection();
   initialAssetSyncStarted = false;
   nextAssetSyncAttemptAt = 0;
+  nextLdgLicenseRefreshAt = 0;
   appliedAssetRevision = null;
   appliedScheduleRevision = null;
   heartbeatRevisionSyncPromise = null;
@@ -1893,6 +1922,7 @@ function startCmsConnection() {
   cmsClient.start(cfg.token, {
     app_version: app.getVersion(),
     platform: `${process.platform}-${process.arch}`,
+    ldg_version: 'ldg-v1',
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Jakarta'
   });
 }
@@ -2152,6 +2182,7 @@ function logout(notice = '') {
   if (playbackWatchdog) { playbackWatchdog.stop(); playbackWatchdog = null; }
   if (scheduler) { scheduler.clear(); scheduler = null; }
   if (vlc) { vlc.quit(); vlc = null; }
+  if (ldgGateway) { void ldgGateway.close(); ldgGateway = null; }
   if (scheduleAdderWin && !scheduleAdderWin.isDestroyed()) scheduleAdderWin.destroy();
   if (scheduleManagerWin && !scheduleManagerWin.isDestroyed()) scheduleManagerWin.destroy();
   destroyTransitionOverlay();
@@ -2172,6 +2203,7 @@ function quitApp() {
   if (playbackWatchdog) { playbackWatchdog.stop(); playbackWatchdog = null; }
   if (scheduler) scheduler.clear();
   if (vlc) vlc.quit();
+  if (ldgGateway) { void ldgGateway.close(); ldgGateway = null; }
   destroyTransitionOverlay();
   app.quit();
 }
@@ -2228,6 +2260,7 @@ app.on('before-quit', () => {
   if (playbackWatchdog) { playbackWatchdog.stop(); playbackWatchdog = null; }
   if (scheduler) scheduler.clear();
   if (vlc) vlc.quit();
+  if (ldgGateway) { void ldgGateway.close(); ldgGateway = null; }
   destroyTransitionOverlay();
 });
 
@@ -2238,6 +2271,7 @@ app.on('will-quit', () => {
   if (playbackWatchdog) { playbackWatchdog.stop(); playbackWatchdog = null; }
   if (scheduler) scheduler.clear();
   if (vlc) vlc.quit();
+  if (ldgGateway) { void ldgGateway.close(); ldgGateway = null; }
   destroyTransitionOverlay();
 });
 

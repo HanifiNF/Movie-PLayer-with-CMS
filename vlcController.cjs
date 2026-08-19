@@ -122,6 +122,7 @@ class VlcController extends EventEmitter {
 
   _toMrl(p) {
     let s = String(p);
+    if (/^https?:\/\//i.test(s)) return s.replace(/ /g, '%20');
     s = s.replace(/\\/g, '/');
     s = s.replace(/%/g, '%25').replace(/#/g, '%23').replace(/\?/g, '%3F').replace(/ /g, '%20');
     if (/^[A-Za-z]:/.test(s)) s = 'file:///' + s;

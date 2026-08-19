@@ -238,3 +238,25 @@ test('schedule-only sync does not start a second managed download', async t => {
   assert.equal(prepared[0].playlist[0].path, null);
   assert.equal(requests, 0);
 });
+
+test('encrypted schedules keep the LDG path for health checks and use a gateway URL for VLC', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'media-manager-ldg-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const content = Buffer.from('LDG1');
+  const asset = {
+    id: 'encrypted-asset', filename: 'Film.ldg', displayFilename: 'Film.mp4',
+    encryptionFormat: 'ldg-v1', size: content.length,
+    sha256: crypto.createHash('sha256').update(content).digest('hex')
+  };
+  const manager = new MediaManager({
+    mediaDir: directory,
+    resolvePlaybackSource: async () => 'http://127.0.0.1:12345/ldg/v1/secret'
+  });
+  const filePath = manager.getAssetPath(asset);
+  fs.writeFileSync(filePath, content);
+  const schedules = await manager.prepareSchedules([{
+    id: 'encrypted-schedule', playlist: [{ assetId: asset.id }]
+  }], [asset], new Map(), { downloadMissing: false });
+  assert.equal(schedules[0].files[0].localPath, filePath);
+  assert.equal(schedules[0].files[0].playbackSource, 'http://127.0.0.1:12345/ldg/v1/secret');
+});

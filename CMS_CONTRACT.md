@@ -131,12 +131,29 @@ ID; the other two events replace the schedule collection.
     {
       "id": "asset-001",
       "revision": 1,
-      "filename": "morning-promo.mp4",
+      "filename": "morning-promo.ldg",
+      "displayFilename": "morning-promo.mp4",
       "downloadUrl": "https://cdn.example.com/assets/asset-001",
       "size": 482971200,
       "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-      "mimeType": "video/mp4",
-      "durationMs": 120000
+      "mimeType": "application/vnd.wirgroup.ldg",
+      "durationMs": 120000,
+      "encryption": {
+        "format": "ldg-v1",
+        "headerSize": 128,
+        "chunkSize": 4194304,
+        "plaintextSize": 482969216,
+        "plaintextSha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        "originalMimeType": "video/mp4",
+        "encryptionRevision": 1,
+        "license": {
+          "algorithm": "A256GCM",
+          "wrappedKey": "base64-ciphertext",
+          "nonce": "base64-nonce",
+          "tag": "base64-tag",
+          "expiresAt": "2026-08-20T00:00:00+00:00"
+        }
+      }
     }
   ]
 }
@@ -152,6 +169,8 @@ Rules:
 - `recurrence.until` is optional, offset-aware, and inclusive. `null` means the
   series continues until the CMS disables or deletes it.
 - Assets require an HTTP(S) URL, byte size, and SHA-256 digest.
+- `ldg-v1` assets also require the authenticated container metadata and a
+  device-bound, time-limited license. The wrapped key is not a plaintext DEK.
 - Local playlist entries use a `mediaKey` and are resolved to an absolute path
   only inside the Player. The CMS never receives or returns that path.
 - Legacy `files[].path` schedules remain accepted for local Test Mode.
