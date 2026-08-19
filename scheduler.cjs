@@ -36,7 +36,7 @@ function getDuration(sched, first) {
   return Math.max(0, end.getTime() - first.getTime());
 }
 
-function occurrenceForDay(day, startParts, offset, duration, nowMs, firstMs) {
+function occurrenceForDay(day, startParts, offset, duration, nowMs, firstMs, untilMs = null) {
   const start = buildDateAt(
     day.year,
     day.month,
@@ -48,6 +48,7 @@ function occurrenceForDay(day, startParts, offset, duration, nowMs, firstMs) {
   );
   const startMs = start.getTime();
   if (startMs < firstMs) return null;
+  if (untilMs != null && startMs > untilMs) return null;
   if (startMs <= nowMs && duration > 0 && nowMs < startMs + duration) {
     return { start, duration, alreadyActive: true };
   }
@@ -78,6 +79,8 @@ function nextOccurrenceStart(sched, now = new Date()) {
   }
 
   const offset = parseOffsetMinutes(sched.startTime);
+  const untilMs = recurrence.until ? new Date(recurrence.until).getTime() : null;
+  if (untilMs != null && Number.isNaN(untilMs)) return null;
   const startParts = getZonedParts(first, offset);
   const lookbackDays = Math.max(1, Math.ceil(duration / MS.day));
   const candidates = [];
@@ -102,7 +105,8 @@ function nextOccurrenceStart(sched, now = new Date()) {
       offset,
       duration,
       nowMs,
-      first.getTime()
+      first.getTime(),
+      untilMs
     );
     if (occurrence) candidates.push(occurrence);
   }

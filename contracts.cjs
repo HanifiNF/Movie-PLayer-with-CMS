@@ -52,7 +52,12 @@ function normalizeRecurrence(value, errors) {
     }
   }
 
-  return { freq, daysOfWeek };
+  let until = null;
+  if (value.until != null && String(value.until).trim() !== '') {
+    until = asIsoDate(value.until, 'recurrence.until', errors);
+  }
+
+  return { freq, daysOfWeek, until };
 }
 
 function normalizePlaylistItem(value, index, errors) {

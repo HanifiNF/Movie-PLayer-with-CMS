@@ -98,7 +98,8 @@ ID; the other two events replace the schedule collection.
       "endAt": "2026-08-01T09:00:00+07:00",
       "recurrence": {
         "freq": "weekly",
-        "daysOfWeek": [1, 2, 3, 4, 5]
+        "daysOfWeek": [1, 2, 3, 4, 5],
+        "until": "2026-12-31T23:59:59+07:00"
       },
       "loop": true,
       "playlist": [
@@ -136,6 +137,8 @@ Rules:
 - `priority` defaults to `0`; a larger value wins schedule overlaps.
 - When priorities match, the occurrence with the latest start time wins.
 - Weekly days use `1` for Monday through `7` for Sunday.
+- `recurrence.until` is optional, offset-aware, and inclusive. `null` means the
+  series continues until the CMS disables or deletes it.
 - Assets require an HTTP(S) URL, byte size, and SHA-256 digest.
 - Local playlist entries use a `mediaKey` and are resolved to an absolute path
   only inside the Player. The CMS never receives or returns that path.

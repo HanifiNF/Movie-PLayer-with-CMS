@@ -106,14 +106,15 @@ CMS integrations:
   "id": "sch-001",
   "startTime": "2026-07-21T14:30:00+07:00",
   "endTime":   "2026-07-21T16:00:00+07:00",
-  "recurrence": { "freq": "daily", "daysOfWeek": [1,2,3,4,5] },
+  "recurrence": { "freq": "daily", "daysOfWeek": [], "until": "2026-12-31T23:59:59+07:00" },
   "loop": true,
   "files": [ { "path": "D:\\media\\film.mp4", "title": "Film A" } ]
 }
 ```
 
 `recurrence` is optional. `freq` can be `daily` or `weekly`. `daysOfWeek`
-uses 1..7 (Mon..Sun). `path` is an absolute local path on the player PC.
+uses 1..7 (Mon..Sun). `until` is an optional inclusive ISO timestamp; `null`
+keeps the series active until it is disabled. `path` is an absolute local path on the player PC.
 `startTime`/`endTime` are ISO 8601 with timezone offset; the player
 compares in epoch ms so the player device clock must be roughly correct.
 
@@ -237,8 +238,8 @@ catalog asset ID; Media Folder items resolve through the stable `local:` media
 key. Absolute paths remain local to this PC.
 
 The accepted snapshot is written to the local schedule cache before the
-scheduler is updated. VLC starts the resolved ordered playlist when the
-one-time schedule becomes active. If the CMS later becomes unavailable, the
+scheduler is updated. VLC starts the resolved ordered playlist when a one-time
+or recurring occurrence becomes active. If the CMS later becomes unavailable, the
 Player continues using the last valid cached revision.
 
 ### Test an interrupted download locally

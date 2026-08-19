@@ -96,3 +96,14 @@ test('CMS playlist items may reference local Player media by media key', () => {
   assert.equal(payload.schedules[0].playlist[0].mediaKey, `local:${'a'.repeat(64)}`);
   assert.equal(payload.schedules[0].playlist[0].durationMs, 60000);
 });
+
+test('recurrence keeps an offset-aware inclusive end timestamp', () => {
+  const result = normalizeSchedule({
+    id: 'daily-until',
+    startTime: '2026-08-18T10:00:00+07:00',
+    endTime: '2026-08-18T11:00:00+07:00',
+    recurrence: { freq: 'daily', daysOfWeek: [], until: '2026-08-31T23:59:59+07:00' },
+    playlist: [{ mediaKey: `local:${'a'.repeat(64)}` }]
+  });
+  assert.equal(result.recurrence.until, '2026-08-31T23:59:59+07:00');
+});

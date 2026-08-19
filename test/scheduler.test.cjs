@@ -51,6 +51,17 @@ test('weekly recurrence recognizes an active configured weekday', () => {
   assert.equal(occurrence.alreadyActive, true);
 });
 
+test('daily recurrence stops after its inclusive end date', () => {
+  const recurring = schedule({
+    startTime: '2026-08-01T10:00:00+07:00',
+    endTime: '2026-08-01T11:00:00+07:00',
+    recurrence: { freq: 'daily', daysOfWeek: [], until: '2026-08-03T23:59:59+07:00' }
+  });
+  assert.equal(nextOccurrenceStart(recurring, new Date('2026-08-04T00:00:00+07:00')), null);
+  const last = nextOccurrenceStart(recurring, new Date('2026-08-03T09:00:00+07:00'));
+  assert.equal(last.start.toISOString(), '2026-08-03T03:00:00.000Z');
+});
+
 test('one-shot schedules expire after their end time', () => {
   const occurrence = nextOccurrenceStart(
     schedule({
