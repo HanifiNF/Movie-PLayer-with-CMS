@@ -11,7 +11,9 @@ Socket.IO from the CMS and plays local media files fullscreen through VLC.
 - Ten-second CMS heartbeat with bounded reconnect backoff
 - Manual CMS refresh from the dashboard or system tray, including assigned
   Player list refresh while pairing
-- Single persistent VLC instance, fullscreen, playlist swap without restart
+- Managed VLC lifecycle with UI-free production kiosk mode and RC controls
+- Local Playback Settings for output monitor, fullscreen/windowed mode,
+  resolution, scaling, display identification, and test output
 - Supports recurring schedules (daily / weekly) and one-shot
 - Deterministic overlap handling with schedule priority
 - Versioned schedule/media contract with payload validation
@@ -293,6 +295,20 @@ Note: during `npm start` VLC is loaded from `vlc-portable/` relative to the
 source folder. After `npm run build` VLC is loaded from
 `process.resourcesPath/vlc/vlc.exe` (bundled). `vlcController.cjs` checks
 both locations.
+
+## Playback Settings
+
+Authorized operators can open **Playback Settings** from the Player sidebar.
+Settings are stored locally in `playback-settings.json` under Electron's
+`userData` directory and never alter CMS pairing credentials. Auto display
+selection uses a non-primary Windows display when available. If only one
+display exists, idle mode closes VLC so the operator desktop remains usable.
+
+**Hide VLC interface** is enabled by default. It starts VLC with the `dummy`
+interface, keeps the localhost RC interface available, and hides the Qt menu,
+fullscreen controller, video title, window decoration, and console. Disabling
+it restores the Qt interface for diagnostics. Settings saved during playback
+are applied at the next safe schedule boundary.
 
 ## Notes
 

@@ -59,6 +59,8 @@
     .player-location { display: flex; align-items: center; gap: 5px; margin-top: 4px; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
     .player-location svg { flex: 0 0 auto; width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2; }
     .connection-status { margin-top: 9px; }
+    .display-mode { display: inline-flex; margin-top: 7px; padding: 4px 8px; border-radius: 999px; background: #fff0d9; color: #9a5b00; font-size: 9px; font-weight: 750; letter-spacing: .25px; text-transform: uppercase; }
+    .display-mode.hidden { display: none; }
     .device { display: block; margin-top: 7px; overflow: hidden; color: var(--subtle); font-family: ui-monospace, Consolas, monospace; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
     .sidebar-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
 
@@ -244,11 +246,30 @@
     .about-card h3 { margin: 0 0 5px; font-size: 14px; }
     .about-card p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 
+    .settings-layout { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(260px, .7fr); gap: 16px; }
+    .settings-card { padding: 20px; }
+    .settings-card h3 { margin: 0 0 5px; font-size: 15px; }
+    .settings-card > p { margin: 0 0 17px; color: var(--muted); font-size: 10px; line-height: 1.55; }
+    .settings-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .setting-field.full { grid-column: 1 / -1; }
+    .setting-help { display: block; margin-top: 5px; color: var(--subtle); font-size: 9px; line-height: 1.45; }
+    .custom-resolution { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 9px; }
+    .custom-resolution.hidden { display: none; }
+    .switch-row { display: flex; align-items: flex-start; gap: 10px; padding: 13px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-soft); }
+    .switch-row input { width: auto; margin: 2px 0 0; accent-color: var(--red); }
+    .switch-row strong, .switch-row span { display: block; }
+    .switch-row strong { color: var(--text); font-size: 11px; }
+    .switch-row span { margin-top: 3px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+    .settings-status { min-height: 18px; margin-top: 12px; color: var(--muted); font-size: 10px; }
+    .settings-status.error { color: var(--red-dark); }
+    .settings-actions { display: grid; gap: 8px; }
+    .settings-actions .btn { width: 100%; }
+
     @media (max-width: 980px) {
       .app { grid-template-columns: 82px minmax(0, 1fr); }
       .sidebar { padding: 22px 11px 14px; }
       .brand { justify-content: center; padding-inline: 0; }
-      .brand-copy, .nav-label, .connection-label, .device, .player-name, .player-location { display: none; }
+      .brand-copy, .nav-label, .connection-label, .device, .player-name, .player-location, .display-mode { display: none; }
       .connection { padding-inline: 0; text-align: center; }
       .connection .badge { width: 12px; height: 12px; padding: 0; overflow: hidden; font-size: 0; }
       .nav-btn { justify-content: center; padding-inline: 0; }
@@ -259,6 +280,7 @@
       .operator-profile { min-width: 0; }
       .operator-copy { display: none; }
       .remote-download-item { grid-template-columns: 1fr; gap: 9px; }
+      .settings-layout { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -274,6 +296,7 @@
         <button class="nav-btn" data-view="assets" title="Assets"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 4v16M16 4v16M3 9h5M16 9h5M3 15h5M16 15h5"/></svg><span class="nav-label">Assets</span></button>
         <button class="nav-btn" data-view="health" title="Media Health"><svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.4 8-8 9-4.6-1-8-4-8-9V6z"/><path d="M8 12h2l1.2-3 2 6 1.3-3H17"/></svg><span class="nav-label">Media Health</span></button>
         <button class="nav-btn" data-view="skipped" title="Skipped"><svg viewBox="0 0 24 24"><path d="M5 4l11 8-11 8z"/><path d="M19 5v14"/></svg><span class="nav-label">Skipped</span></button>
+        <button class="nav-btn" data-view="settings" title="Playback Settings"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M8 22h8M12 19v3M7 10h10M9 14h6"/></svg><span class="nav-label">Playback Settings</span></button>
         <button class="nav-btn" data-view="about" title="About"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></svg><span class="nav-label">About</span></button>
       </nav>
       <div class="sidebar-bottom">
@@ -282,6 +305,7 @@
           <strong id="sidebarDeviceName" class="player-name">Player</strong>
           <span id="sidebarLocation" class="player-location"><svg viewBox="0 0 24 24"><path d="M12 21s7-6.1 7-12a7 7 0 1 0-14 0c0 5.9 7 12 7 12z"/><circle cx="12" cy="9" r="2.3"/></svg><span>Location not set</span></span>
           <div class="connection-status"><span id="badge" class="badge offline">Offline</span></div>
+          <span id="displayMode" class="display-mode hidden">Single monitor mode</span>
           <span id="device" class="device">—</span>
         </div>
         <div class="sidebar-actions">
@@ -384,6 +408,31 @@
           <article class="card card-pad"><ul id="skipped" class="list"></ul></article>
         </section>
 
+        <section id="view-settings" class="view hidden">
+          <div class="page-heading"><div><h2>Playback Settings</h2><p>Configure the VLC output without changing CMS pairing or schedules.</p></div></div>
+          <div class="settings-layout">
+            <form id="playbackSettingsForm" class="card settings-card">
+              <h3>Output configuration</h3>
+              <p>Changes are applied immediately while idle, or automatically after the active schedule finishes.</p>
+              <div class="settings-fields">
+                <div class="setting-field full"><label for="settingDisplay">Output monitor</label><select id="settingDisplay"></select><span class="setting-help">Auto selects a monitor other than the Windows primary display.</span></div>
+                <div class="setting-field"><label for="settingOutputMode">Display mode</label><select id="settingOutputMode"><option value="fullscreen">Fullscreen</option><option value="windowed">Windowed (testing)</option></select></div>
+                <div class="setting-field"><label for="settingResolution">Output resolution</label><select id="settingResolution"><option value="native">Native display</option><option value="1080p">1920 × 1080</option><option value="720p">1280 × 720</option><option value="custom">Custom</option></select><div id="customResolution" class="custom-resolution hidden"><input id="settingWidth" type="number" min="320" max="7680" aria-label="Custom width" placeholder="Width" /><input id="settingHeight" type="number" min="240" max="4320" aria-label="Custom height" placeholder="Height" /></div></div>
+                <div class="setting-field"><label for="settingScaling">Video scaling</label><select id="settingScaling"><option value="fit">Fit / Letterbox</option><option value="fill">Fill / Crop</option><option value="stretch">Stretch</option></select></div>
+                <label class="setting-field full switch-row"><input id="settingHideUi" type="checkbox" /><span><strong>Hide VLC interface</strong><span>Production kiosk mode: hides the menu, title bar, fullscreen controller, logo window, and console. Dashboard controls remain available.</span></span></label>
+              </div>
+              <div class="btn-row"><button id="btnSavePlaybackSettings" class="btn primary" type="submit">Save Settings</button></div>
+              <div id="playbackSettingsStatus" class="settings-status"></div>
+            </form>
+            <aside class="card settings-card">
+              <h3>Display tools</h3>
+              <p>Use these tools while no schedule is active to confirm the selected cinema output.</p>
+              <div class="settings-actions"><button id="btnIdentifyDisplays" class="btn" type="button">Identify Displays</button><button id="btnTestOutput" class="btn" type="button">Test Output (5 seconds)</button><button id="btnRestorePlaybackSettings" class="btn danger" type="button">Restore Defaults</button></div>
+              <div class="setting-help" style="margin-top:14px">Test Output never starts VLC and is blocked during scheduled playback.</div>
+            </aside>
+          </div>
+        </section>
+
         <section id="view-about" class="view hidden">
           <div class="page-heading"><div><h2>About Player</h2><p>Application and device information.</p></div></div>
           <div class="about-grid">
@@ -400,17 +449,20 @@
   <script>
     const { ipcRenderer } = require('electron');
     const $ = id => document.getElementById(id);
-    const viewTitles = { home: 'Home', assets: 'Assets', health: 'Media Health', skipped: 'Skipped', about: 'About' };
+    const viewTitles = { home: 'Home', assets: 'Assets', health: 'Media Health', skipped: 'Skipped', settings: 'Playback Settings', about: 'About' };
     const pauseIcon = '<rect class="solid" x="6" y="4" width="4" height="16"/><rect class="solid" x="14" y="4" width="4" height="16"/>';
     const playIcon = '<path class="solid" d="M7 4l13 8-13 8z"/>';
     let activeView = 'home';
-    let state = { status: 'offline', deviceId: '', device: { id: '', name: 'Player', location: '', timezone: '' }, appVersion: '1.0.0', serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, refresh: { status: 'idle', lastRefreshedAt: null, lastError: null }, remoteDownloads: { status: 'idle', assignedCount: 0, items: [] }, operator: { unlocked: false, user: null }, now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
+    let state = { status: 'offline', deviceId: '', device: { id: '', name: 'Player', location: '', timezone: '' }, display: { mode: 'single', hasDedicatedDisplay: false }, appVersion: '1.0.0', serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, refresh: { status: 'idle', lastRefreshedAt: null, lastError: null }, remoteDownloads: { status: 'idle', assignedCount: 0, items: [] }, operator: { unlocked: false, user: null }, now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
     let assetState = { loaded: false, loading: false, error: '', directory: '', items: [] };
     let jumpPanelOpen = false;
     let jumpMaxSeconds = 0;
     let jumpMediaKey = '';
     let controlError = '';
     let healthError = '';
+    let playbackSettingsDirty = false;
+    let playbackSettingsStatus = '';
+    let playbackSettingsError = false;
 
     function fmtCountdown(ms) {
       if (ms == null || isNaN(ms)) return '';
@@ -457,6 +509,7 @@
       document.querySelectorAll('.nav-btn').forEach(button => button.classList.toggle('active', button.dataset.view === view));
       $('pageTitle').textContent = viewTitles[view];
       if (view === 'assets' && !assetState.loaded && !assetState.loading) loadAssets();
+      if (view === 'settings') renderPlaybackSettings();
     }
 
     async function loadAssets() {
@@ -626,6 +679,53 @@
       catch (error) { controlError = error && error.message ? error.message : String(error); render(); return null; }
     }
 
+    function updateCustomResolutionVisibility() {
+      $('customResolution').classList.toggle('hidden', $('settingResolution').value !== 'custom');
+    }
+
+    function renderPlaybackSettings(force = false) {
+      if (playbackSettingsDirty && !force) return;
+      const display = state.display || {};
+      const settings = display.settings || {};
+      const select = $('settingDisplay');
+      select.innerHTML = '';
+      const auto = document.createElement('option'); auto.value = 'auto'; auto.textContent = 'Auto (non-primary monitor)'; select.appendChild(auto);
+      for (const monitor of display.displays || []) {
+        const option = document.createElement('option'); option.value = String(monitor.id);
+        option.textContent = `Display ${monitor.number} · ${monitor.label} · ${monitor.width}×${monitor.height}${monitor.primary ? ' · Primary' : ''}`;
+        select.appendChild(option);
+      }
+      select.value = settings.displayId == null ? 'auto' : String(settings.displayId);
+      if (select.selectedIndex < 0) select.value = 'auto';
+      $('settingOutputMode').value = settings.outputMode || 'fullscreen';
+      $('settingResolution').value = settings.resolution || 'native';
+      $('settingWidth').value = String(settings.customWidth || 1920);
+      $('settingHeight').value = String(settings.customHeight || 1080);
+      $('settingScaling').value = settings.scaling || 'fit';
+      $('settingHideUi').checked = settings.hideVlcUi !== false;
+      updateCustomResolutionVisibility();
+      playbackSettingsDirty = false;
+      const pending = Boolean(display.pending);
+      if (!playbackSettingsStatus || pending) {
+        playbackSettingsStatus = pending ? 'Saved. Settings will apply after the active schedule finishes.' : '';
+        playbackSettingsError = false;
+      }
+      $('playbackSettingsStatus').className = `settings-status${playbackSettingsError ? ' error' : ''}`;
+      $('playbackSettingsStatus').textContent = playbackSettingsStatus;
+    }
+
+    function collectPlaybackSettings() {
+      return {
+        displayId: $('settingDisplay').value === 'auto' ? null : $('settingDisplay').value,
+        outputMode: $('settingOutputMode').value,
+        resolution: $('settingResolution').value,
+        customWidth: Number($('settingWidth').value),
+        customHeight: Number($('settingHeight').value),
+        scaling: $('settingScaling').value,
+        hideVlcUi: $('settingHideUi').checked
+      };
+    }
+
     function render() {
       $('operatorLock').classList.toggle('hidden', Boolean(state.bypass || state.operator && state.operator.unlocked));
       $('badge').className = badgeClass(state.status); $('badge').textContent = badgeLabel(state.status); $('device').textContent = state.deviceId || '—';
@@ -633,6 +733,7 @@
       const deviceLocation = deviceInfo.location || 'Location not set'; const deviceName = deviceInfo.name || 'Player';
       $('sidebarDeviceName').textContent = deviceName; $('sidebarLocation').querySelector('span').textContent = deviceLocation;
       $('device').textContent = `Device ID: ${shortDeviceId || '—'}`; $('device').title = fullDeviceId;
+      const displayInfo = state.display || {}; $('displayMode').classList.toggle('hidden', Boolean(displayInfo.hasSecondaryDisplay)); $('displayMode').title = displayInfo.hasSecondaryDisplay ? '' : 'Fullscreen films use this monitor until a second monitor is connected.';
       $('topbarLocation').querySelector('span').textContent = deviceLocation; $('topbarLocation').title = deviceInfo.timezone || deviceLocation;
       const operatorUser = state.operator && state.operator.user; const operatorName = state.bypass ? 'Development Operator' : operatorUser && (operatorUser.name || operatorUser.email) || 'Dashboard locked';
       const operatorRole = state.bypass ? 'Test mode' : operatorUser && operatorUser.role || 'Operator session';
@@ -667,6 +768,7 @@
       if (!(state.upcoming || []).length) { const li = document.createElement('li'); li.innerHTML = '<div class="empty-state" style="width:100%">No upcoming schedules.</div>'; upcoming.appendChild(li); }
       for (const item of state.upcoming || []) { const li = document.createElement('li'); const time = document.createElement('span'); const title = document.createElement('span'); const meta = document.createElement('span'); time.className = 'time'; title.className = 'title'; meta.className = 'meta'; time.textContent = fmtDate(item.startMs); title.textContent = item.title; meta.textContent = item.freqLabel || ''; li.append(time, title, meta); upcoming.appendChild(li); }
       renderMediaHealth(); renderSkipped(); renderRemoteDownloads(); if (assetState.loaded || assetState.loading || assetState.error) renderAssets();
+      renderPlaybackSettings();
       $('aboutVersion').textContent = state.appVersion || '1.0.0'; $('aboutDevice').textContent = state.deviceId || 'Not registered'; $('aboutMode').textContent = badgeLabel(state.status); $('aboutHeartbeat').textContent = state.cms && state.cms.lastHeartbeatAt ? new Date(state.cms.lastHeartbeatAt).toLocaleString() : '—'; $('aboutServer').textContent = state.serverURL || (state.bypass ? 'Test mode' : '—'); $('aboutVlc').textContent = displayState; $('aboutRc').textContent = vlc.rcReady ? 'Ready' : 'Unavailable';
     }
 
@@ -677,6 +779,20 @@
     });
     $('operatorLoginForm').onsubmit = async event => { event.preventDefault(); $('operatorLoginError').textContent = ''; $('btnOperatorLogin').disabled = true; const result = await ipcRenderer.invoke('operator-login', { email: $('operatorEmail').value, password: $('operatorPassword').value }); $('btnOperatorLogin').disabled = false; if (!result || !result.ok) { $('operatorLoginError').textContent = result && result.error || 'Login failed'; return; } $('operatorPassword').value = ''; };
     document.querySelectorAll('.nav-btn').forEach(button => button.onclick = () => setView(button.dataset.view));
+    ['settingDisplay', 'settingOutputMode', 'settingResolution', 'settingWidth', 'settingHeight', 'settingScaling', 'settingHideUi'].forEach(id => {
+      $(id).addEventListener('input', () => { playbackSettingsDirty = true; if (id === 'settingResolution') updateCustomResolutionVisibility(); });
+      $(id).addEventListener('change', () => { playbackSettingsDirty = true; if (id === 'settingResolution') updateCustomResolutionVisibility(); });
+    });
+    $('playbackSettingsForm').onsubmit = async event => {
+      event.preventDefault(); playbackSettingsStatus = 'Saving settings...'; playbackSettingsError = false; $('btnSavePlaybackSettings').disabled = true;
+      const result = await ipcRenderer.invoke('save-playback-settings', collectPlaybackSettings()); $('btnSavePlaybackSettings').disabled = false;
+      if (!result || !result.ok) { playbackSettingsStatus = result && result.error || 'Could not save playback settings.'; playbackSettingsError = true; $('playbackSettingsStatus').className = 'settings-status error'; $('playbackSettingsStatus').textContent = playbackSettingsStatus; return; }
+      state.display = Object.assign({}, state.display || {}, { settings: result.settings, pending: Boolean(result.appliesAfterCurrentSchedule) });
+      playbackSettingsStatus = result.appliesAfterCurrentSchedule ? 'Saved. Settings will apply after the active schedule finishes.' : 'Settings saved and applied.'; playbackSettingsError = false; playbackSettingsDirty = false; renderPlaybackSettings(true);
+    };
+    $('btnIdentifyDisplays').onclick = async () => { const result = await ipcRenderer.invoke('identify-displays'); playbackSettingsStatus = result && result.ok ? 'Display numbers are visible for a few seconds.' : result && result.error || 'Could not identify displays.'; playbackSettingsError = !(result && result.ok); renderPlaybackSettings(true); };
+    $('btnTestOutput').onclick = async () => { const result = await ipcRenderer.invoke('test-playback-output'); playbackSettingsStatus = result && result.ok ? 'Test output is visible for five seconds.' : result && result.error || 'Could not test output.'; playbackSettingsError = !(result && result.ok); renderPlaybackSettings(true); };
+    $('btnRestorePlaybackSettings').onclick = async () => { const result = await ipcRenderer.invoke('restore-playback-settings'); if (!result || !result.ok) { playbackSettingsStatus = result && result.error || 'Could not restore defaults.'; playbackSettingsError = true; renderPlaybackSettings(true); return; } state.display = Object.assign({}, state.display || {}, { settings: result.settings, pending: Boolean(result.appliesAfterCurrentSchedule) }); playbackSettingsStatus = result.appliesAfterCurrentSchedule ? 'Defaults restored. They will apply after the active schedule finishes.' : 'Default playback settings restored.'; playbackSettingsError = false; playbackSettingsDirty = false; renderPlaybackSettings(true); };
     $('btnRefreshAssets').onclick = loadAssets; $('assetSearch').oninput = renderAssets; $('assetFilter').onchange = renderAssets; $('skippedSearch').oninput = renderSkipped;
     $('btnRewind').onclick = () => invokePlaybackControl('vlc-seek-relative', -10);
     $('btnPlayPause').onclick = () => invokePlaybackControl(state.vlc && state.vlc.state === 'paused' ? 'vlc-resume' : 'vlc-pause');

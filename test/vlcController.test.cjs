@@ -4,13 +4,39 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { VlcController } = require('../vlcController.cjs');
 
-test('VLC startup disables Qt resume prompts and recent-play history', () => {
+test('VLC startup defaults to a production-safe UI-free fullscreen interface', () => {
   const controller = new VlcController();
   const args = controller._buildStartArgs();
 
+  assert.equal(args[args.indexOf('--intf') + 1], 'dummy');
+  assert.ok(args.includes('--fullscreen'));
+  assert.ok(args.includes('--no-qt-fs-controller'));
+  assert.ok(args.includes('--no-video-deco'));
+  assert.ok(!args.includes('--qt-continue=0'));
+});
+
+test('debug window mode restores Qt UI and applies custom output geometry', () => {
+  const controller = new VlcController({
+    display: { bounds: { x: 1920, y: 0, width: 1920, height: 1080 } },
+    settings: {
+      hideVlcUi: false,
+      outputMode: 'windowed',
+      resolution: 'custom',
+      customWidth: 1280,
+      customHeight: 720,
+      scaling: 'stretch'
+    }
+  });
+  const args = controller._buildStartArgs();
+
+  assert.equal(args[args.indexOf('--intf') + 1], 'qt');
+  assert.equal(args[args.indexOf('--video-x') + 1], '2240');
+  assert.equal(args[args.indexOf('--video-y') + 1], '180');
+  assert.equal(args[args.indexOf('--width') + 1], '1280');
+  assert.equal(args[args.indexOf('--height') + 1], '720');
+  assert.ok(args.includes('--no-fullscreen'));
+  assert.equal(args[args.indexOf('--aspect-ratio') + 1], '16:9');
   assert.ok(args.includes('--qt-continue=0'));
-  assert.ok(args.includes('--no-qt-recentplay'));
-  assert.ok(args.includes('--no-qt-error-dialogs'));
 });
 
 test('VLC preserves the localhost LDG gateway URL instead of converting it to a file MRL', () => {
@@ -45,6 +71,49 @@ test('replacePlaylist enqueues every item before starting the first one', async 
     'C:\\media\\film A.mp4',
     'C:\\media\\film B.mp4'
   ]);
+});
+
+test('idle mode shows a persistent black overlay and clears VLC media', async () => {
+  const transitions = [];
+  const commands = [];
+  const controller = new VlcController({
+    onTransitionStart: () => transitions.push('show'),
+    onTransitionEnd: () => transitions.push('hide')
+  });
+  controller.ready = true;
+  controller.currentPlaylist = ['C:\\media\\finished.mp4'];
+  controller.send = command => {
+    commands.push(command);
+    return true;
+  };
+
+  await controller.playIdle();
+
+  assert.equal(controller.idleMode, true);
+  assert.equal(controller.state, 'idle');
+  assert.deepEqual(controller.currentPlaylist, []);
+  assert.deepEqual(commands, ['stop', 'clear', 'status']);
+  assert.deepEqual(transitions, ['show']);
+});
+
+test('single-monitor idle mode closes VLC and returns control to the desktop', async () => {
+  const commands = [];
+  let killed = false;
+  const controller = new VlcController({ terminateOnIdle: true });
+  controller.ready = true;
+  controller.proc = { kill: () => { killed = true; } };
+  controller.send = command => {
+    commands.push(command);
+    return true;
+  };
+
+  await controller.playIdle();
+
+  assert.equal(controller.idleMode, true);
+  assert.equal(controller.ready, false);
+  assert.equal(controller.proc, null);
+  assert.equal(killed, true);
+  assert.deepEqual(commands, ['quit']);
 });
 
 test('playback polling requests status, elapsed time, and media length', () => {

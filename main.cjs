@@ -24,6 +24,11 @@ const { CmsClient, normalizeServerUrl, parseSessionExpiry } = require('./cmsClie
 const { DeviceCredentials } = require('./deviceCredentials.cjs');
 const { removeManagedAsset } = require('./managedAssetCleanup.cjs');
 const { normalizeRevision, revisionSyncAction } = require('./revisionSync.cjs');
+const { choosePlaybackDisplay } = require('./displaySelector.cjs');
+const {
+  DEFAULT_PLAYBACK_SETTINGS,
+  normalizePlaybackSettings
+} = require('./playbackSettings.cjs');
 const { LdgGateway } = require('./ldg.cjs');
 const CFG = require('./config.cjs');
 
@@ -35,6 +40,7 @@ const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 const INSTALLATION_PATH = path.join(DATA_DIR, 'installation.json');
 const CACHE_PATH = path.join(DATA_DIR, 'schedules.json');
 const DURATION_CACHE_PATH = path.join(DATA_DIR, 'media-durations.json');
+const PLAYBACK_SETTINGS_PATH = path.join(DATA_DIR, 'playback-settings.json');
 
 let tray = null;
 let loginWin = null;
@@ -54,7 +60,16 @@ let statusLabel = 'offline';
 let nowSchedule = null;
 let broadcastHandle = null;
 let secondDisplay = null;
+let hasDedicatedPlaybackDisplay = false;
+let hasSecondaryPlaybackDisplay = false;
 let transitionWin = null;
+let identifyDisplayWindows = [];
+let testOutputWin = null;
+let singleDisplayWarningVisible = false;
+let singleDisplayWarningAcknowledged = false;
+let playbackSettings = { ...DEFAULT_PLAYBACK_SETTINGS };
+let appliedPlaybackSettings = { ...DEFAULT_PLAYBACK_SETTINGS };
+let playbackSettingsPending = false;
 let isShuttingDown = false;
 let mediaManager = null;
 let ldgGateway = null;
@@ -400,7 +415,7 @@ function createScheduleManagerWindow() {
 }
 
 function createTransitionWindow() {
-  if (!secondDisplay) return;
+  if (!secondDisplay || !hasDedicatedPlaybackDisplay) return;
   if (transitionWin && !transitionWin.isDestroyed()) return;
   transitionWin = new BrowserWindow({
     x: secondDisplay.bounds.x,
@@ -453,6 +468,205 @@ function destroyTransitionOverlay() {
     if (transitionWin && !transitionWin.isDestroyed()) transitionWin.destroy();
   } catch (_) {}
   transitionWin = null;
+}
+
+async function showSingleDisplayWarning() {
+  if (
+    hasSecondaryPlaybackDisplay ||
+    singleDisplayWarningVisible ||
+    singleDisplayWarningAcknowledged
+  ) return;
+
+  singleDisplayWarningVisible = true;
+  let recheckRequested = false;
+  try {
+    const playbackImpact = appliedPlaybackSettings.outputMode === 'windowed'
+      ? 'Windowed playback will use this monitor. Other applications remain available, but the film shares the operator display.'
+      : 'Fullscreen playback will use this monitor, so the Player dashboard and other applications will be hidden while a film is playing.';
+    const result = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Single Monitor Mode',
+      message: 'Only one monitor was detected.',
+      detail: [
+        playbackImpact,
+        '',
+        'When the schedule finishes, VLC will close and this monitor will return to the desktop.',
+        '',
+        'Connect a second monitor to keep the dashboard on the primary monitor and use the other monitor exclusively for film output.'
+      ].join('\n'),
+      buttons: ['Continue with One Monitor', 'Check Again'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    });
+
+    if (result.response === 1) {
+      recheckRequested = true;
+      refreshPlaybackDisplay();
+    } else {
+      singleDisplayWarningAcknowledged = true;
+    }
+  } catch (error) {
+    console.error('Single-display warning failed', error);
+    singleDisplayWarningAcknowledged = true;
+  } finally {
+    singleDisplayWarningVisible = false;
+  }
+
+  if (recheckRequested && !hasSecondaryPlaybackDisplay) {
+    setTimeout(() => showSingleDisplayWarning(), 0);
+  }
+}
+
+function refreshPlaybackDisplay() {
+  const previouslySecondary = hasSecondaryPlaybackDisplay;
+  const selection = choosePlaybackDisplay(
+    screen.getAllDisplays(),
+    screen.getPrimaryDisplay(),
+    appliedPlaybackSettings.displayId
+  );
+  const previousDisplayId = secondDisplay && secondDisplay.id;
+  const nextDisplayId = selection.display && selection.display.id;
+  const displayChanged = previousDisplayId != null && previousDisplayId !== nextDisplayId;
+
+  secondDisplay = selection.display;
+  hasDedicatedPlaybackDisplay = selection.hasDedicatedDisplay;
+  hasSecondaryPlaybackDisplay = selection.hasSecondaryDisplay;
+
+  if (hasSecondaryPlaybackDisplay) {
+    singleDisplayWarningAcknowledged = false;
+  } else if (previouslySecondary) {
+    // A newly disconnected output monitor is a new warning incident.
+    singleDisplayWarningAcknowledged = false;
+  }
+
+  destroyTransitionOverlay();
+
+  if (vlc) {
+    vlc.display = secondDisplay;
+    vlc.settings = appliedPlaybackSettings;
+    vlc.terminateOnIdle = !hasDedicatedPlaybackDisplay;
+    if (displayChanged) vlc.restartOnIdle = true;
+  }
+
+  if (hasDedicatedPlaybackDisplay && vlc) createTransitionWindow();
+
+  if (scheduler && !scheduler.getNow() && vlc) {
+    Promise.resolve(vlc.playIdle()).catch(error => {
+      appendVlcLog(`[display] idle refresh failed: ${error.message}`);
+    });
+  }
+
+  pushDashboard();
+  if (!hasSecondaryPlaybackDisplay) {
+    setTimeout(() => showSingleDisplayWarning(), 0);
+  }
+}
+
+function applyPendingPlaybackSettings() {
+  if (!playbackSettingsPending) return false;
+  playbackSettingsPending = false;
+  appliedPlaybackSettings = { ...playbackSettings };
+  if (vlc) vlc.restartOnIdle = true;
+  refreshPlaybackDisplay();
+  // During a direct schedule-to-schedule transition the previous occurrence
+  // is still current while the finish event runs, so refreshPlaybackDisplay
+  // does not enter idle mode. Stop the old VLC instance before activation of
+  // the next playlist so its new interface/display flags are guaranteed.
+  if (scheduler && scheduler.getNow() && vlc) {
+    Promise.resolve(vlc.playIdle()).catch(error => {
+      appendVlcLog(`[settings] VLC reconfiguration failed: ${error.message}`);
+    });
+  }
+  return true;
+}
+
+function playbackDisplayOptions() {
+  const primary = screen.getPrimaryDisplay();
+  return screen.getAllDisplays().map((display, index) => ({
+    id: String(display.id),
+    number: index + 1,
+    label: display.label || `Display ${index + 1}`,
+    primary: display.id === primary.id,
+    width: display.bounds.width,
+    height: display.bounds.height,
+    x: display.bounds.x,
+    y: display.bounds.y
+  }));
+}
+
+function destroyIdentifyDisplayWindows() {
+  for (const win of identifyDisplayWindows) {
+    try { if (win && !win.isDestroyed()) win.destroy(); } catch (_) {}
+  }
+  identifyDisplayWindows = [];
+  if (!isShuttingDown && scheduler && !scheduler.getNow() && hasDedicatedPlaybackDisplay) {
+    showTransitionOverlay();
+  }
+}
+
+function identifyDisplays() {
+  destroyIdentifyDisplayWindows();
+  hideTransitionOverlay();
+  const displays = screen.getAllDisplays();
+  const primary = screen.getPrimaryDisplay();
+  identifyDisplayWindows = displays.map((display, index) => {
+    const win = new BrowserWindow({
+      x: display.bounds.x,
+      y: display.bounds.y,
+      width: display.bounds.width,
+      height: display.bounds.height,
+      frame: false,
+      fullscreen: true,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      focusable: false,
+      resizable: false,
+      backgroundColor: '#111111',
+      webPreferences: { nodeIntegration: false, contextIsolation: true, devTools: false }
+    });
+    const label = display.label || `Display ${index + 1}`;
+    const primaryText = display.id === primary.id ? 'PRIMARY DISPLAY' : 'PLAYBACK DISPLAY';
+    const html = `<body style="margin:0;display:grid;place-items:center;background:#111;color:white;font-family:Segoe UI,sans-serif"><div style="text-align:center"><div style="font-size:180px;font-weight:800;line-height:1">${index + 1}</div><div style="font-size:28px;margin-top:18px">${label}</div><div style="font-size:18px;margin-top:10px;color:#ff8b8b">${primaryText} · ${display.bounds.width} × ${display.bounds.height}</div></div></body>`;
+    win.removeMenu();
+    win.setAlwaysOnTop(true, 'screen-saver');
+    win.setIgnoreMouseEvents(true);
+    win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => {});
+    return win;
+  });
+  setTimeout(destroyIdentifyDisplayWindows, 3500);
+}
+
+function destroyTestOutput() {
+  try { if (testOutputWin && !testOutputWin.isDestroyed()) testOutputWin.destroy(); } catch (_) {}
+  testOutputWin = null;
+  if (!isShuttingDown && scheduler && !scheduler.getNow() && hasDedicatedPlaybackDisplay) {
+    showTransitionOverlay();
+  }
+}
+
+function showTestOutput() {
+  destroyTestOutput();
+  if (!secondDisplay) throw new Error('No playback display is available');
+  hideTransitionOverlay();
+  const fullscreen = appliedPlaybackSettings.outputMode === 'fullscreen';
+  const width = fullscreen ? secondDisplay.bounds.width : Math.min(1280, secondDisplay.bounds.width);
+  const height = fullscreen ? secondDisplay.bounds.height : Math.min(720, secondDisplay.bounds.height);
+  const x = fullscreen ? secondDisplay.bounds.x : secondDisplay.bounds.x + Math.round((secondDisplay.bounds.width - width) / 2);
+  const y = fullscreen ? secondDisplay.bounds.y : secondDisplay.bounds.y + Math.round((secondDisplay.bounds.height - height) / 2);
+  testOutputWin = new BrowserWindow({
+    x, y, width, height, fullscreen, frame: !fullscreen, alwaysOnTop: true,
+    skipTaskbar: true, focusable: false, resizable: false, backgroundColor: '#000000',
+    webPreferences: { nodeIntegration: false, contextIsolation: true, devTools: false }
+  });
+  const label = secondDisplay.label || `Display ${secondDisplay.id}`;
+  const html = `<body style="margin:0;display:grid;grid-template-rows:1fr auto;background:linear-gradient(90deg,#fff 0 14.28%,#ff0 14.28% 28.56%,#0ff 28.56% 42.84%,#0f0 42.84% 57.12%,#f0f 57.12% 71.4%,#f00 71.4% 85.68%,#00f 85.68%);font-family:Segoe UI,sans-serif"><div></div><div style="padding:22px;background:#000;color:#fff;text-align:center;font-size:24px;font-weight:700">PLAYER TEST OUTPUT · ${label}</div></body>`;
+  testOutputWin.removeMenu();
+  testOutputWin.setAlwaysOnTop(true, 'screen-saver');
+  testOutputWin.setIgnoreMouseEvents(true);
+  testOutputWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => {});
+  testOutputWin.on('closed', () => { testOutputWin = null; });
+  setTimeout(destroyTestOutput, 5000);
 }
 
 function appendVlcLog(line) {
@@ -827,6 +1041,16 @@ function pushDashboard() {
     refresh: { ...refreshState },
     assetSync: { ...assetSyncState },
     remoteDownloads: { ...remoteDownloadState, items: remoteDownloadState.items.map(item => ({ ...item })) },
+    display: {
+      mode: hasSecondaryPlaybackDisplay ? 'multi' : 'single',
+      hasDedicatedDisplay: hasDedicatedPlaybackDisplay,
+      hasSecondaryDisplay: hasSecondaryPlaybackDisplay,
+      outputId: secondDisplay ? secondDisplay.id : null,
+      outputLabel: secondDisplay && secondDisplay.label || '',
+      displays: playbackDisplayOptions(),
+      settings: { ...playbackSettings },
+      pending: playbackSettingsPending
+    },
     operator: {
       unlocked: Boolean(!operatorAccessError(false)),
       user: operatorSession && operatorSession.user || null
@@ -1113,6 +1337,64 @@ ipcMain.handle('open-config-folder', async () => {
   const denied = operatorAccessError(); if (denied) return denied;
   shell.openPath(DATA_DIR);
   return { ok: true };
+});
+
+ipcMain.handle('save-playback-settings', async (_event, payload) => {
+  const denied = operatorAccessError(); if (denied) return denied;
+  try {
+    playbackSettings = normalizePlaybackSettings(payload);
+    writeJson(PLAYBACK_SETTINGS_PATH, playbackSettings);
+    const active = Boolean(scheduler && scheduler.getNow());
+    playbackSettingsPending = active;
+    if (!active) {
+      appliedPlaybackSettings = { ...playbackSettings };
+      if (vlc) vlc.restartOnIdle = true;
+      refreshPlaybackDisplay();
+    } else {
+      pushDashboard();
+    }
+    return { ok: true, settings: playbackSettings, appliesAfterCurrentSchedule: active };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('restore-playback-settings', async () => {
+  const denied = operatorAccessError(); if (denied) return denied;
+  playbackSettings = { ...DEFAULT_PLAYBACK_SETTINGS };
+  writeJson(PLAYBACK_SETTINGS_PATH, playbackSettings);
+  const active = Boolean(scheduler && scheduler.getNow());
+  playbackSettingsPending = active;
+  if (!active) {
+    appliedPlaybackSettings = { ...playbackSettings };
+    if (vlc) vlc.restartOnIdle = true;
+    refreshPlaybackDisplay();
+  } else {
+    pushDashboard();
+  }
+  return { ok: true, settings: playbackSettings, appliesAfterCurrentSchedule: active };
+});
+
+ipcMain.handle('identify-displays', async () => {
+  const denied = operatorAccessError(); if (denied) return denied;
+  if (scheduler && scheduler.getNow()) {
+    return { ok: false, error: 'Identify Displays is unavailable while a schedule is active.' };
+  }
+  identifyDisplays();
+  return { ok: true };
+});
+
+ipcMain.handle('test-playback-output', async () => {
+  const denied = operatorAccessError(); if (denied) return denied;
+  if (scheduler && scheduler.getNow()) {
+    return { ok: false, error: 'Test Output is unavailable while a schedule is active.' };
+  }
+  try {
+    showTestOutput();
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
 });
 
 ipcMain.handle('recheck-media-health', async () => {
@@ -1685,6 +1967,8 @@ async function startRuntime() {
   createTransitionWindow();
   vlc = new VlcController({
     display: secondDisplay,
+    settings: appliedPlaybackSettings,
+    terminateOnIdle: !hasDedicatedPlaybackDisplay,
     transitionDuration: 500,
     onTransitionStart: () => showTransitionOverlay(),
     onTransitionEnd: () => hideTransitionOverlay()
@@ -1753,11 +2037,17 @@ async function startRuntime() {
   });
   scheduler.on('idle', () => {
     nowSchedule = null;
+    applyPendingPlaybackSettings();
+    // Keep the film output completely black while the Player is idle. Calling
+    // this here as well as from VlcController makes the idle screen resilient
+    // even when VLC is not running or its RC connection has just closed.
+    showTransitionOverlay();
     refreshTray();
     pushDashboard();
   });
   scheduler.on('finish', () => {
     nowSchedule = null;
+    applyPendingPlaybackSettings();
     refreshTray();
     pushDashboard();
   });
@@ -2185,6 +2475,8 @@ function logout(notice = '') {
   if (ldgGateway) { void ldgGateway.close(); ldgGateway = null; }
   if (scheduleAdderWin && !scheduleAdderWin.isDestroyed()) scheduleAdderWin.destroy();
   if (scheduleManagerWin && !scheduleManagerWin.isDestroyed()) scheduleManagerWin.destroy();
+  destroyIdentifyDisplayWindows();
+  destroyTestOutput();
   destroyTransitionOverlay();
   if (wasBypass) resetTestCachePreservingAssets();
   else if (fs.existsSync(CACHE_PATH)) fs.unlinkSync(CACHE_PATH);
@@ -2204,20 +2496,22 @@ function quitApp() {
   if (scheduler) scheduler.clear();
   if (vlc) vlc.quit();
   if (ldgGateway) { void ldgGateway.close(); ldgGateway = null; }
+  destroyIdentifyDisplayWindows();
+  destroyTestOutput();
   destroyTransitionOverlay();
   app.quit();
 }
 
 app.on('ready', () => {
-  const displays = screen.getAllDisplays();
-
-  console.log("Displays:", displays);
-
-  if (displays.length > 1) {
-    secondDisplay = displays[1];
-  } else {
-    secondDisplay = displays[0];
-  }
+  console.log('Displays:', screen.getAllDisplays());
+  playbackSettings = normalizePlaybackSettings(
+    readJson(PLAYBACK_SETTINGS_PATH, DEFAULT_PLAYBACK_SETTINGS)
+  );
+  appliedPlaybackSettings = { ...playbackSettings };
+  refreshPlaybackDisplay();
+  screen.on('display-added', refreshPlaybackDisplay);
+  screen.on('display-removed', refreshPlaybackDisplay);
+  screen.on('display-metrics-changed', refreshPlaybackDisplay);
   try {
     cfg = credentialStore.load();
   } catch (error) {
@@ -2261,6 +2555,8 @@ app.on('before-quit', () => {
   if (scheduler) scheduler.clear();
   if (vlc) vlc.quit();
   if (ldgGateway) { void ldgGateway.close(); ldgGateway = null; }
+  destroyIdentifyDisplayWindows();
+  destroyTestOutput();
   destroyTransitionOverlay();
 });
 
@@ -2272,6 +2568,8 @@ app.on('will-quit', () => {
   if (scheduler) scheduler.clear();
   if (vlc) vlc.quit();
   if (ldgGateway) { void ldgGateway.close(); ldgGateway = null; }
+  destroyIdentifyDisplayWindows();
+  destroyTestOutput();
   destroyTransitionOverlay();
 });
 
