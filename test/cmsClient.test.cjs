@@ -222,6 +222,25 @@ test('heartbeat authenticates with Bearer token and reports online', async () =>
   assert.equal(client.status, 'online');
 });
 
+test('heartbeat merges live playback telemetry without replacing installation metadata', async () => {
+  let body;
+  const client = new CmsClient({
+    serverURL: 'http://localhost:8080', heartbeatIntervalMs: 60000,
+    metadataProvider: () => ({ playback_state: 'playing', playback_schedule_id: 'schedule-1' }),
+    fetch: async (_url, options) => {
+      body = JSON.parse(options.body);
+      return response(200, { data: { connection_status: 'online' } });
+    }
+  });
+  const heartbeat = once(client, 'heartbeat');
+  client.start('device-token', { app_version: '1.1.0', playback_state: 'idle' });
+  await heartbeat;
+  client.stop();
+  assert.equal(body.app_version, '1.1.0');
+  assert.equal(body.playback_state, 'playing');
+  assert.equal(body.playback_schedule_id, 'schedule-1');
+});
+
 test('heartbeatNow performs an immediate authenticated refresh without waiting for timer', async () => {
   let requestCount = 0;
   const client = new CmsClient({

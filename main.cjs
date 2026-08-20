@@ -2177,7 +2177,8 @@ function startCmsConnection() {
 
   cmsClient = new CmsClient({
     serverURL: cfg.serverURL,
-    heartbeatIntervalMs: CFG.HEARTBEAT_INTERVAL_MS
+    heartbeatIntervalMs: CFG.HEARTBEAT_INTERVAL_MS,
+    metadataProvider: playbackTelemetry
   });
   cmsState = { status: 'connecting', lastHeartbeatAt: null, lastError: null };
   cmsClient.on('status', status => {
@@ -2215,6 +2216,20 @@ function startCmsConnection() {
     ldg_version: 'ldg-v1',
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Jakarta'
   });
+}
+
+function playbackTelemetry() {
+  const active = scheduler ? scheduler.getNow() : null;
+  const vlcState = vlc ? String(vlc.state || '') : '';
+  let playbackState = 'idle';
+  if (statusLabel === 'vlc-error' || vlcState === 'error') playbackState = 'error';
+  else if (active && vlcState === 'paused') playbackState = 'paused';
+  else if (active && vlcState === 'playing') playbackState = 'playing';
+  return {
+    playback_state: playbackState,
+    playback_schedule_id: active ? String(active.scheduleId || '') : '',
+    playback_error: playbackState === 'error' ? 'VLC playback is unavailable.' : ''
+  };
 }
 
 function sendPairingRefresh(result) {

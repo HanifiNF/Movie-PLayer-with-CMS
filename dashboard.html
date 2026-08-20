@@ -434,10 +434,10 @@
         </section>
 
         <section id="view-about" class="view hidden">
-          <div class="page-heading"><div><h2>About Player</h2><p>Application and device information.</p></div></div>
+          <div class="page-heading"><div><h2>About Player</h2><p>Application and Studio information.</p></div></div>
           <div class="about-grid">
             <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></svg></div><h3>Player application</h3><p>Realtime desktop media player for scheduled VLC playback.<br />Version <strong id="aboutVersion">1.0.0</strong></p></article>
-            <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h5"/></svg></div><h3>Registered device</h3><p>Device ID: <strong id="aboutDevice">—</strong><br />Mode: <strong id="aboutMode">Offline</strong><br />Last heartbeat: <strong id="aboutHeartbeat">—</strong></p></article>
+            <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h5"/></svg></div><h3>Registered Studio</h3><p>Studio ID: <strong id="aboutDevice">—</strong><br />Mode: <strong id="aboutMode">Offline</strong><br />Last heartbeat: <strong id="aboutHeartbeat">—</strong></p></article>
             <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><path d="M4 17l3-10h10l3 10M6 13h12M3 20h18"/></svg></div><h3>Playback engine</h3><p>VLC state: <strong id="aboutVlc">Idle</strong><br />Remote control: <strong id="aboutRc">Unavailable</strong></p></article>
             <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><path d="M4 4h6l2 2h8v13H4z"/></svg></div><h3>CMS connection</h3><p>Server: <strong id="aboutServer">—</strong><br />Credentials are encrypted by Windows. Pairing can only be revoked by a CMS administrator.</p></article>
           </div>
@@ -732,7 +732,7 @@
       const deviceInfo = state.device || {}; const fullDeviceId = deviceInfo.id || state.deviceId || ''; const shortDeviceId = fullDeviceId.length > 13 ? `${fullDeviceId.slice(0, 13)}…` : fullDeviceId;
       const deviceLocation = deviceInfo.location || 'Location not set'; const deviceName = deviceInfo.name || 'Player';
       $('sidebarDeviceName').textContent = deviceName; $('sidebarLocation').querySelector('span').textContent = deviceLocation;
-      $('device').textContent = `Device ID: ${shortDeviceId || '—'}`; $('device').title = fullDeviceId;
+      $('device').textContent = `Studio ID: ${shortDeviceId || '—'}`; $('device').title = fullDeviceId;
       const displayInfo = state.display || {}; $('displayMode').classList.toggle('hidden', Boolean(displayInfo.hasSecondaryDisplay)); $('displayMode').title = displayInfo.hasSecondaryDisplay ? '' : 'Fullscreen films use this monitor until a second monitor is connected.';
       $('topbarLocation').querySelector('span').textContent = deviceLocation; $('topbarLocation').title = deviceInfo.timezone || deviceLocation;
       const operatorUser = state.operator && state.operator.user; const operatorName = state.bypass ? 'Development Operator' : operatorUser && (operatorUser.name || operatorUser.email) || 'Dashboard locked';

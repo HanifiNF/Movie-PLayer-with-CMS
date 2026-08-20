@@ -55,6 +55,7 @@ class CmsClient extends EventEmitter {
     this.heartbeatIntervalMs = options.heartbeatIntervalMs || 10000;
     this.retryDelaysMs = options.retryDelaysMs || [2000, 5000, 10000, 15000, 30000];
     this.requestTimeoutMs = options.requestTimeoutMs || 8000;
+    this.metadataProvider = typeof options.metadataProvider === 'function' ? options.metadataProvider : null;
     this.timer = null;
     this.heartbeatPromise = null;
     this.running = false;
@@ -201,7 +202,10 @@ class CmsClient extends EventEmitter {
       const data = await this.#request('/api/player/heartbeat', {
         method: 'POST',
         token: this.token,
-        body: this.metadata
+        body: {
+          ...this.metadata,
+          ...(this.metadataProvider ? (this.metadataProvider() || {}) : {})
+        }
       });
       this.failureCount = 0;
       this.#setStatus('online');
