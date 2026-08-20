@@ -52,6 +52,8 @@
       "config.cjs",
       "login.html",
       "dashboard.html",
+      "idleOutput.html",
+      "filmOutput.html",
       "scheduleAdder.html",
       "scheduleManager.html",
       "package.json",
@@ -67,6 +69,10 @@
       {
         "from": "vlc-portable",
         "to": "vlc"
+      },
+      {
+        "from": "assets/idle-black.mp4",
+        "to": "idle/idle-black.mp4"
       }
     ],
     "win": {

@@ -15,6 +15,7 @@ test('playback settings default to production-safe hidden fullscreen output', ()
 test('playback settings reject unsupported values and bound custom sizes', () => {
   assert.deepEqual(normalizePlaybackSettings({
     displayId: 22,
+    idleDisplayId: 33,
     outputMode: 'floating',
     resolution: 'custom',
     customWidth: 20,
@@ -23,6 +24,7 @@ test('playback settings reject unsupported values and bound custom sizes', () =>
     hideVlcUi: false
   }), {
     displayId: '22',
+    idleDisplayId: '33',
     outputMode: 'fullscreen',
     resolution: 'custom',
     customWidth: 1920,
@@ -30,6 +32,11 @@ test('playback settings reject unsupported values and bound custom sizes', () =>
     scaling: 'fit',
     hideVlcUi: false
   });
+});
+
+test('idle monitor defaults to the scheduled film output monitor', () => {
+  assert.equal(normalizePlaybackSettings({ idleDisplayId: 'same' }).idleDisplayId, null);
+  assert.equal(normalizePlaybackSettings({ idleDisplayId: 44 }).idleDisplayId, '44');
 });
 
 test('output size resolves native, preset, and custom resolutions', () => {

@@ -416,6 +416,7 @@
               <p>Changes are applied immediately while idle, or automatically after the active schedule finishes.</p>
               <div class="settings-fields">
                 <div class="setting-field full"><label for="settingDisplay">Output monitor</label><select id="settingDisplay"></select><span class="setting-help">Auto selects a monitor other than the Windows primary display.</span></div>
+                <div class="setting-field full"><label for="settingIdleDisplay">Idle loop monitor</label><select id="settingIdleDisplay"></select><span id="idleDisplayHelp" class="setting-help">By default, the black idle loop uses the same monitor as scheduled films.</span></div>
                 <div class="setting-field"><label for="settingOutputMode">Display mode</label><select id="settingOutputMode"><option value="fullscreen">Fullscreen</option><option value="windowed">Windowed (testing)</option></select></div>
                 <div class="setting-field"><label for="settingResolution">Output resolution</label><select id="settingResolution"><option value="native">Native display</option><option value="1080p">1920 × 1080</option><option value="720p">1280 × 720</option><option value="custom">Custom</option></select><div id="customResolution" class="custom-resolution hidden"><input id="settingWidth" type="number" min="320" max="7680" aria-label="Custom width" placeholder="Width" /><input id="settingHeight" type="number" min="240" max="4320" aria-label="Custom height" placeholder="Height" /></div></div>
                 <div class="setting-field"><label for="settingScaling">Video scaling</label><select id="settingScaling"><option value="fit">Fit / Letterbox</option><option value="fill">Fill / Crop</option><option value="stretch">Stretch</option></select></div>
@@ -427,7 +428,7 @@
             <aside class="card settings-card">
               <h3>Display tools</h3>
               <p>Use these tools while no schedule is active to confirm the selected cinema output.</p>
-              <div class="settings-actions"><button id="btnIdentifyDisplays" class="btn" type="button">Identify Displays</button><button id="btnTestOutput" class="btn" type="button">Test Output (5 seconds)</button><button id="btnRestorePlaybackSettings" class="btn danger" type="button">Restore Defaults</button></div>
+              <div class="settings-actions"><button id="btnIdentifyDisplays" class="btn" type="button">Identify Displays</button><button id="btnTestOutput" class="btn" type="button">Test Film Output (5 seconds)</button><button id="btnTestIdleOutput" class="btn" type="button">Test Idle Monitor (5 seconds)</button><button id="btnRestorePlaybackSettings" class="btn danger" type="button">Restore Defaults</button></div>
               <div class="setting-help" style="margin-top:14px">Test Output never starts VLC and is blocked during scheduled playback.</div>
             </aside>
           </div>
@@ -697,6 +698,19 @@
       }
       select.value = settings.displayId == null ? 'auto' : String(settings.displayId);
       if (select.selectedIndex < 0) select.value = 'auto';
+      const idleSelect = $('settingIdleDisplay');
+      idleSelect.innerHTML = '';
+      const same = document.createElement('option'); same.value = 'same'; same.textContent = 'Same as film output monitor'; idleSelect.appendChild(same);
+      for (const monitor of display.displays || []) {
+        const option = document.createElement('option'); option.value = String(monitor.id);
+        option.textContent = `Display ${monitor.number} · ${monitor.label} · ${monitor.width}×${monitor.height}${monitor.primary ? ' · Primary' : ''}`;
+        idleSelect.appendChild(option);
+      }
+      idleSelect.value = settings.idleDisplayId == null ? 'same' : String(settings.idleDisplayId);
+      if (idleSelect.selectedIndex < 0) idleSelect.value = 'same';
+      $('idleDisplayHelp').textContent = display.idleDisplayPreferenceAvailable === false
+        ? 'The saved idle monitor is disconnected. The film output monitor is being used as a fallback.'
+        : 'The black idle loop uses this monitor. Choose the same monitor as film output to avoid an extra VLC restart during transitions.';
       $('settingOutputMode').value = settings.outputMode || 'fullscreen';
       $('settingResolution').value = settings.resolution || 'native';
       $('settingWidth').value = String(settings.customWidth || 1920);
@@ -717,6 +731,7 @@
     function collectPlaybackSettings() {
       return {
         displayId: $('settingDisplay').value === 'auto' ? null : $('settingDisplay').value,
+        idleDisplayId: $('settingIdleDisplay').value === 'same' ? null : $('settingIdleDisplay').value,
         outputMode: $('settingOutputMode').value,
         resolution: $('settingResolution').value,
         customWidth: Number($('settingWidth').value),
@@ -779,7 +794,7 @@
     });
     $('operatorLoginForm').onsubmit = async event => { event.preventDefault(); $('operatorLoginError').textContent = ''; $('btnOperatorLogin').disabled = true; const result = await ipcRenderer.invoke('operator-login', { email: $('operatorEmail').value, password: $('operatorPassword').value }); $('btnOperatorLogin').disabled = false; if (!result || !result.ok) { $('operatorLoginError').textContent = result && result.error || 'Login failed'; return; } $('operatorPassword').value = ''; };
     document.querySelectorAll('.nav-btn').forEach(button => button.onclick = () => setView(button.dataset.view));
-    ['settingDisplay', 'settingOutputMode', 'settingResolution', 'settingWidth', 'settingHeight', 'settingScaling', 'settingHideUi'].forEach(id => {
+    ['settingDisplay', 'settingIdleDisplay', 'settingOutputMode', 'settingResolution', 'settingWidth', 'settingHeight', 'settingScaling', 'settingHideUi'].forEach(id => {
       $(id).addEventListener('input', () => { playbackSettingsDirty = true; if (id === 'settingResolution') updateCustomResolutionVisibility(); });
       $(id).addEventListener('change', () => { playbackSettingsDirty = true; if (id === 'settingResolution') updateCustomResolutionVisibility(); });
     });
@@ -792,6 +807,7 @@
     };
     $('btnIdentifyDisplays').onclick = async () => { const result = await ipcRenderer.invoke('identify-displays'); playbackSettingsStatus = result && result.ok ? 'Display numbers are visible for a few seconds.' : result && result.error || 'Could not identify displays.'; playbackSettingsError = !(result && result.ok); renderPlaybackSettings(true); };
     $('btnTestOutput').onclick = async () => { const result = await ipcRenderer.invoke('test-playback-output'); playbackSettingsStatus = result && result.ok ? 'Test output is visible for five seconds.' : result && result.error || 'Could not test output.'; playbackSettingsError = !(result && result.ok); renderPlaybackSettings(true); };
+    $('btnTestIdleOutput').onclick = async () => { const result = await ipcRenderer.invoke('test-idle-output', collectPlaybackSettings()); playbackSettingsStatus = result && result.ok ? 'The selected idle monitor is identified for five seconds.' : result && result.error || 'Could not test the idle monitor.'; playbackSettingsError = !(result && result.ok); $('playbackSettingsStatus').className = `settings-status${playbackSettingsError ? ' error' : ''}`; $('playbackSettingsStatus').textContent = playbackSettingsStatus; };
     $('btnRestorePlaybackSettings').onclick = async () => { const result = await ipcRenderer.invoke('restore-playback-settings'); if (!result || !result.ok) { playbackSettingsStatus = result && result.error || 'Could not restore defaults.'; playbackSettingsError = true; renderPlaybackSettings(true); return; } state.display = Object.assign({}, state.display || {}, { settings: result.settings, pending: Boolean(result.appliesAfterCurrentSchedule) }); playbackSettingsStatus = result.appliesAfterCurrentSchedule ? 'Defaults restored. They will apply after the active schedule finishes.' : 'Default playback settings restored.'; playbackSettingsError = false; playbackSettingsDirty = false; renderPlaybackSettings(true); };
     $('btnRefreshAssets').onclick = loadAssets; $('assetSearch').oninput = renderAssets; $('assetFilter').onchange = renderAssets; $('skippedSearch').oninput = renderSkipped;
     $('btnRewind').onclick = () => invokePlaybackControl('vlc-seek-relative', -10);

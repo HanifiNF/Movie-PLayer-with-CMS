@@ -4,15 +4,51 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { VlcController } = require('../vlcController.cjs');
 
-test('VLC startup defaults to a production-safe UI-free fullscreen interface', () => {
+test('VLC startup defaults to a production-safe hidden fullscreen interface', () => {
   const controller = new VlcController();
   const args = controller._buildStartArgs();
 
   assert.equal(args[args.indexOf('--intf') + 1], 'dummy');
   assert.ok(args.includes('--fullscreen'));
+  assert.ok(!args.includes('--video-on-top'));
   assert.ok(args.includes('--no-qt-fs-controller'));
   assert.ok(args.includes('--no-video-deco'));
+  assert.ok(!args.includes('--no-embedded-video'));
   assert.ok(!args.includes('--qt-continue=0'));
+});
+
+test('scheduled kiosk playback hides VLC console and interface windows', () => {
+  const controller = new VlcController({ settings: { hideVlcUi: true } });
+  const options = controller._buildSpawnOptions('C:\\player\\vlc-portable');
+
+  assert.equal(options.windowsHide, true);
+  assert.equal(options.cwd, 'C:\\player\\vlc-portable');
+});
+
+test('scheduled fullscreen output preserves the selected monitor origin and resolution', () => {
+  const controller = new VlcController({
+    display: { id: 20, bounds: { x: 1920, y: 0, width: 2560, height: 1440 } },
+    settings: { outputMode: 'fullscreen', resolution: '720p', hideVlcUi: true }
+  });
+  const args = controller._buildStartArgs();
+
+  assert.equal(args[args.indexOf('--video-x') + 1], '1920');
+  assert.equal(args[args.indexOf('--video-y') + 1], '0');
+  assert.equal(args[args.indexOf('--width') + 1], '1280');
+  assert.equal(args[args.indexOf('--height') + 1], '720');
+});
+
+test('embedded film output renders into the Electron HWND without VLC fullscreen', () => {
+  const controller = new VlcController({
+    drawableHwnd: '987654321',
+    display: { id: 20, bounds: { x: 1920, y: 0, width: 1920, height: 1080 } },
+    settings: { outputMode: 'fullscreen', hideVlcUi: true }
+  });
+  const args = controller._buildStartArgs();
+
+  assert.ok(args.includes('--no-fullscreen'));
+  assert.ok(args.includes('--drawable-hwnd=987654321'));
+  assert.ok(!args.includes('--fullscreen'));
 });
 
 test('debug window mode restores Qt UI and applies custom output geometry', () => {
@@ -73,14 +109,15 @@ test('replacePlaylist enqueues every item before starting the first one', async 
   ]);
 });
 
-test('idle mode shows a persistent black overlay and clears VLC media', async () => {
+test('idle mode hands output to Electron and fully stops VLC', async () => {
   const transitions = [];
   const commands = [];
   const controller = new VlcController({
-    onTransitionStart: () => transitions.push('show'),
-    onTransitionEnd: () => transitions.push('hide')
+    onTransitionStart: () => transitions.push('show')
   });
   controller.ready = true;
+  let killed = false;
+  controller.proc = { kill: () => { killed = true; } };
   controller.currentPlaylist = ['C:\\media\\finished.mp4'];
   controller.send = command => {
     commands.push(command);
@@ -91,29 +128,19 @@ test('idle mode shows a persistent black overlay and clears VLC media', async ()
 
   assert.equal(controller.idleMode, true);
   assert.equal(controller.state, 'idle');
-  assert.deepEqual(controller.currentPlaylist, []);
-  assert.deepEqual(commands, ['stop', 'clear', 'status']);
-  assert.deepEqual(transitions, ['show']);
-});
-
-test('single-monitor idle mode closes VLC and returns control to the desktop', async () => {
-  const commands = [];
-  let killed = false;
-  const controller = new VlcController({ terminateOnIdle: true });
-  controller.ready = true;
-  controller.proc = { kill: () => { killed = true; } };
-  controller.send = command => {
-    commands.push(command);
-    return true;
-  };
-
-  await controller.playIdle();
-
-  assert.equal(controller.idleMode, true);
-  assert.equal(controller.ready, false);
   assert.equal(controller.proc, null);
+  assert.equal(controller.ready, false);
   assert.equal(killed, true);
+  assert.deepEqual(controller.currentPlaylist, []);
   assert.deepEqual(commands, ['quit']);
+  assert.deepEqual(controller.getPlaybackStatus(), {
+    currentPath: null,
+    currentIndex: -1,
+    positionSeconds: 0,
+    lengthSeconds: 0,
+    updatedAt: controller.getPlaybackStatus().updatedAt
+  });
+  assert.deepEqual(transitions, ['show']);
 });
 
 test('playback polling requests status, elapsed time, and media length', () => {
@@ -126,6 +153,18 @@ test('playback polling requests status, elapsed time, and media length', () => {
   assert.deepEqual(commands, ['status', 'get_time', 'get_length']);
   assert.deepEqual(controller._pendingMetricResponses, ['positionSeconds', 'lengthSeconds']);
   assert.equal(controller.pollIntervalMs, 1000);
+});
+
+test('idle polling checks VLC state without reporting black-video progress', () => {
+  const controller = new VlcController();
+  const commands = [];
+  controller.idleMode = true;
+  controller.send = command => commands.push(command);
+
+  controller._pollPlayback();
+
+  assert.deepEqual(commands, ['status']);
+  assert.deepEqual(controller._pendingMetricResponses, []);
 });
 
 test('RC responses identify the active playlist item and its progress', () => {

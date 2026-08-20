@@ -4,6 +4,7 @@ const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, shell, screen, dia
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { pathToFileURL } = require('url');
 const { io } = require('socket.io-client');
 const { VlcController } = require('./vlcController.cjs');
 const { Scheduler, nextOccurrenceStart } = require('./scheduler.cjs');
@@ -24,10 +25,11 @@ const { CmsClient, normalizeServerUrl, parseSessionExpiry } = require('./cmsClie
 const { DeviceCredentials } = require('./deviceCredentials.cjs');
 const { removeManagedAsset } = require('./managedAssetCleanup.cjs');
 const { normalizeRevision, revisionSyncAction } = require('./revisionSync.cjs');
-const { choosePlaybackDisplay } = require('./displaySelector.cjs');
+const { choosePlaybackDisplay, chooseIdleDisplay } = require('./displaySelector.cjs');
 const {
   DEFAULT_PLAYBACK_SETTINGS,
-  normalizePlaybackSettings
+  normalizePlaybackSettings,
+  resolveOutputSize
 } = require('./playbackSettings.cjs');
 const { LdgGateway } = require('./ldg.cjs');
 const CFG = require('./config.cjs');
@@ -60,9 +62,18 @@ let statusLabel = 'offline';
 let nowSchedule = null;
 let broadcastHandle = null;
 let secondDisplay = null;
+let idleDisplay = null;
 let hasDedicatedPlaybackDisplay = false;
 let hasSecondaryPlaybackDisplay = false;
+let idleDisplayPreferenceAvailable = true;
 let transitionWin = null;
+let filmOutputWin = null;
+let filmOutputDisplayId = null;
+let filmOutputHwnd = null;
+let filmOutputPromise = null;
+let idleOutputWin = null;
+let idleOutputDisplayId = null;
+let idleOutputPromise = null;
 let identifyDisplayWindows = [];
 let testOutputWin = null;
 let singleDisplayWarningVisible = false;
@@ -415,13 +426,14 @@ function createScheduleManagerWindow() {
 }
 
 function createTransitionWindow() {
-  if (!secondDisplay || !hasDedicatedPlaybackDisplay) return;
+  const targetDisplay = vlc && !vlc.idleMode ? secondDisplay : (idleDisplay || secondDisplay);
+  if (!targetDisplay || !hasSecondaryPlaybackDisplay) return;
   if (transitionWin && !transitionWin.isDestroyed()) return;
   transitionWin = new BrowserWindow({
-    x: secondDisplay.bounds.x,
-    y: secondDisplay.bounds.y,
-    width: secondDisplay.bounds.width,
-    height: secondDisplay.bounds.height,
+    x: targetDisplay.bounds.x,
+    y: targetDisplay.bounds.y,
+    width: targetDisplay.bounds.width,
+    height: targetDisplay.bounds.height,
     fullscreen: true,
     frame: false,
     skipTaskbar: true,
@@ -437,6 +449,7 @@ function createTransitionWindow() {
       devTools: false
     }
   });
+  transitionWin.__playerDisplayId = String(targetDisplay.id);
   transitionWin.removeMenu();
   try {
     transitionWin.setAlwaysOnTop(true, 'screen-saver');
@@ -448,6 +461,13 @@ function createTransitionWindow() {
 
 function showTransitionOverlay() {
   try {
+    const targetDisplay = vlc && !vlc.idleMode ? secondDisplay : (idleDisplay || secondDisplay);
+    if (
+      transitionWin && !transitionWin.isDestroyed() && targetDisplay &&
+      transitionWin.__playerDisplayId !== String(targetDisplay.id)
+    ) {
+      destroyTransitionOverlay();
+    }
     if (!transitionWin || transitionWin.isDestroyed()) createTransitionWindow();
     if (transitionWin && !transitionWin.isDestroyed()) transitionWin.showInactive();
   } catch (e) {
@@ -468,6 +488,245 @@ function destroyTransitionOverlay() {
     if (transitionWin && !transitionWin.isDestroyed()) transitionWin.destroy();
   } catch (_) {}
   transitionWin = null;
+}
+
+function resolveIdleOutputMediaPath() {
+  const candidates = [
+    path.join(process.resourcesPath || '', 'idle', 'idle-black.mp4'),
+    path.join(__dirname, 'assets', 'idle-black.mp4')
+  ];
+  return candidates.find(candidate => candidate && fs.existsSync(candidate)) || null;
+}
+
+function nativeWindowHandleToString(handle) {
+  if (!Buffer.isBuffer(handle) || handle.length < 4) {
+    throw new Error('Electron did not provide a valid native output window handle');
+  }
+  return handle.length >= 8
+    ? handle.readBigUInt64LE(0).toString()
+    : String(handle.readUInt32LE(0));
+}
+
+function filmOutputGeometry(display = secondDisplay) {
+  if (!display) return null;
+  const fullscreen = appliedPlaybackSettings.outputMode === 'fullscreen';
+  const output = resolveOutputSize(appliedPlaybackSettings, display);
+  return {
+    fullscreen,
+    x: fullscreen ? display.bounds.x : display.bounds.x + Math.max(0, Math.round((display.bounds.width - output.width) / 2)),
+    y: fullscreen ? display.bounds.y : display.bounds.y + Math.max(0, Math.round((display.bounds.height - output.height) / 2)),
+    width: fullscreen ? display.bounds.width : output.width,
+    height: fullscreen ? display.bounds.height : output.height
+  };
+}
+
+function outputRectangle(geometry) {
+  return {
+    x: geometry.x,
+    y: geometry.y,
+    width: geometry.width,
+    height: geometry.height
+  };
+}
+
+function destroyFilmOutput() {
+  filmOutputPromise = null;
+  filmOutputDisplayId = null;
+  filmOutputHwnd = null;
+  if (vlc) vlc.drawableHwnd = null;
+  try {
+    if (filmOutputWin && !filmOutputWin.isDestroyed()) filmOutputWin.destroy();
+  } catch (_) {}
+  filmOutputWin = null;
+}
+
+function hideFilmOutput() {
+  try {
+    if (filmOutputWin && !filmOutputWin.isDestroyed()) filmOutputWin.hide();
+  } catch (_) {}
+}
+
+function createFilmOutputWindow() {
+  if (!secondDisplay || isShuttingDown) return null;
+  const targetId = String(secondDisplay.id);
+  if (
+    filmOutputWin && !filmOutputWin.isDestroyed() &&
+    filmOutputDisplayId === targetId && filmOutputHwnd
+  ) {
+    if (vlc) vlc.drawableHwnd = filmOutputHwnd;
+    return filmOutputHwnd;
+  }
+
+  destroyFilmOutput();
+  const target = secondDisplay;
+  const geometry = filmOutputGeometry(target);
+  const win = new BrowserWindow({
+    x: geometry.x,
+    y: geometry.y,
+    width: geometry.width,
+    height: geometry.height,
+    frame: false,
+    fullscreen: geometry.fullscreen,
+    kiosk: geometry.fullscreen,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    focusable: false,
+    resizable: false,
+    movable: false,
+    show: false,
+    backgroundColor: '#000000',
+    autoHideMenuBar: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      devTools: false,
+      backgroundThrottling: false
+    }
+  });
+  filmOutputWin = win;
+  filmOutputDisplayId = targetId;
+  filmOutputHwnd = nativeWindowHandleToString(win.getNativeWindowHandle());
+  win.removeMenu();
+  try {
+    win.setBounds(outputRectangle(geometry), false);
+    win.setAlwaysOnTop(true, 'screen-saver');
+    win.setVisibleOnAllWorkspaces(true);
+    win.setIgnoreMouseEvents(true);
+  } catch (_) {}
+  win.on('closed', () => {
+    if (filmOutputWin === win) {
+      filmOutputWin = null;
+      filmOutputDisplayId = null;
+      filmOutputHwnd = null;
+      filmOutputPromise = null;
+      if (vlc) vlc.drawableHwnd = null;
+    }
+  });
+  filmOutputPromise = win.loadFile(path.join(__dirname, 'filmOutput.html')).catch(error => {
+    if (filmOutputWin === win) destroyFilmOutput();
+    throw error;
+  }).finally(() => {
+    if (filmOutputWin === win) filmOutputPromise = null;
+  });
+  if (vlc) vlc.drawableHwnd = filmOutputHwnd;
+  return filmOutputHwnd;
+}
+
+async function showFilmOutput() {
+  const handle = createFilmOutputWindow();
+  if (!handle || !filmOutputWin || filmOutputWin.isDestroyed()) {
+    throw new Error('Film output window is unavailable');
+  }
+  if (filmOutputPromise) await filmOutputPromise;
+  if (!filmOutputWin || filmOutputWin.isDestroyed()) throw new Error('Film output window was closed');
+  const geometry = filmOutputGeometry(secondDisplay);
+  filmOutputWin.setBounds(outputRectangle(geometry), false);
+  filmOutputWin.showInactive();
+  try {
+    filmOutputWin.setFullScreen(geometry.fullscreen);
+    filmOutputWin.setKiosk(geometry.fullscreen);
+    filmOutputWin.setAlwaysOnTop(true, 'screen-saver');
+  } catch (_) {}
+  if (vlc) vlc.drawableHwnd = filmOutputHwnd;
+  return filmOutputHwnd;
+}
+
+function destroyIdleOutput() {
+  idleOutputPromise = null;
+  idleOutputDisplayId = null;
+  try {
+    if (idleOutputWin && !idleOutputWin.isDestroyed()) idleOutputWin.destroy();
+  } catch (_) {}
+  idleOutputWin = null;
+}
+
+function hideIdleOutput() {
+  try {
+    if (idleOutputWin && !idleOutputWin.isDestroyed()) idleOutputWin.hide();
+  } catch (_) {}
+}
+
+async function showIdleOutput() {
+  if (!hasSecondaryPlaybackDisplay || !idleDisplay || isShuttingDown) {
+    destroyIdleOutput();
+    hideFilmOutput();
+    hideTransitionOverlay();
+    return;
+  }
+  const targetId = String(idleDisplay.id);
+  if (idleOutputPromise && idleOutputDisplayId === targetId) return idleOutputPromise;
+  if (idleOutputWin && !idleOutputWin.isDestroyed() && idleOutputDisplayId === targetId) {
+    idleOutputWin.showInactive();
+    hideFilmOutput();
+    hideTransitionOverlay();
+    return;
+  }
+
+  destroyIdleOutput();
+  const target = idleDisplay;
+  const mediaPath = resolveIdleOutputMediaPath();
+  if (!mediaPath) throw new Error('Bundled idle black video was not found');
+
+  idleOutputDisplayId = targetId;
+  const win = new BrowserWindow({
+    x: target.bounds.x,
+    y: target.bounds.y,
+    width: target.bounds.width,
+    height: target.bounds.height,
+    frame: false,
+    fullscreen: true,
+    kiosk: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    focusable: false,
+    resizable: false,
+    movable: false,
+    show: false,
+    backgroundColor: '#000000',
+    autoHideMenuBar: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      devTools: false,
+      backgroundThrottling: false
+    }
+  });
+  idleOutputWin = win;
+  win.removeMenu();
+  try {
+    win.setBounds(target.bounds, false);
+    win.setAlwaysOnTop(true, 'screen-saver');
+    win.setVisibleOnAllWorkspaces(true);
+    win.setIgnoreMouseEvents(true);
+  } catch (_) {}
+  win.on('closed', () => {
+    if (idleOutputWin === win) {
+      idleOutputWin = null;
+      idleOutputDisplayId = null;
+      idleOutputPromise = null;
+    }
+  });
+
+  idleOutputPromise = win.loadFile(path.join(__dirname, 'idleOutput.html'), {
+    query: { media: pathToFileURL(mediaPath).href }
+  }).then(() => {
+    if (win.isDestroyed() || idleOutputWin !== win) return;
+    win.setBounds(target.bounds, false);
+    win.showInactive();
+    try {
+      win.setFullScreen(true);
+      win.setKiosk(true);
+      win.setAlwaysOnTop(true, 'screen-saver');
+    } catch (_) {}
+    hideFilmOutput();
+    hideTransitionOverlay();
+  }).catch(error => {
+    if (idleOutputWin === win) destroyIdleOutput();
+    throw error;
+  }).finally(() => {
+    if (idleOutputWin === win) idleOutputPromise = null;
+  });
+  return idleOutputPromise;
 }
 
 async function showSingleDisplayWarning() {
@@ -520,18 +779,32 @@ async function showSingleDisplayWarning() {
 
 function refreshPlaybackDisplay() {
   const previouslySecondary = hasSecondaryPlaybackDisplay;
+  const displays = screen.getAllDisplays();
+  const primaryDisplay = screen.getPrimaryDisplay();
   const selection = choosePlaybackDisplay(
-    screen.getAllDisplays(),
-    screen.getPrimaryDisplay(),
+    displays,
+    primaryDisplay,
     appliedPlaybackSettings.displayId
   );
+  const idleSelection = chooseIdleDisplay(
+    displays,
+    selection.display,
+    appliedPlaybackSettings.idleDisplayId
+  );
   const previousDisplayId = secondDisplay && secondDisplay.id;
+  const previousIdleDisplayId = idleDisplay && idleDisplay.id;
   const nextDisplayId = selection.display && selection.display.id;
-  const displayChanged = previousDisplayId != null && previousDisplayId !== nextDisplayId;
+  const nextIdleDisplayId = idleSelection.display && idleSelection.display.id;
+  const displayChanged = (
+    (previousDisplayId != null && previousDisplayId !== nextDisplayId) ||
+    (previousIdleDisplayId != null && previousIdleDisplayId !== nextIdleDisplayId)
+  );
 
   secondDisplay = selection.display;
+  idleDisplay = idleSelection.display;
   hasDedicatedPlaybackDisplay = selection.hasDedicatedDisplay;
   hasSecondaryPlaybackDisplay = selection.hasSecondaryDisplay;
+  idleDisplayPreferenceAvailable = idleSelection.preferredAvailable;
 
   if (hasSecondaryPlaybackDisplay) {
     singleDisplayWarningAcknowledged = false;
@@ -541,19 +814,28 @@ function refreshPlaybackDisplay() {
   }
 
   destroyTransitionOverlay();
+  if (displayChanged) destroyIdleOutput();
 
   if (vlc) {
-    vlc.display = secondDisplay;
+    vlc.playbackDisplay = secondDisplay;
+    vlc.idleDisplay = idleDisplay;
+    vlc.display = vlc.idleMode ? idleDisplay : secondDisplay;
     vlc.settings = appliedPlaybackSettings;
-    vlc.terminateOnIdle = !hasDedicatedPlaybackDisplay;
-    if (displayChanged) vlc.restartOnIdle = true;
+    if (!scheduler || !scheduler.getNow()) {
+      destroyFilmOutput();
+      vlc.drawableHwnd = createFilmOutputWindow();
+    }
   }
 
-  if (hasDedicatedPlaybackDisplay && vlc) createTransitionWindow();
+  if (hasSecondaryPlaybackDisplay && vlc) createTransitionWindow();
 
   if (scheduler && !scheduler.getNow() && vlc) {
+    showTransitionOverlay();
     Promise.resolve(vlc.playIdle()).catch(error => {
       appendVlcLog(`[display] idle refresh failed: ${error.message}`);
+    });
+    Promise.resolve(showIdleOutput()).catch(error => {
+      appendVlcLog(`[display] idle output failed: ${error.message}`);
     });
   }
 
@@ -567,7 +849,6 @@ function applyPendingPlaybackSettings() {
   if (!playbackSettingsPending) return false;
   playbackSettingsPending = false;
   appliedPlaybackSettings = { ...playbackSettings };
-  if (vlc) vlc.restartOnIdle = true;
   refreshPlaybackDisplay();
   // During a direct schedule-to-schedule transition the previous occurrence
   // is still current while the finish event runs, so refreshPlaybackDisplay
@@ -577,6 +858,8 @@ function applyPendingPlaybackSettings() {
     Promise.resolve(vlc.playIdle()).catch(error => {
       appendVlcLog(`[settings] VLC reconfiguration failed: ${error.message}`);
     });
+    destroyFilmOutput();
+    vlc.drawableHwnd = createFilmOutputWindow();
   }
   return true;
 }
@@ -600,14 +883,17 @@ function destroyIdentifyDisplayWindows() {
     try { if (win && !win.isDestroyed()) win.destroy(); } catch (_) {}
   }
   identifyDisplayWindows = [];
-  if (!isShuttingDown && scheduler && !scheduler.getNow() && hasDedicatedPlaybackDisplay) {
-    showTransitionOverlay();
+  if (!isShuttingDown && scheduler && !scheduler.getNow() && hasSecondaryPlaybackDisplay) {
+    Promise.resolve(showIdleOutput()).catch(error => {
+      appendVlcLog(`[display] idle output restore failed: ${error.message}`);
+    });
   }
 }
 
 function identifyDisplays() {
   destroyIdentifyDisplayWindows();
   hideTransitionOverlay();
+  hideIdleOutput();
   const displays = screen.getAllDisplays();
   const primary = screen.getPrimaryDisplay();
   identifyDisplayWindows = displays.map((display, index) => {
@@ -640,27 +926,30 @@ function identifyDisplays() {
 function destroyTestOutput() {
   try { if (testOutputWin && !testOutputWin.isDestroyed()) testOutputWin.destroy(); } catch (_) {}
   testOutputWin = null;
-  if (!isShuttingDown && scheduler && !scheduler.getNow() && hasDedicatedPlaybackDisplay) {
-    showTransitionOverlay();
+  if (!isShuttingDown && scheduler && !scheduler.getNow() && hasSecondaryPlaybackDisplay) {
+    Promise.resolve(showIdleOutput()).catch(error => {
+      appendVlcLog(`[display] idle output restore failed: ${error.message}`);
+    });
   }
 }
 
-function showTestOutput() {
+function showTestOutput(targetDisplay = secondDisplay, title = 'PLAYER TEST OUTPUT') {
   destroyTestOutput();
-  if (!secondDisplay) throw new Error('No playback display is available');
+  if (!targetDisplay) throw new Error('No output display is available');
   hideTransitionOverlay();
+  hideIdleOutput();
   const fullscreen = appliedPlaybackSettings.outputMode === 'fullscreen';
-  const width = fullscreen ? secondDisplay.bounds.width : Math.min(1280, secondDisplay.bounds.width);
-  const height = fullscreen ? secondDisplay.bounds.height : Math.min(720, secondDisplay.bounds.height);
-  const x = fullscreen ? secondDisplay.bounds.x : secondDisplay.bounds.x + Math.round((secondDisplay.bounds.width - width) / 2);
-  const y = fullscreen ? secondDisplay.bounds.y : secondDisplay.bounds.y + Math.round((secondDisplay.bounds.height - height) / 2);
+  const width = fullscreen ? targetDisplay.bounds.width : Math.min(1280, targetDisplay.bounds.width);
+  const height = fullscreen ? targetDisplay.bounds.height : Math.min(720, targetDisplay.bounds.height);
+  const x = fullscreen ? targetDisplay.bounds.x : targetDisplay.bounds.x + Math.round((targetDisplay.bounds.width - width) / 2);
+  const y = fullscreen ? targetDisplay.bounds.y : targetDisplay.bounds.y + Math.round((targetDisplay.bounds.height - height) / 2);
   testOutputWin = new BrowserWindow({
     x, y, width, height, fullscreen, frame: !fullscreen, alwaysOnTop: true,
     skipTaskbar: true, focusable: false, resizable: false, backgroundColor: '#000000',
     webPreferences: { nodeIntegration: false, contextIsolation: true, devTools: false }
   });
-  const label = secondDisplay.label || `Display ${secondDisplay.id}`;
-  const html = `<body style="margin:0;display:grid;grid-template-rows:1fr auto;background:linear-gradient(90deg,#fff 0 14.28%,#ff0 14.28% 28.56%,#0ff 28.56% 42.84%,#0f0 42.84% 57.12%,#f0f 57.12% 71.4%,#f00 71.4% 85.68%,#00f 85.68%);font-family:Segoe UI,sans-serif"><div></div><div style="padding:22px;background:#000;color:#fff;text-align:center;font-size:24px;font-weight:700">PLAYER TEST OUTPUT · ${label}</div></body>`;
+  const label = targetDisplay.label || `Display ${targetDisplay.id}`;
+  const html = `<body style="margin:0;display:grid;grid-template-rows:1fr auto;background:linear-gradient(90deg,#fff 0 14.28%,#ff0 14.28% 28.56%,#0ff 28.56% 42.84%,#0f0 42.84% 57.12%,#f0f 57.12% 71.4%,#f00 71.4% 85.68%,#00f 85.68%);font-family:Segoe UI,sans-serif"><div></div><div style="padding:22px;background:#000;color:#fff;text-align:center;font-size:24px;font-weight:700">${title} · ${label}</div></body>`;
   testOutputWin.removeMenu();
   testOutputWin.setAlwaysOnTop(true, 'screen-saver');
   testOutputWin.setIgnoreMouseEvents(true);
@@ -1047,6 +1336,9 @@ function pushDashboard() {
       hasSecondaryDisplay: hasSecondaryPlaybackDisplay,
       outputId: secondDisplay ? secondDisplay.id : null,
       outputLabel: secondDisplay && secondDisplay.label || '',
+      idleOutputId: idleDisplay ? idleDisplay.id : null,
+      idleOutputLabel: idleDisplay && idleDisplay.label || '',
+      idleDisplayPreferenceAvailable,
       displays: playbackDisplayOptions(),
       settings: { ...playbackSettings },
       pending: playbackSettingsPending
@@ -1348,7 +1640,6 @@ ipcMain.handle('save-playback-settings', async (_event, payload) => {
     playbackSettingsPending = active;
     if (!active) {
       appliedPlaybackSettings = { ...playbackSettings };
-      if (vlc) vlc.restartOnIdle = true;
       refreshPlaybackDisplay();
     } else {
       pushDashboard();
@@ -1367,7 +1658,6 @@ ipcMain.handle('restore-playback-settings', async () => {
   playbackSettingsPending = active;
   if (!active) {
     appliedPlaybackSettings = { ...playbackSettings };
-    if (vlc) vlc.restartOnIdle = true;
     refreshPlaybackDisplay();
   } else {
     pushDashboard();
@@ -1391,6 +1681,31 @@ ipcMain.handle('test-playback-output', async () => {
   }
   try {
     showTestOutput();
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('test-idle-output', async (_event, payload) => {
+  const denied = operatorAccessError(); if (denied) return denied;
+  if (scheduler && scheduler.getNow()) {
+    return { ok: false, error: 'Test Idle Monitor is unavailable while a schedule is active.' };
+  }
+  try {
+    const previewSettings = normalizePlaybackSettings(payload);
+    const displays = screen.getAllDisplays();
+    const previewPlayback = choosePlaybackDisplay(
+      displays,
+      screen.getPrimaryDisplay(),
+      previewSettings.displayId
+    );
+    const previewIdle = chooseIdleDisplay(
+      displays,
+      previewPlayback.display,
+      previewSettings.idleDisplayId
+    );
+    showTestOutput(previewIdle.display, 'IDLE LOOP MONITOR');
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
@@ -1904,6 +2219,7 @@ async function startRuntime() {
   if (playbackWatchdog) playbackWatchdog.stop();
   playbackWatchdog = null;
   if (vlc) vlc.quit();
+  destroyFilmOutput();
   if (ldgGateway) { void ldgGateway.close(); ldgGateway = null; }
   if (!cfg.bypass) {
     ldgGateway = new LdgGateway({ playerToken: cfg.token, deviceId: cfg.deviceId });
@@ -1965,13 +2281,24 @@ async function startRuntime() {
     console.error('Media download failed', asset.id, error);
   });
   createTransitionWindow();
+  const drawableHwnd = createFilmOutputWindow();
   vlc = new VlcController({
     display: secondDisplay,
+    playbackDisplay: secondDisplay,
+    idleDisplay,
+    drawableHwnd,
     settings: appliedPlaybackSettings,
-    terminateOnIdle: !hasDedicatedPlaybackDisplay,
     transitionDuration: 500,
-    onTransitionStart: () => showTransitionOverlay(),
-    onTransitionEnd: () => hideTransitionOverlay()
+    onTransitionStart: () => {
+      showTransitionOverlay();
+      Promise.resolve(showFilmOutput()).catch(error => {
+        appendVlcLog(`[display] film output failed: ${error.message}`);
+      });
+    },
+    onTransitionEnd: () => {
+      destroyIdleOutput();
+      hideTransitionOverlay();
+    }
   });
   vlc.on('error', (e) => console.error('VLC error', e));
   vlc.on('vlc-stderr', (line) => {
@@ -2042,6 +2369,9 @@ async function startRuntime() {
     // this here as well as from VlcController makes the idle screen resilient
     // even when VLC is not running or its RC connection has just closed.
     showTransitionOverlay();
+    Promise.resolve(showIdleOutput()).catch(error => {
+      appendVlcLog(`[idle] Electron output failed: ${error.message}`);
+    });
     refreshTray();
     pushDashboard();
   });
@@ -2492,6 +2822,8 @@ function logout(notice = '') {
   if (scheduleManagerWin && !scheduleManagerWin.isDestroyed()) scheduleManagerWin.destroy();
   destroyIdentifyDisplayWindows();
   destroyTestOutput();
+  destroyIdleOutput();
+  destroyFilmOutput();
   destroyTransitionOverlay();
   if (wasBypass) resetTestCachePreservingAssets();
   else if (fs.existsSync(CACHE_PATH)) fs.unlinkSync(CACHE_PATH);

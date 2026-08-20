@@ -42,8 +42,6 @@ class VlcController extends EventEmitter {
     this.currentPlaylist = [];
     this.state = 'idle';
     this.idleMode = false;
-    this.terminateOnIdle = Boolean(options.terminateOnIdle);
-    this.restartOnIdle = false;
     this.transitionDuration = options.transitionDuration || 0;
     this.pollIntervalMs = Math.max(250, Number(options.pollIntervalMs) || 1000);
     this.resumeInputTimeoutMs = Math.max(250, Number(options.resumeInputTimeoutMs) || 3000);
@@ -59,7 +57,11 @@ class VlcController extends EventEmitter {
       lengthSeconds: 0,
       updatedAt: null
     };
-    this.display = options.display || null;
+    this.playbackDisplay = options.playbackDisplay || options.display || null;
+    this.idleDisplay = options.idleDisplay || this.playbackDisplay;
+    this.display = this.playbackDisplay;
+    this.drawableHwnd = options.drawableHwnd == null ? null : String(options.drawableHwnd);
+    this._startedDisplayId = null;
     this.settings = normalizePlaybackSettings(options.settings);
   }
 
@@ -76,6 +78,7 @@ class VlcController extends EventEmitter {
     if (this.rc && !this.rc.destroyed) { this.rc.destroy(); this.rc = null; }
     this.currentPlaylist = [];
     this.idleMode = false;
+    this._startedDisplayId = null;
     this._pendingMetricResponses = [];
     this._resetPlaybackProgress();
   }
@@ -101,6 +104,7 @@ class VlcController extends EventEmitter {
   }
 
   _setCurrentInput(mrl) {
+    if (this.idleMode) return;
     const normalizedMrl = String(mrl || '').trim();
     const index = this.currentPlaylist.findIndex(file => (
       this._toMrl(file).toLowerCase() === normalizedMrl.toLowerCase()
@@ -186,12 +190,13 @@ class VlcController extends EventEmitter {
       if (raw) {
         raw = raw.toLowerCase();
         const map = { playing: 'playing', paused: 'paused', opening: 'playing', buffering: 'playing', stopped: 'idle', ended: 'idle', error: 'error' };
-        this._setState(map[raw] || 'idle');
+        const next = map[raw] || 'idle';
+        this._setState(this.idleMode && next === 'playing' ? 'idle' : next);
         continue;
       }
       // VLC TCP RC numeric status-change notifications.
       const l = t.toLowerCase();
-      if (l.includes('play state:')) this._setState('playing');
+      if (l.includes('play state:')) this._setState(this.idleMode ? 'idle' : 'playing');
       else if (l.includes('pause state:')) this._setState('paused');
       else if (l.includes('stop state:')) this._setState('idle');
     }
@@ -248,6 +253,7 @@ class VlcController extends EventEmitter {
     const output = resolveOutputSize(settings, this.display);
     const bounds = this.display && this.display.bounds || { x: 0, y: 0, width: output.width, height: output.height };
     const fullscreen = settings.outputMode === 'fullscreen';
+    const embeddedOutput = Boolean(this.drawableHwnd);
     const x = fullscreen ? bounds.x : bounds.x + Math.max(0, Math.round((bounds.width - output.width) / 2));
     const y = fullscreen ? bounds.y : bounds.y + Math.max(0, Math.round((bounds.height - output.height) / 2));
     const ratio = aspectRatio(output.width, output.height);
@@ -259,10 +265,11 @@ class VlcController extends EventEmitter {
       '--video-y', String(y),
       '--width', String(output.width),
       '--height', String(output.height),
-      fullscreen ? '--fullscreen' : '--no-fullscreen',
+      embeddedOutput ? '--no-fullscreen' : (fullscreen ? '--fullscreen' : '--no-fullscreen'),
       '--no-video-title-show',
       '--loop'
     ];
+    if (embeddedOutput) args.push(`--drawable-hwnd=${this.drawableHwnd}`);
     if (settings.hideVlcUi) {
       args.push('--no-qt-fs-controller', '--no-video-deco');
     } else {
@@ -272,6 +279,19 @@ class VlcController extends EventEmitter {
     else if (settings.scaling === 'stretch') args.push('--autoscale', '--aspect-ratio', ratio);
     else args.push('--autoscale');
     return args;
+  }
+
+  _buildSpawnOptions(vlcDir) {
+    return {
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // Idle output is owned by Electron. During scheduled native fullscreen
+      // playback this suppresses VLC's console/interface while its video
+      // output remains visible.
+      windowsHide: this.settings.hideVlcUi,
+      cwd: vlcDir,
+      env: process.env
+    };
   }
 
   start() {
@@ -288,18 +308,11 @@ class VlcController extends EventEmitter {
       const args = this._buildStartArgs();
 
       const vlcDir = path.dirname(this.vlcPath);
-      const env = process.env;
-
       this.emit('vlc-log', `--- start attempt at ${new Date().toISOString()} ---`);
 
       try {
-        this.proc = spawn(this.vlcPath, args, {
-          detached: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          windowsHide: this.settings.hideVlcUi,
-          cwd: vlcDir,
-          env: env
-        });
+        this.proc = spawn(this.vlcPath, args, this._buildSpawnOptions(vlcDir));
+        this._startedDisplayId = this.display && String(this.display.id);
       } catch (err) {
         this._setState('error');
         return reject(err);
@@ -352,6 +365,10 @@ class VlcController extends EventEmitter {
 
   _pollPlayback() {
     this.send('status');
+    if (this.idleMode) {
+      this._pendingMetricResponses = [];
+      return;
+    }
     this._pendingMetricResponses = ['positionSeconds', 'lengthSeconds'];
     this.send('get_time');
     this.send('get_length');
@@ -363,9 +380,21 @@ class VlcController extends EventEmitter {
 
   async replacePlaylist(filePaths, options = {}) {
     if (!Array.isArray(filePaths)) filePaths = [];
+    const nextIdleMode = Boolean(options.idle);
+    this.idleMode = nextIdleMode;
+
+    const targetDisplay = nextIdleMode
+      ? (this.idleDisplay || this.playbackDisplay || this.display)
+      : (this.playbackDisplay || this.display);
+    const targetDisplayId = targetDisplay && String(targetDisplay.id);
+    const outputDisplayChanged = Boolean(
+      this.proc && this._startedDisplayId != null &&
+      targetDisplayId != null && this._startedDisplayId !== targetDisplayId
+    );
+
+    if (targetDisplay) this.display = targetDisplay;
     this.currentPlaylist = filePaths.slice();
     this._resetPlaybackProgress(filePaths[0] || null, filePaths.length ? 0 : -1);
-    this.idleMode = !!options.idle;
     const shouldLoop = options.loop !== false;
 
     const useTransition = this.transitionDuration > 0;
@@ -373,6 +402,8 @@ class VlcController extends EventEmitter {
       this.onTransitionStart();
       await sleep(this.transitionDuration);
     }
+
+    if (outputDisplayChanged) await this._stopForOutputChange();
 
     if (!this.ready) await this.start();
     // If the player is paused, the old RC "play" command means resume and the
@@ -398,7 +429,7 @@ class VlcController extends EventEmitter {
     if (filePaths.length) this.send('play');
     await sleep(300);
     this.send('status');
-    if (filePaths.length) this._setState('playing');
+    if (filePaths.length) this._setState(this.idleMode ? 'idle' : 'playing');
 
     if (useTransition && this.onTransitionEnd) {
       await sleep(this.transitionDuration);
@@ -493,43 +524,33 @@ class VlcController extends EventEmitter {
   }
 
   async playIdle() {
-    // Keep a native black Electron window above VLC while no schedule is
-    // active. This avoids VLC's cone/playlist UI and removes the runtime
-    // FFmpeg dependency that was previously used to generate an idle video.
+    // Electron owns the dedicated idle video window. VLC is fully stopped so
+    // no Qt/console/logo window can leak onto either monitor while idle.
     this.idleMode = true;
     this.currentPlaylist = [];
     this._pendingMetricResponses = [];
     this._resetPlaybackProgress();
-
     if (this.onTransitionStart) this.onTransitionStart();
-
-    if (this.terminateOnIdle || this.restartOnIdle) {
-      this.restartOnIdle = false;
-      this._stopPoll();
-      this.send('quit');
-      const idleProc = this.proc;
-      this.proc = null;
-      this.ready = false;
-      if (this.rc && !this.rc.destroyed) this.rc.destroy();
-      this.rc = null;
-      if (idleProc) {
-        try { idleProc.kill(); } catch (_) {}
-      }
-      this._setState('idle');
-      return;
-    }
-
-    // TCP preserves command order, so the idle switch can happen immediately.
-    // The overlay is already visible while VLC clears the previous film.
-    if (this.ready) {
-      this.send('stop');
-      this.send('clear');
-      this.send('status');
-    }
+    await this._stopForOutputChange();
     this._setState('idle');
   }
 
   isPlaying() { return this.state === 'playing'; }
+
+  async _stopForOutputChange() {
+    this._stopPoll();
+    this.send('quit');
+    const previousProc = this.proc;
+    this.proc = null;
+    this.ready = false;
+    this._startedDisplayId = null;
+    if (this.rc && !this.rc.destroyed) this.rc.destroy();
+    this.rc = null;
+    if (previousProc) {
+      try { previousProc.kill(); } catch (_) {}
+    }
+    await sleep(250);
+  }
 
   async quit() {
     this._stopPoll();

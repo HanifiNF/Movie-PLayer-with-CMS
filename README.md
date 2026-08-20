@@ -294,7 +294,10 @@ npm start
 Note: during `npm start` VLC is loaded from `vlc-portable/` relative to the
 source folder. After `npm run build` VLC is loaded from
 `process.resourcesPath/vlc/vlc.exe` (bundled). `vlcController.cjs` checks
-both locations.
+both locations. Idle output uses the bundled text-free
+`assets/idle-black.mp4`; packaged builds copy it to
+`process.resourcesPath/idle/idle-black.mp4`. FFmpeg is not required at
+runtime.
 
 ## Playback Settings
 
@@ -303,12 +306,27 @@ Settings are stored locally in `playback-settings.json` under Electron's
 `userData` directory and never alter CMS pairing credentials. Auto display
 selection uses a non-primary Windows display when available. If only one
 display exists, idle mode closes VLC so the operator desktop remains usable.
+With multiple displays, **Idle loop monitor** can follow the film output or
+target another connected monitor. A disconnected saved idle monitor falls
+back to the current film output monitor. Electron loops the bundled black
+video in a dedicated kiosk window covering the selected display while no
+schedule is active. VLC is stopped during idle so its Qt window, console,
+logo, and taskbar entry cannot leak onto the operator display. The idle window
+remains visible through the playback startup transition and is removed only
+after scheduled VLC output is ready.
 
 **Hide VLC interface** is enabled by default. It starts VLC with the `dummy`
 interface, keeps the localhost RC interface available, and hides the Qt menu,
-fullscreen controller, video title, window decoration, and console. Disabling
-it restores the Qt interface for diagnostics. Settings saved during playback
-are applied at the next safe schedule boundary.
+fullscreen controller, video title, window decoration, and console during
+scheduled playback. Disabling it restores the Qt interface for diagnostics.
+It does not affect the Electron-owned idle loop. Settings saved during
+playback are applied at the next safe schedule boundary.
+
+Scheduled video is rendered by VLC into a native Electron output window using
+VLC's `drawable-hwnd` output. Electron owns that window's monitor, bounds,
+fullscreen/kiosk state, and taskbar behavior; VLC continues to own decoding,
+audio, playlists, seeking, and RC control. This prevents VLC native fullscreen
+from moving scheduled films back to the Windows primary display.
 
 ## Notes
 

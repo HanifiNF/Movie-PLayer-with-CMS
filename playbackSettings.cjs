@@ -2,6 +2,7 @@
 
 const DEFAULT_PLAYBACK_SETTINGS = Object.freeze({
   displayId: null,
+  idleDisplayId: null,
   outputMode: 'fullscreen',
   resolution: 'native',
   customWidth: 1920,
@@ -31,9 +32,13 @@ function normalizePlaybackSettings(input = {}) {
   const displayId = source.displayId == null || source.displayId === '' || source.displayId === 'auto'
     ? null
     : String(source.displayId);
+  const idleDisplayId = source.idleDisplayId == null || source.idleDisplayId === '' || source.idleDisplayId === 'same'
+    ? null
+    : String(source.idleDisplayId);
 
   return {
     displayId,
+    idleDisplayId,
     outputMode,
     resolution,
     customWidth: boundedInteger(source.customWidth, 1920, 320, 7680),
