@@ -45,6 +45,7 @@ class VlcController extends EventEmitter {
     this.transitionDuration = options.transitionDuration || 0;
     this.pollIntervalMs = Math.max(250, Number(options.pollIntervalMs) || 1000);
     this.resumeInputTimeoutMs = Math.max(250, Number(options.resumeInputTimeoutMs) || 3000);
+    this.existingRcTimeoutMs = Math.max(250, Number(options.existingRcTimeoutMs) || 1500);
     this.onTransitionStart = options.onTransitionStart || null;
     this.onTransitionEnd = options.onTransitionEnd || null;
     this._pollHandle = null;
@@ -62,6 +63,7 @@ class VlcController extends EventEmitter {
     this.display = this.playbackDisplay;
     this.drawableHwnd = options.drawableHwnd == null ? null : String(options.drawableHwnd);
     this._startedDisplayId = null;
+    this._startPromise = null;
     this.settings = normalizePlaybackSettings(options.settings);
   }
 
@@ -294,16 +296,47 @@ class VlcController extends EventEmitter {
     };
   }
 
-  start() {
-    if (this.proc) {
-      try {
-        process.kill(this.proc.pid, 0);
-        return this._waitForRc();
-      } catch (_) {
-        this._resetVlc();
-        this._setState('idle');
-      }
+  _isOwnedProcessAlive() {
+    if (!this.proc || !this.proc.pid) return false;
+    try {
+      process.kill(this.proc.pid, 0);
+      return true;
+    } catch (_) {
+      return false;
     }
+  }
+
+  start() {
+    if (this._startPromise) return this._startPromise;
+    this._startPromise = this._startWithRecovery()
+      .finally(() => { this._startPromise = null; });
+    return this._startPromise;
+  }
+
+  async _startWithRecovery() {
+    if (this._isOwnedProcessAlive()) {
+      try {
+        await this._waitForRc(this.existingRcTimeoutMs);
+        return;
+      } catch (error) {
+        this.emit('vlc-log', `[recovery] owned VLC process has no RC endpoint; replacing it (${error.message})`);
+        await this._stopForOutputChange();
+      }
+    } else if (this.proc) {
+      this._resetVlc();
+      this._setState('idle');
+    }
+
+    try {
+      await this._spawnVlc();
+    } catch (error) {
+      await this._stopForOutputChange();
+      this._setState('error');
+      throw error;
+    }
+  }
+
+  _spawnVlc() {
     return new Promise((resolve, reject) => {
       const args = this._buildStartArgs();
 
@@ -430,6 +463,12 @@ class VlcController extends EventEmitter {
     await sleep(300);
     this.send('status');
     if (filePaths.length) this._setState(this.idleMode ? 'idle' : 'playing');
+
+    const startIndex = Math.max(0, Math.floor(Number(options.startIndex) || 0));
+    const startPositionSeconds = Math.max(0, Math.floor(Number(options.startPositionSeconds) || 0));
+    if (filePaths.length && !this.idleMode && (startIndex > 0 || startPositionSeconds > 0)) {
+      await this.resumePlaylistAt(startIndex, startPositionSeconds);
+    }
 
     if (useTransition && this.onTransitionEnd) {
       await sleep(this.transitionDuration);

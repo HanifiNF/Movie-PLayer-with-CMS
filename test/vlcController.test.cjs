@@ -109,6 +109,59 @@ test('replacePlaylist enqueues every item before starting the first one', async 
   ]);
 });
 
+test('replacePlaylist seeks to the requested late-join playlist position', async () => {
+  const controller = new VlcController();
+  const commands = [];
+  controller.ready = true;
+  controller.send = command => {
+    commands.push(command);
+    if (command === 'goto 2') {
+      setTimeout(() => controller._setCurrentInput('file:///C:/media/film%20B.mp4'), 10);
+    }
+    return true;
+  };
+
+  await controller.replacePlaylist([
+    'C:\\media\\film A.mp4',
+    'C:\\media\\film B.mp4'
+  ], { loop: false, startIndex: 1, startPositionSeconds: 42 });
+
+  assert.deepEqual(commands, [
+    'clear',
+    'enqueue file:///C:/media/film%20A.mp4',
+    'enqueue file:///C:/media/film%20B.mp4',
+    'loop off',
+    'play',
+    'status',
+    'goto 2',
+    'seek 42',
+    'status',
+    'get_time',
+    'get_length'
+  ]);
+});
+
+test('start replaces an owned VLC process whose RC endpoint never becomes ready', async () => {
+  const controller = new VlcController({ existingRcTimeoutMs: 250 });
+  let stopped = 0;
+  let spawned = 0;
+  controller.proc = { pid: 4321 };
+  controller._isOwnedProcessAlive = () => true;
+  controller._waitForRc = async () => { throw new Error('RC TCP not available'); };
+  controller._stopForOutputChange = async () => {
+    stopped += 1;
+    controller.proc = null;
+    controller.ready = false;
+  };
+  controller._spawnVlc = async () => { spawned += 1; };
+
+  await controller.start();
+
+  assert.equal(stopped, 1);
+  assert.equal(spawned, 1);
+  assert.equal(controller._startPromise, null);
+});
+
 test('idle mode hands output to Electron and fully stops VLC', async () => {
   const transitions = [];
   const commands = [];

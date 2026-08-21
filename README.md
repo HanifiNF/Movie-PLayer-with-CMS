@@ -299,6 +299,25 @@ both locations. Idle output uses the bundled text-free
 `process.resourcesPath/idle/idle-black.mp4`. FFmpeg is not required at
 runtime.
 
+To test more than one Studio installation on the same development PC, start
+each instance with a different Electron user-data profile:
+
+```powershell
+$env:PLAYER_USER_DATA="$env:TEMP\wir-player-studio-1"
+npm start
+```
+
+Use another terminal for the second Studio:
+
+```powershell
+$env:PLAYER_USER_DATA="$env:TEMP\wir-player-studio-2"
+npm start
+```
+
+Each development profile receives a stable private VLC RC port automatically.
+Launching the same profile twice focuses its existing Player instead of
+starting two Players that compete for the same credentials and VLC process.
+
 ## Playback Settings
 
 Authorized operators can open **Playback Settings** from the Player sidebar.
@@ -338,8 +357,10 @@ process and hidden from the UI in packaged builds.
 ## Notes
 
 - `VLC`'s `--key-quit` and `--key-fullscreen` are unbound so the operator
-  cannot accidentally close VLC with the keyboard. The player manages VLC
-  through the RC interface on `127.0.0.1:4212` exclusively.
+  cannot accidentally close VLC with the keyboard. A normal production
+  installation manages VLC through the RC interface on `127.0.0.1:4212`.
+  Source-development profiles that set `PLAYER_USER_DATA` receive isolated
+  localhost RC ports so multiple Studio profiles can be tested on one PC.
 - Pairing lifecycle is controlled by the CMS administrator. Operators cannot
   revoke a Player from the local dashboard.
 - Production builds never expose Test Mode. For source-only development, set

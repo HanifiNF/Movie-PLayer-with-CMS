@@ -144,6 +144,34 @@ function selectActiveOccurrence(schedules, now = new Date(), isFinished = () => 
   return active[0] || null;
 }
 
+function resolveTimelineTarget(files, occurrenceStart, now = new Date(), loop = false) {
+  const startMs = occurrenceStart instanceof Date ? occurrenceStart.getTime() : new Date(occurrenceStart).getTime();
+  const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(nowMs)) return null;
+
+  const durations = (Array.isArray(files) ? files : []).map(file => Math.max(0, Number(file.durationMs) || 0));
+  const totalMs = durations.reduce((sum, duration) => sum + duration, 0);
+  const elapsedMs = Math.max(0, nowMs - startMs);
+  // Sub-second startup differences do not warrant a disruptive seek.
+  if (!durations.length || totalMs <= 0 || elapsedMs < 1000) return null;
+  if (!loop && elapsedMs >= totalMs) return null;
+
+  let cursorMs = loop ? elapsedMs % totalMs : elapsedMs;
+  for (let index = 0; index < durations.length; index += 1) {
+    const durationMs = durations[index];
+    if (durationMs <= 0) continue;
+    if (cursorMs < durationMs) {
+      return {
+        currentIndex: index,
+        positionSeconds: Math.max(0, Math.floor(cursorMs / 1000)),
+        elapsedMs
+      };
+    }
+    cursorMs -= durationMs;
+  }
+  return null;
+}
+
 class Scheduler extends EventEmitter {
   constructor(vlc, options = {}) {
     super();
@@ -253,13 +281,13 @@ class Scheduler extends EventEmitter {
 
       const previous = this.schedules.find(item => item.id === this.currentScheduleId);
       if (previous) this.emit('finish', { schedule: previous });
-      this._activate(active.schedule, active.start, active.duration);
+      this._activate(active.schedule, active.start, active.duration, now);
     } finally {
       this._reconciling = false;
     }
   }
 
-  _activate(schedule, startAt, duration) {
+  _activate(schedule, startAt, duration, now = startAt) {
     this._idlePlaying = false;
     this._setCurrent(
       schedule.id,
@@ -276,12 +304,21 @@ class Scheduler extends EventEmitter {
     if (unavailableFiles.length) {
       this.emit('media-unavailable', { schedule, files: unavailableFiles });
     }
-    const files = readyFiles
-      .map(file => file.playbackSource || file.localPath || file.path)
-      .filter(Boolean);
+    const playableItems = readyFiles
+      .map(file => ({ file, source: file.playbackSource || file.localPath || file.path }))
+      .filter(item => Boolean(item.source));
+    const files = playableItems.map(item => item.source);
+    const playableFiles = playableItems.map(item => item.file);
+    this.currentFiles = playableFiles;
 
     if (files.length) {
-      Promise.resolve(this.vlc.replacePlaylist(files, { loop: schedule.loop !== false }))
+      const timelineTarget = resolveTimelineTarget(playableFiles, startAt, now, schedule.loop !== false);
+      const playbackOptions = { loop: schedule.loop !== false };
+      if (timelineTarget) {
+        playbackOptions.startIndex = timelineTarget.currentIndex;
+        playbackOptions.startPositionSeconds = timelineTarget.positionSeconds;
+      }
+      Promise.resolve(this.vlc.replacePlaylist(files, playbackOptions))
         .catch(error => this.emit('error', error));
     } else {
       Promise.resolve(this.vlc.playIdle()).catch(error => this.emit('error', error));
@@ -403,5 +440,6 @@ module.exports = {
   Scheduler,
   compareOccurrences,
   nextOccurrenceStart,
+  resolveTimelineTarget,
   selectActiveOccurrence
 };

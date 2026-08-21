@@ -32,6 +32,7 @@ const {
   resolveOutputSize
 } = require('./playbackSettings.cjs');
 const { LdgGateway } = require('./ldg.cjs');
+const { resolveVlcRcPort } = require('./runtimeIsolation.cjs');
 const CFG = require('./config.cjs');
 
 if (process.env.PLAYER_USER_DATA) {
@@ -43,6 +44,24 @@ const INSTALLATION_PATH = path.join(DATA_DIR, 'installation.json');
 const CACHE_PATH = path.join(DATA_DIR, 'schedules.json');
 const DURATION_CACHE_PATH = path.join(DATA_DIR, 'media-durations.json');
 const PLAYBACK_SETTINGS_PATH = path.join(DATA_DIR, 'playback-settings.json');
+const VLC_RC_PORT = resolveVlcRcPort(
+  CFG.VLC_RC_PORT,
+  DATA_DIR,
+  process.env.PLAYER_VLC_RC_PORT,
+  Boolean(process.env.PLAYER_USER_DATA)
+);
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
+else {
+  app.on('second-instance', () => {
+    const win = dashboardWin && !dashboardWin.isDestroyed() ? dashboardWin : loginWin;
+    if (!win || win.isDestroyed()) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  });
+}
 
 let tray = null;
 let loginWin = null;
@@ -105,6 +124,9 @@ let appliedAssetRevision = null;
 let appliedScheduleRevision = null;
 let heartbeatRevisionSyncPromise = null;
 let pendingRemovalRetry = false;
+let playbackShutdownPromise = null;
+let quitPromise = null;
+let allowAppQuit = false;
 let assetSyncState = { status: 'idle', lastSyncedAt: null, lastError: null, summary: null };
 let remoteDownloadState = { status: 'idle', assignedCount: 0, updatedAt: null, lastError: null, items: [] };
 const downloadProgressBroadcastAt = new Map();
@@ -261,9 +283,9 @@ function buildTrayMenu() {
     }
 });
   items.push({ label: 'Open Config Folder', click: () => { shell.openPath(DATA_DIR); } });
-  items.push({ label: 'Logout', click: () => logout() });
+  items.push({ label: 'Logout', click: () => { void logout(); } });
   items.push({ type: 'separator' });
-  items.push({ label: 'Quit Player', click: () => quitApp() });
+  items.push({ label: 'Quit Player', click: () => { void quitApp(); } });
   return Menu.buildFromTemplate(items);
 }
 
@@ -2221,17 +2243,50 @@ ipcMain.handle('add-test-schedule', async (_e, payload) => {
 
 ipcMain.handle('logout', async () => {
   if (!cfg || !cfg.bypass) return { ok: false, error: 'Pairing can only be revoked by a CMS administrator.' };
-  logout();
+  await logout();
   return { ok: true };
 });
 
 ipcMain.handle('quit', async () => {
-  quitApp();
+  await quitApp();
   return { ok: true };
 });
 
+async function shutdownPlaybackComponents() {
+  if (playbackShutdownPromise) return playbackShutdownPromise;
+  playbackShutdownPromise = (async () => {
+    const oldWatchdog = playbackWatchdog;
+    playbackWatchdog = null;
+    if (oldWatchdog) oldWatchdog.stop();
+
+    const oldScheduler = scheduler;
+    scheduler = null;
+    if (oldScheduler) oldScheduler.clear();
+
+    const oldVlc = vlc;
+    vlc = null;
+    if (oldVlc) await oldVlc.quit().catch(error => {
+      appendVlcLog(`[shutdown] VLC close failed: ${error.message || error}`);
+    });
+
+    const oldGateway = ldgGateway;
+    ldgGateway = null;
+    if (oldGateway) await oldGateway.close().catch(error => {
+      appendVlcLog(`[shutdown] LDG gateway close failed: ${error.message || error}`);
+    });
+
+    destroyIdentifyDisplayWindows();
+    destroyTestOutput();
+    destroyIdleOutput();
+    destroyFilmOutput();
+    destroyTransitionOverlay();
+  })().finally(() => { playbackShutdownPromise = null; });
+  return playbackShutdownPromise;
+}
+
 async function startRuntime() {
   if (!cfg || !cfg.token) return;
+  await shutdownPlaybackComponents();
   remoteDownloadState = { status: 'idle', assignedCount: 0, updatedAt: null, lastError: null, items: [] };
   downloadProgressBroadcastAt.clear();
   try {
@@ -2245,11 +2300,6 @@ async function startRuntime() {
   mediaHealthMonitor = null;
   mediaHealthSnapshot = null;
   mediaHealthCheck = null;
-  if (playbackWatchdog) playbackWatchdog.stop();
-  playbackWatchdog = null;
-  if (vlc) vlc.quit();
-  destroyFilmOutput();
-  if (ldgGateway) { void ldgGateway.close(); ldgGateway = null; }
   if (!cfg.bypass) {
     ldgGateway = new LdgGateway({ playerToken: cfg.token, deviceId: cfg.deviceId });
     ldgGateway.onError = error => appendVlcLog(`[ldg] playback gateway failed: ${error.message || error}`);
@@ -2312,6 +2362,7 @@ async function startRuntime() {
   createTransitionWindow();
   const drawableHwnd = createFilmOutputWindow();
   vlc = new VlcController({
+    rcPort: VLC_RC_PORT,
     display: secondDisplay,
     playbackDisplay: secondDisplay,
     idleDisplay,
@@ -2561,7 +2612,7 @@ function startCmsConnection() {
     appendVlcLog(`[cms] authentication failed: ${cmsState.lastError}`);
     if (error && error.code === 'invalid_player_token') {
       const notice = 'This Player was revoked by the CMS administrator. Pairing is required before it can be used again.';
-      logout(notice);
+      void logout(notice);
       if (loginWin && !loginWin.isDestroyed()) {
         void dialog.showMessageBox(loginWin, { type: 'warning', title: 'Player revoked', message: 'Player revoked', detail: notice, buttons: ['Continue'] });
       }
@@ -2831,7 +2882,7 @@ function mergeAssets(current, incoming) {
   return Array.from(byId.values());
 }
 
-function logout(notice = '') {
+async function logout(notice = '') {
   pairingNotice = notice;
   isShuttingDown = true;
   setupSession = null;
@@ -2843,17 +2894,9 @@ function logout(notice = '') {
   socket = null;
   stopCmsConnection();
   if (broadcastHandle) { clearInterval(broadcastHandle); broadcastHandle = null; }
-  if (playbackWatchdog) { playbackWatchdog.stop(); playbackWatchdog = null; }
-  if (scheduler) { scheduler.clear(); scheduler = null; }
-  if (vlc) { vlc.quit(); vlc = null; }
-  if (ldgGateway) { void ldgGateway.close(); ldgGateway = null; }
+  await shutdownPlaybackComponents();
   if (scheduleAdderWin && !scheduleAdderWin.isDestroyed()) scheduleAdderWin.destroy();
   if (scheduleManagerWin && !scheduleManagerWin.isDestroyed()) scheduleManagerWin.destroy();
-  destroyIdentifyDisplayWindows();
-  destroyTestOutput();
-  destroyIdleOutput();
-  destroyFilmOutput();
-  destroyTransitionOverlay();
   if (wasBypass) resetTestCachePreservingAssets();
   else if (fs.existsSync(CACHE_PATH)) fs.unlinkSync(CACHE_PATH);
   saveConfig(null);
@@ -2864,18 +2907,18 @@ function logout(notice = '') {
 }
 
 function quitApp() {
+  if (quitPromise) return quitPromise;
   isShuttingDown = true;
-  try { if (socket) socket.disconnect(); } catch (_) {}
-  stopCmsConnection();
-  if (broadcastHandle) { clearInterval(broadcastHandle); broadcastHandle = null; }
-  if (playbackWatchdog) { playbackWatchdog.stop(); playbackWatchdog = null; }
-  if (scheduler) scheduler.clear();
-  if (vlc) vlc.quit();
-  if (ldgGateway) { void ldgGateway.close(); ldgGateway = null; }
-  destroyIdentifyDisplayWindows();
-  destroyTestOutput();
-  destroyTransitionOverlay();
-  app.quit();
+  quitPromise = (async () => {
+    try { if (socket) socket.disconnect(); } catch (_) {}
+    socket = null;
+    stopCmsConnection();
+    if (broadcastHandle) { clearInterval(broadcastHandle); broadcastHandle = null; }
+    await shutdownPlaybackComponents();
+    allowAppQuit = true;
+    app.quit();
+  })();
+  return quitPromise;
 }
 
 app.on('ready', () => {
@@ -2923,30 +2966,19 @@ app.on('window-all-closed', (e) => {
   e.preventDefault();
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', event => {
+  if (!allowAppQuit) {
+    event.preventDefault();
+    void quitApp();
+    return;
+  }
   isShuttingDown = true;
   try { if (socket) socket.disconnect(); } catch (_) {}
   stopCmsConnection();
-  if (playbackWatchdog) { playbackWatchdog.stop(); playbackWatchdog = null; }
-  if (scheduler) scheduler.clear();
-  if (vlc) vlc.quit();
-  if (ldgGateway) { void ldgGateway.close(); ldgGateway = null; }
-  destroyIdentifyDisplayWindows();
-  destroyTestOutput();
-  destroyTransitionOverlay();
 });
 
 app.on('will-quit', () => {
   isShuttingDown = true;
-  try { if (socket) socket.disconnect(); } catch (_) {}
-  stopCmsConnection();
-  if (playbackWatchdog) { playbackWatchdog.stop(); playbackWatchdog = null; }
-  if (scheduler) scheduler.clear();
-  if (vlc) vlc.quit();
-  if (ldgGateway) { void ldgGateway.close(); ldgGateway = null; }
-  destroyIdentifyDisplayWindows();
-  destroyTestOutput();
-  destroyTransitionOverlay();
 });
 
 process.on('uncaughtException', (err) => {

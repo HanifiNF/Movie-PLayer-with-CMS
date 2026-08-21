@@ -5,6 +5,7 @@ const test = require('node:test');
 const {
   Scheduler,
   nextOccurrenceStart,
+  resolveTimelineTarget,
   selectActiveOccurrence
 } = require('../scheduler.cjs');
 
@@ -157,4 +158,62 @@ test('scheduler skips unavailable media and exposes the actual playback playlist
   assert.deepEqual(scheduler.getNow().files.map(file => file.title), ['Ready']);
   assert.deepEqual(unavailable.map(file => file.title), ['Missing']);
   scheduler.clear();
+});
+
+test('late join resolves the active playlist item and elapsed position', () => {
+  const target = resolveTimelineTarget([
+    { durationMs: 60000 },
+    { durationMs: 120000 }
+  ], new Date('2026-08-21T10:00:00.000Z'), new Date('2026-08-21T10:01:30.000Z'), false);
+
+  assert.deepEqual(target, {
+    currentIndex: 1,
+    positionSeconds: 30,
+    elapsedMs: 90000
+  });
+});
+
+test('late join wraps elapsed playback when playlist looping is enabled', () => {
+  const target = resolveTimelineTarget([
+    { durationMs: 60000 },
+    { durationMs: 120000 }
+  ], new Date('2026-08-21T10:00:00.000Z'), new Date('2026-08-21T10:04:00.000Z'), true);
+
+  assert.deepEqual(target, {
+    currentIndex: 1,
+    positionSeconds: 0,
+    elapsedMs: 240000
+  });
+});
+
+test('scheduler forwards a late-join target to VLC during active reconciliation', () => {
+  let received = null;
+  const vlc = {
+    replacePlaylist(files, options) { received = { files, options }; },
+    playIdle() {},
+    clear() {}
+  };
+  const scheduler = new Scheduler(vlc);
+  const active = schedule({
+    id: 'late-join',
+    loop: false,
+    files: [
+      { path: 'C:\\media\\opening.mp4', durationMs: 60000 },
+      { path: 'C:\\media\\feature.mp4', durationMs: 120000 }
+    ]
+  });
+
+  scheduler.schedules = [active];
+  scheduler._activate(
+    active,
+    new Date('2026-08-21T10:00:00.000Z'),
+    180000,
+    new Date('2026-08-21T10:01:30.000Z')
+  );
+  scheduler.clear();
+
+  assert.deepEqual(received, {
+    files: ['C:\\media\\opening.mp4', 'C:\\media\\feature.mp4'],
+    options: { loop: false, startIndex: 1, startPositionSeconds: 30 }
+  });
 });
