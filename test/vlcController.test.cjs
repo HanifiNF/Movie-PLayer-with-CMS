@@ -143,6 +143,23 @@ test('idle mode hands output to Electron and fully stops VLC', async () => {
   assert.deepEqual(transitions, ['show']);
 });
 
+test('recovery test terminates only the controller-owned VLC process', () => {
+  const controller = new VlcController();
+  let kills = 0;
+  controller.proc = { pid: 4321, kill: () => { kills += 1; return true; } };
+
+  assert.deepEqual(controller.simulateCrashForRecoveryTest(), { pid: 4321 });
+  assert.equal(kills, 1);
+});
+
+test('recovery test refuses to run without a controller-owned VLC process', () => {
+  const controller = new VlcController();
+  assert.throws(
+    () => controller.simulateCrashForRecoveryTest(),
+    /VLC process is not running/
+  );
+});
+
 test('playback polling requests status, elapsed time, and media length', () => {
   const controller = new VlcController();
   const commands = [];

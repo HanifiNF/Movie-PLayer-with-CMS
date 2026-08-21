@@ -428,8 +428,9 @@
             <aside class="card settings-card">
               <h3>Display tools</h3>
               <p>Use these tools while no schedule is active to confirm the selected cinema output.</p>
-              <div class="settings-actions"><button id="btnIdentifyDisplays" class="btn" type="button">Identify Displays</button><button id="btnTestOutput" class="btn" type="button">Test Film Output (5 seconds)</button><button id="btnTestIdleOutput" class="btn" type="button">Test Idle Monitor (5 seconds)</button><button id="btnRestorePlaybackSettings" class="btn danger" type="button">Restore Defaults</button></div>
+              <div class="settings-actions"><button id="btnIdentifyDisplays" class="btn" type="button">Identify Displays</button><button id="btnTestOutput" class="btn" type="button">Test Film Output (5 seconds)</button><button id="btnTestIdleOutput" class="btn" type="button">Test Idle Monitor (5 seconds)</button><button id="btnTestRecovery" class="btn danger" type="button">Test VLC Recovery</button><button id="btnRestorePlaybackSettings" class="btn danger" type="button">Restore Defaults</button></div>
               <div class="setting-help" style="margin-top:14px">Test Output never starts VLC and is blocked during scheduled playback.</div>
+              <div id="recoveryTestStatus" class="settings-status"></div>
             </aside>
           </div>
         </section>
@@ -454,7 +455,7 @@
     const pauseIcon = '<rect class="solid" x="6" y="4" width="4" height="16"/><rect class="solid" x="14" y="4" width="4" height="16"/>';
     const playIcon = '<path class="solid" d="M7 4l13 8-13 8z"/>';
     let activeView = 'home';
-    let state = { status: 'offline', deviceId: '', device: { id: '', name: 'Player', location: '', timezone: '' }, display: { mode: 'single', hasDedicatedDisplay: false }, appVersion: '1.0.0', serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, refresh: { status: 'idle', lastRefreshedAt: null, lastError: null }, remoteDownloads: { status: 'idle', assignedCount: 0, items: [] }, operator: { unlocked: false, user: null }, now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
+    let state = { status: 'offline', deviceId: '', device: { id: '', name: 'Player', location: '', timezone: '' }, display: { mode: 'single', hasDedicatedDisplay: false }, appVersion: '1.0.0', development: false, serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, refresh: { status: 'idle', lastRefreshedAt: null, lastError: null }, remoteDownloads: { status: 'idle', assignedCount: 0, items: [] }, operator: { unlocked: false, user: null }, now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
     let assetState = { loaded: false, loading: false, error: '', directory: '', items: [] };
     let jumpPanelOpen = false;
     let jumpMaxSeconds = 0;
@@ -464,6 +465,7 @@
     let playbackSettingsDirty = false;
     let playbackSettingsStatus = '';
     let playbackSettingsError = false;
+    let recoveryTestStartedAt = 0;
 
     function fmtCountdown(ms) {
       if (ms == null || isNaN(ms)) return '';
@@ -741,6 +743,43 @@
       };
     }
 
+    function renderRecoveryTestState() {
+      const button = $('btnTestRecovery');
+      const note = $('recoveryTestStatus');
+      const development = Boolean(state.development);
+      button.style.display = development ? '' : 'none';
+      note.style.display = development ? '' : 'none';
+      if (!development) return;
+      const watchdog = state.watchdog || {};
+      const busy = ['degraded', 'recovering', 'waiting'].includes(watchdog.state);
+      button.disabled = !state.now || busy;
+      if (!state.now) {
+        note.className = 'settings-status';
+        note.textContent = 'Start a schedule to enable the recovery test. This control is never included in packaged builds.';
+      } else if (watchdog.state === 'degraded') {
+        note.className = 'settings-status';
+        note.textContent = 'VLC failure detected. Waiting for the confirmation check...';
+      } else if (watchdog.state === 'recovering') {
+        note.className = 'settings-status';
+        note.textContent = `Recovery attempt ${watchdog.attempts}/${watchdog.maxAttempts} is running...`;
+      } else if (watchdog.state === 'waiting') {
+        note.className = 'settings-status error';
+        note.textContent = `Recovery attempt failed. The watchdog will retry.${watchdog.lastError ? ` ${watchdog.lastError}` : ''}`;
+      } else if (watchdog.state === 'exhausted') {
+        note.className = 'settings-status error';
+        note.textContent = `Recovery exhausted after ${watchdog.attempts} attempts.${watchdog.lastError ? ` ${watchdog.lastError}` : ''}`;
+      } else if (recoveryTestStartedAt && watchdog.lastRecoveredAt && Date.parse(watchdog.lastRecoveredAt) >= recoveryTestStartedAt) {
+        note.className = 'settings-status';
+        note.textContent = `Recovery successful at ${new Date(watchdog.lastRecoveredAt).toLocaleTimeString()}.`;
+      } else if (recoveryTestStartedAt) {
+        note.className = 'settings-status';
+        note.textContent = 'VLC was terminated. Waiting for the watchdog to detect the failure...';
+      } else {
+        note.className = 'settings-status';
+        note.textContent = 'Development only: terminates this Player\'s VLC process and tests automatic recovery.';
+      }
+    }
+
     function render() {
       $('operatorLock').classList.toggle('hidden', Boolean(state.bypass || state.operator && state.operator.unlocked));
       $('badge').className = badgeClass(state.status); $('badge').textContent = badgeLabel(state.status); $('device').textContent = state.deviceId || '—';
@@ -783,7 +822,7 @@
       if (!(state.upcoming || []).length) { const li = document.createElement('li'); li.innerHTML = '<div class="empty-state" style="width:100%">No upcoming schedules.</div>'; upcoming.appendChild(li); }
       for (const item of state.upcoming || []) { const li = document.createElement('li'); const time = document.createElement('span'); const title = document.createElement('span'); const meta = document.createElement('span'); time.className = 'time'; title.className = 'title'; meta.className = 'meta'; time.textContent = fmtDate(item.startMs); title.textContent = item.title; meta.textContent = item.freqLabel || ''; li.append(time, title, meta); upcoming.appendChild(li); }
       renderMediaHealth(); renderSkipped(); renderRemoteDownloads(); if (assetState.loaded || assetState.loading || assetState.error) renderAssets();
-      renderPlaybackSettings();
+      renderPlaybackSettings(); renderRecoveryTestState();
       $('aboutVersion').textContent = state.appVersion || '1.0.0'; $('aboutDevice').textContent = state.deviceId || 'Not registered'; $('aboutMode').textContent = badgeLabel(state.status); $('aboutHeartbeat').textContent = state.cms && state.cms.lastHeartbeatAt ? new Date(state.cms.lastHeartbeatAt).toLocaleString() : '—'; $('aboutServer').textContent = state.serverURL || (state.bypass ? 'Test mode' : '—'); $('aboutVlc').textContent = displayState; $('aboutRc').textContent = vlc.rcReady ? 'Ready' : 'Unavailable';
     }
 
@@ -808,6 +847,20 @@
     $('btnIdentifyDisplays').onclick = async () => { const result = await ipcRenderer.invoke('identify-displays'); playbackSettingsStatus = result && result.ok ? 'Display numbers are visible for a few seconds.' : result && result.error || 'Could not identify displays.'; playbackSettingsError = !(result && result.ok); renderPlaybackSettings(true); };
     $('btnTestOutput').onclick = async () => { const result = await ipcRenderer.invoke('test-playback-output'); playbackSettingsStatus = result && result.ok ? 'Test output is visible for five seconds.' : result && result.error || 'Could not test output.'; playbackSettingsError = !(result && result.ok); renderPlaybackSettings(true); };
     $('btnTestIdleOutput').onclick = async () => { const result = await ipcRenderer.invoke('test-idle-output', collectPlaybackSettings()); playbackSettingsStatus = result && result.ok ? 'The selected idle monitor is identified for five seconds.' : result && result.error || 'Could not test the idle monitor.'; playbackSettingsError = !(result && result.ok); $('playbackSettingsStatus').className = `settings-status${playbackSettingsError ? ' error' : ''}`; $('playbackSettingsStatus').textContent = playbackSettingsStatus; };
+    $('btnTestRecovery').onclick = async () => {
+      if (!window.confirm('Terminate the current VLC process and test automatic recovery? The film should resume automatically.')) return;
+      $('btnTestRecovery').disabled = true;
+      const result = await ipcRenderer.invoke('test-vlc-recovery');
+      if (result && result.ok) {
+        recoveryTestStartedAt = Date.now();
+        $('recoveryTestStatus').className = 'settings-status';
+        $('recoveryTestStatus').textContent = `VLC process${result.pid ? ` ${result.pid}` : ''} terminated. Detection is expected within about ${result.expectedDetectionSeconds || 6} seconds.`;
+      } else {
+        $('recoveryTestStatus').className = 'settings-status error';
+        $('recoveryTestStatus').textContent = result && result.error || 'Could not start the recovery test.';
+      }
+      renderRecoveryTestState();
+    };
     $('btnRestorePlaybackSettings').onclick = async () => { const result = await ipcRenderer.invoke('restore-playback-settings'); if (!result || !result.ok) { playbackSettingsStatus = result && result.error || 'Could not restore defaults.'; playbackSettingsError = true; renderPlaybackSettings(true); return; } state.display = Object.assign({}, state.display || {}, { settings: result.settings, pending: Boolean(result.appliesAfterCurrentSchedule) }); playbackSettingsStatus = result.appliesAfterCurrentSchedule ? 'Defaults restored. They will apply after the active schedule finishes.' : 'Default playback settings restored.'; playbackSettingsError = false; playbackSettingsDirty = false; renderPlaybackSettings(true); };
     $('btnRefreshAssets').onclick = loadAssets; $('assetSearch').oninput = renderAssets; $('assetFilter').onchange = renderAssets; $('skippedSearch').oninput = renderSkipped;
     $('btnRewind').onclick = () => invokePlaybackControl('vlc-seek-relative', -10);

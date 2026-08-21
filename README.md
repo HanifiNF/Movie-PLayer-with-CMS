@@ -328,6 +328,13 @@ fullscreen/kiosk state, and taskbar behavior; VLC continues to own decoding,
 audio, playlists, seeking, and RC control. This prevents VLC native fullscreen
 from moving scheduled films back to the Windows primary display.
 
+Source/development runs expose **Test VLC Recovery** in Playback Settings while
+a schedule is active. After operator confirmation it terminates only the VLC
+child process owned by that Player instance. The normal watchdog must then
+detect the failure, recreate VLC against the same Electron output window, and
+resume the active playlist checkpoint. This control is rejected by the main
+process and hidden from the UI in packaged builds.
+
 ## Notes
 
 - `VLC`'s `--key-quit` and `--key-fullscreen` are unbound so the operator

@@ -1324,6 +1324,7 @@ function pushDashboard() {
       timezone: cfg && cfg.deviceTimezone || (Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Jakarta')
     },
     appVersion: app.getVersion(),
+    development: !app.isPackaged,
     bypass: !!(cfg && cfg.bypass),
     serverURL: cfg && cfg.serverURL || '',
     cms: { ...cmsState },
@@ -1622,6 +1623,34 @@ ipcMain.handle('vlc-retry', async () => {
     setStatus('vlc-error');
     pushDashboard();
     return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('test-vlc-recovery', async () => {
+  const denied = operatorAccessError(); if (denied) return denied;
+  if (app.isPackaged) {
+    return { ok: false, error: 'VLC recovery simulation is disabled in packaged builds.' };
+  }
+  const active = scheduler && scheduler.getNow();
+  if (!active || !active.files || !active.files.length) {
+    return { ok: false, error: 'Start a schedule before testing VLC recovery.' };
+  }
+  if (!vlc) return { ok: false, error: 'VLC controller is not initialized.' };
+  if (playbackWatchdog && playbackWatchdog.inFlight) {
+    return { ok: false, error: 'A VLC recovery attempt is already running.' };
+  }
+  try {
+    const result = vlc.simulateCrashForRecoveryTest();
+    appendVlcLog(`[test] operator triggered VLC recovery simulation${result.pid ? ` for pid ${result.pid}` : ''}`);
+    return {
+      ok: true,
+      pid: result.pid,
+      expectedDetectionSeconds: playbackWatchdog
+        ? Math.ceil((playbackWatchdog.intervalMs * playbackWatchdog.failureThreshold) / 1000)
+        : 6
+    };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
   }
 });
 

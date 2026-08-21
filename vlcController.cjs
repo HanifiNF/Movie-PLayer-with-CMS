@@ -537,6 +537,17 @@ class VlcController extends EventEmitter {
 
   isPlaying() { return this.state === 'playing'; }
 
+  simulateCrashForRecoveryTest() {
+    if (!this.proc || typeof this.proc.kill !== 'function') {
+      throw new Error('VLC process is not running');
+    }
+    const pid = Number(this.proc.pid) || null;
+    const killed = this.proc.kill();
+    if (killed === false) throw new Error('Windows refused to terminate the VLC process');
+    this.emit('vlc-log', `[test] simulated VLC crash${pid ? ` pid=${pid}` : ''}`);
+    return { pid };
+  }
+
   async _stopForOutputChange() {
     this._stopPoll();
     this.send('quit');
