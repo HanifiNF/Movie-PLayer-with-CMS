@@ -111,6 +111,7 @@ class CmsClient extends EventEmitter {
     const assets = await this.#request('/api/player/assets/assigned', { method: 'GET', token });
     return (Array.isArray(assets) ? assets : []).map(asset => ({
       id: String(asset.id || ''),
+      title: String(asset.title || ''),
       filename: String(asset.filename || ''),
       downloadUrl: new URL(String(asset.download_url || ''), `${this.serverURL}/`).toString(),
       size: Number(asset.size),

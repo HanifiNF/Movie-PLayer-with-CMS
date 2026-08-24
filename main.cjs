@@ -19,6 +19,12 @@ const { buildAssetInventory } = require('./assetInventory.cjs');
 const { scanBeforeRemoteDistribution } = require('./assetRefresh.cjs');
 const { MediaProbe } = require('./mediaProbe.cjs');
 const { PlaybackWatchdog } = require('./playbackWatchdog.cjs');
+const {
+  isPlaybackAlertStatus,
+  isPlaybackExpected,
+  isVlcPlaybackHealthy: resolveVlcPlaybackHealth,
+  resolvePlaybackTelemetry
+} = require('./playbackState.cjs');
 const { resolveResumeTarget } = require('./playbackResume.cjs');
 const { MediaHealthMonitor } = require('./mediaHealth.cjs');
 const { CmsClient, normalizeServerUrl, parseSessionExpiry } = require('./cmsClient.cjs');
@@ -273,15 +279,12 @@ function buildTrayMenu() {
   });
   items.push({
     label: 'Retry VLC',
-    click: async () => {
-        try {
-            await vlc.start();
-        } catch (e) {
-            console.error("VLC start failed", e);
-            setStatus("vlc-error");
-        }
-    }
-});
+    enabled: Boolean(
+      isPlaybackExpected(scheduler && scheduler.getNow()) &&
+      !(playbackWatchdog && ['degraded', 'recovering', 'waiting'].includes(playbackWatchdog.state))
+    ),
+    click: () => { void retryVlcPlayback(); }
+  });
   items.push({ label: 'Open Config Folder', click: () => { shell.openPath(DATA_DIR); } });
   items.push({ label: 'Logout', click: () => { void logout(); } });
   items.push({ type: 'separator' });
@@ -1002,11 +1005,38 @@ function getRuntimeStatus() {
 }
 
 function isVlcPlaybackHealthy() {
-  if (!vlc || !vlc.ready || vlc.state === 'error') return false;
   const active = scheduler && scheduler.getNow();
-  const playbackExpected = Boolean(active && active.files && active.files.length);
-  if (!playbackExpected) return true;
-  return !vlc.idleMode && (vlc.state === 'playing' || vlc.state === 'paused');
+  return resolveVlcPlaybackHealth(vlc, active);
+}
+
+function resetPlaybackAlertStatus() {
+  if (playbackWatchdog) playbackWatchdog.reset();
+  if (isPlaybackAlertStatus(statusLabel)) setStatus(getRuntimeStatus());
+}
+
+async function retryVlcPlayback() {
+  const active = scheduler && scheduler.getNow();
+  if (!isPlaybackExpected(active)) {
+    resetPlaybackAlertStatus();
+    pushDashboard();
+    return { ok: true, standby: true };
+  }
+  if (!vlc) return { ok: false, error: 'VLC controller not initialized' };
+  try {
+    if (playbackWatchdog) {
+      const result = await playbackWatchdog.recoverNow();
+      if (result.state !== 'healthy') throw new Error(result.lastError || 'VLC recovery failed');
+    } else {
+      await vlc.start();
+    }
+    setStatus(getRuntimeStatus());
+    pushDashboard();
+    return { ok: true };
+  } catch (error) {
+    setStatus('vlc-error');
+    pushDashboard();
+    return { ok: false, error: error.message || String(error) };
+  }
 }
 
 async function refreshMediaHealth(schedules, assets, options = {}) {
@@ -1630,22 +1660,7 @@ ipcMain.handle('vlc-reactivate', async (_e, scheduleId) => {
 
 ipcMain.handle('vlc-retry', async () => {
   const denied = operatorAccessError(); if (denied) return denied;
-  if (!vlc) return { ok: false, error: 'VLC controller not initialized' };
-  try {
-    if (playbackWatchdog) {
-      const result = await playbackWatchdog.recoverNow();
-      if (result.state !== 'healthy') throw new Error(result.lastError || 'VLC recovery failed');
-    } else {
-      await vlc.start();
-    }
-    setStatus(getRuntimeStatus());
-    pushDashboard();
-    return { ok: true };
-  } catch (e) {
-    setStatus('vlc-error');
-    pushDashboard();
-    return { ok: false, error: e.message || String(e) };
-  }
+  return retryVlcPlayback();
 });
 
 ipcMain.handle('test-vlc-recovery', async () => {
@@ -2413,14 +2428,21 @@ async function startRuntime() {
   });
   vlc.on('exit', (code) => {
     appendVlcLog(`[VLC exit] code=${code} at ${new Date().toISOString()}`);
-    if (!isShuttingDown) {
+    const active = scheduler && scheduler.getNow();
+    if (!isShuttingDown && isPlaybackExpected(active)) {
       setStatus('vlc-error');
       pushDashboard();
     }
   });
   vlc.on('state-change', () => {
-    if (vlc.state === 'error') setStatus('vlc-error');
-    pushDashboard();
+    const active = scheduler && scheduler.getNow();
+    if (vlc.state === 'error' && isPlaybackExpected(active)) {
+      setStatus('vlc-error');
+    } else if (isPlaybackAlertStatus(statusLabel) && isVlcPlaybackHealthy()) {
+      setStatus(getRuntimeStatus());
+    } else {
+      pushDashboard();
+    }
   });
   scheduler = new Scheduler(vlc, {
     isMediaReady: file => mediaHealthMonitor.isReady(file)
@@ -2444,6 +2466,7 @@ async function startRuntime() {
   });
   scheduler.on('idle', () => {
     nowSchedule = null;
+    resetPlaybackAlertStatus();
     applyPendingPlaybackSettings();
     // Keep the film output completely black while the Player is idle. Calling
     // this here as well as from VlcController makes the idle screen resilient
@@ -2457,6 +2480,7 @@ async function startRuntime() {
   });
   scheduler.on('finish', () => {
     nowSchedule = null;
+    resetPlaybackAlertStatus();
     applyPendingPlaybackSettings();
     refreshTray();
     pushDashboard();
@@ -2534,13 +2558,6 @@ async function startRuntime() {
   playbackWatchdog.on('internal-error', error => {
     appendVlcLog(`[watchdog] internal error: ${error.message}`);
   });
-
-  try {
-        await vlc.start();
-    } catch (e) {
-        console.error("VLC start failed", e);
-        setStatus("vlc-error");
-    }
 
   const cache = readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] });
   try {
@@ -2631,14 +2648,11 @@ function startCmsConnection() {
 function playbackTelemetry() {
   const active = scheduler ? scheduler.getNow() : null;
   const vlcState = vlc ? String(vlc.state || '') : '';
-  let playbackState = 'idle';
-  if (statusLabel === 'vlc-error' || vlcState === 'error') playbackState = 'error';
-  else if (active && vlcState === 'paused') playbackState = 'paused';
-  else if (active && vlcState === 'playing') playbackState = 'playing';
+  const telemetry = resolvePlaybackTelemetry(active, vlcState, statusLabel);
   return {
-    playback_state: playbackState,
+    playback_state: telemetry.state,
     playback_schedule_id: active ? String(active.scheduleId || '') : '',
-    playback_error: playbackState === 'error' ? 'VLC playback is unavailable.' : ''
+    playback_error: telemetry.error
   };
 }
 

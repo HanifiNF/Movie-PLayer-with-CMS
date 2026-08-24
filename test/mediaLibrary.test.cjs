@@ -45,7 +45,9 @@ test('lists managed downloads with reusable asset identity and readiness', t => 
 
   const items = listManagedAssets([{
     id: 'asset-1',
-    filename: 'Reusable Film.mp4',
+    title: 'Reusable Film Catalog Title',
+    filename: 'asset-1.ldg',
+    displayFilename: 'raw-upload-name.mp4',
     size: 5
   }, {
     id: 'asset-2',
@@ -57,5 +59,7 @@ test('lists managed downloads with reusable asset identity and readiness', t => 
   assert.equal(items[0].mediaKey, 'managed:asset-1');
   assert.equal(items[0].sourceLabel, 'Downloaded');
   assert.equal(items[0].status, 'downloaded');
+  assert.equal(items[0].title, 'Reusable Film Catalog Title');
+  assert.equal(items[0].filename, 'raw-upload-name.mp4');
   assert.equal(items[1].status, 'missing');
 });

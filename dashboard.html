@@ -800,19 +800,26 @@
       $('refreshMessage').textContent = refreshing ? 'Refreshing...' : (refresh.status === 'error' ? refresh.lastError || 'Refresh failed' : (refreshedTime ? `Synced ${refreshedTime}` : ''));
       $('sidebarVersion').textContent = `v${state.appVersion || '1.0.0'}`; $('btnAddSchedule').style.display = state.bypass ? 'inline-block' : 'none'; $('btnManageSchedules').style.display = state.bypass ? 'inline-block' : 'none';
       const now = state.now;
+      const hasNow = !!now;
       if (now) { $('nowTitle').textContent = now.title || now.scheduleId; $('nowTitle').classList.remove('empty'); $('nowFile').textContent = (now.files || []).map(titleFor).join(' → '); $('nowCountdown').textContent = fmtCountdown(now.endMs ? now.endMs - Date.now() : null); }
       else { $('nowTitle').textContent = 'No active schedule'; $('nowTitle').classList.add('empty'); $('nowFile').textContent = ''; $('nowCountdown').textContent = ''; }
       const vlc = state.vlc || {}; renderPlayback(now, vlc);
       const displayState = vlc.state === 'playing' && vlc.idleMode ? 'idle' : vlc.state || 'idle'; $('vlcState').className = `vlc-state ${displayState}`; $('vlcState').textContent = displayState;
       const watchdog = state.watchdog || {};
+      const recoveryBusy = ['degraded', 'recovering', 'waiting'].includes(watchdog.state);
+      $('btnRetry').disabled = !hasNow || recoveryBusy;
+      $('btnRetry').title = !hasNow
+        ? 'VLC starts automatically when a schedule becomes active.'
+        : (recoveryBusy ? 'Automatic recovery is already running.' : 'Retry VLC playback now.');
       if (watchdog.state === 'recovering') $('vlcNote').textContent = `Automatic recovery attempt ${watchdog.attempts}/${watchdog.maxAttempts} is running...`;
       else if (watchdog.state === 'waiting') $('vlcNote').textContent = `Recovery attempt ${watchdog.attempts}/${watchdog.maxAttempts} failed. Retrying soon.${watchdog.lastError ? ` ${watchdog.lastError}` : ''}`;
       else if (watchdog.state === 'exhausted') $('vlcNote').textContent = `Automatic recovery stopped after ${watchdog.attempts} attempts. Click Retry VLC.${watchdog.lastError ? ` ${watchdog.lastError}` : ''}`;
       else if (watchdog.state === 'degraded') $('vlcNote').textContent = 'Playback health check failed. Waiting for confirmation before recovery.';
       else if (controlError) $('vlcNote').textContent = `Playback control failed: ${controlError}`;
       else if (state.recoveryResume && now && state.recoveryResume.scheduleId === now.scheduleId) $('vlcNote').textContent = `Recovered: resumed ${state.recoveryResume.title} at ${fmtPlaybackTime(state.recoveryResume.positionSeconds)}.`;
+      else if (!hasNow) $('vlcNote').textContent = 'Standby. VLC starts automatically when the next schedule begins.';
       else $('vlcNote').textContent = vlc.state === 'error' ? 'VLC is unavailable. Automatic recovery will run while a schedule is active.' : '';
-      const playing = vlc.state === 'playing'; const paused = vlc.state === 'paused'; const playback = vlc.playback || {}; const hasNow = !!now; const isIdleMode = !!vlc.idleMode;
+      const playing = vlc.state === 'playing'; const paused = vlc.state === 'paused'; const playback = vlc.playback || {}; const isIdleMode = !!vlc.idleMode;
       const canSeek = hasNow && !isIdleMode && (playing || paused) && Number(playback.lengthSeconds) > 0 && Number.isInteger(playback.currentIndex) && playback.currentIndex >= 0;
       $('btnPlayPause').disabled = !(hasNow && !isIdleMode && (playing || paused)); $('playPauseIcon').innerHTML = paused ? playIcon : pauseIcon;
       $('btnPlayPause').dataset.tooltip = paused ? 'Resume' : 'Pause'; $('btnPlayPause').setAttribute('aria-label', paused ? 'Resume' : 'Pause');

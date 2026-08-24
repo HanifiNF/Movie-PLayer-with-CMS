@@ -97,6 +97,10 @@ class PlaybackWatchdog extends EventEmitter {
 
   async recoverNow() {
     if (this.inFlight) return this.inFlight;
+    if (!this.isPlaybackExpected()) {
+      this.reset();
+      return this.getStatus();
+    }
     this.attempts = 0;
     this.consecutiveFailures = this.failureThreshold;
     this.nextRetryAt = null;

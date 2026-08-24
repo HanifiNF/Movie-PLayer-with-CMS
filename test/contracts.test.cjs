@@ -43,6 +43,7 @@ test('canonical payload accepts asset references and catalog metadata', () => {
     }],
     assets: [{
       id: 'asset-1',
+      title: 'Catalog Promo',
       filename: 'promo.mp4',
       downloadUrl: 'https://example.test/promo.mp4',
       size: 12,
@@ -52,6 +53,7 @@ test('canonical payload accepts asset references and catalog metadata', () => {
   assert.equal(payload.revision, 7);
   assert.equal(payload.schedules[0].playlist[0].assetId, 'asset-1');
   assert.equal(payload.assets[0].sha256.length, 64);
+  assert.equal(payload.assets[0].title, 'Catalog Promo');
 });
 
 test('multi-item playlists preserve their explicit playback order', () => {

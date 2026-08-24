@@ -42,6 +42,7 @@
       "mediaProbe.cjs",
       "mediaHealth.cjs",
       "playbackWatchdog.cjs",
+      "playbackState.cjs",
       "playbackResume.cjs",
       "cmsClient.cjs",
       "deviceCredentials.cjs",

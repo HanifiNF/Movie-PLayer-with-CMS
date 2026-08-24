@@ -86,3 +86,20 @@ test('manual retry resets an exhausted watchdog', async () => {
   assert.equal(result.state, 'healthy');
   assert.equal(watchdog.getStatus().attempts, 0);
 });
+
+test('manual retry is a no-op while Player is in standby', async () => {
+  let recoveries = 0;
+  const watchdog = new PlaybackWatchdog({
+    isPlaybackExpected: () => false,
+    isHealthy: () => true,
+    recover: async () => { recoveries += 1; }
+  });
+  watchdog.attempts = 2;
+  watchdog.state = 'exhausted';
+
+  const result = await watchdog.recoverNow();
+
+  assert.equal(result.state, 'idle');
+  assert.equal(result.attempts, 0);
+  assert.equal(recoveries, 0);
+});

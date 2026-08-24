@@ -122,7 +122,7 @@ test('assigned asset manifest resolves relative download URLs against the config
     fetch: async (url, options) => {
       request = { url, options };
       return response(200, { data: [{
-        id: 'asset-1', filename: 'Film A.mp4',
+        id: 'asset-1', title: 'Film A Catalog Title', filename: 'raw-upload.mp4',
         download_url: '/api/player/assets/asset-1/download', size: 123,
         sha256: 'a'.repeat(64), mime_type: 'video/mp4', duration_ms: 1000, revision: 1
       }] });
@@ -135,6 +135,7 @@ test('assigned asset manifest resolves relative download URLs against the config
   assert.equal(request.options.headers.Authorization, 'Bearer player-token');
   assert.equal(assets[0].downloadUrl, 'http://192.168.1.10:8080/api/player/assets/asset-1/download');
   assert.equal(assets[0].size, 123);
+  assert.equal(assets[0].title, 'Film A Catalog Title');
 });
 
 test('assigned LDG manifest preserves the device license and original filename', async () => {

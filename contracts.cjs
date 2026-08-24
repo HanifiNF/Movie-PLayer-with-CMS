@@ -166,6 +166,12 @@ function normalizeAsset(value) {
 
   return {
     id,
+    title: typeof asset.title === 'string' && asset.title.trim()
+      ? asset.title.trim()
+      : path.basename(
+          String(asset.displayFilename || asset.filename || id),
+          path.extname(String(asset.displayFilename || asset.filename || id))
+        ),
     filename: typeof asset.filename === 'string' && asset.filename.trim()
       ? path.basename(asset.filename.trim())
       : `${id}.bin`,
