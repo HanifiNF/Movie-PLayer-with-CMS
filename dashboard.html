@@ -59,6 +59,7 @@
     .player-location { display: flex; align-items: center; gap: 5px; margin-top: 4px; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
     .player-location svg { flex: 0 0 auto; width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2; }
     .connection-status { margin-top: 9px; }
+    .realtime-status { display: block; margin-top: 6px; color: var(--muted); font-size: 10px; line-height: 1.35; }
     .display-mode { display: inline-flex; margin-top: 7px; padding: 4px 8px; border-radius: 999px; background: #fff0d9; color: #9a5b00; font-size: 9px; font-weight: 750; letter-spacing: .25px; text-transform: uppercase; }
     .display-mode.hidden { display: none; }
     .device { display: block; margin-top: 7px; overflow: hidden; color: var(--subtle); font-family: ui-monospace, Consolas, monospace; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
@@ -305,6 +306,7 @@
           <strong id="sidebarDeviceName" class="player-name">Player</strong>
           <span id="sidebarLocation" class="player-location"><svg viewBox="0 0 24 24"><path d="M12 21s7-6.1 7-12a7 7 0 1 0-14 0c0 5.9 7 12 7 12z"/><circle cx="12" cy="9" r="2.3"/></svg><span>Location not set</span></span>
           <div class="connection-status"><span id="badge" class="badge offline">Offline</span></div>
+          <span id="realtimeStatus" class="realtime-status">Realtime: REST heartbeat</span>
           <span id="displayMode" class="display-mode hidden">Single monitor mode</span>
           <span id="device" class="device">—</span>
         </div>
@@ -441,7 +443,7 @@
             <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></svg></div><h3>Player application</h3><p>Realtime desktop media player for scheduled VLC playback.<br />Version <strong id="aboutVersion">1.0.0</strong></p></article>
             <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h5"/></svg></div><h3>Registered Studio</h3><p>Studio ID: <strong id="aboutDevice">—</strong><br />Mode: <strong id="aboutMode">Offline</strong><br />Last heartbeat: <strong id="aboutHeartbeat">—</strong></p></article>
             <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><path d="M4 17l3-10h10l3 10M6 13h12M3 20h18"/></svg></div><h3>Playback engine</h3><p>VLC state: <strong id="aboutVlc">Idle</strong><br />Remote control: <strong id="aboutRc">Unavailable</strong></p></article>
-            <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><path d="M4 4h6l2 2h8v13H4z"/></svg></div><h3>CMS connection</h3><p>Server: <strong id="aboutServer">—</strong><br />Credentials are encrypted by Windows. Pairing can only be revoked by a CMS administrator.</p></article>
+            <article class="card about-card"><div class="about-icon"><svg viewBox="0 0 24 24"><path d="M4 4h6l2 2h8v13H4z"/></svg></div><h3>CMS connection</h3><p>Server: <strong id="aboutServer">—</strong><br />Realtime: <strong id="aboutRealtime">REST heartbeat</strong><br />Credentials are encrypted by Windows. Pairing can only be revoked by a CMS administrator.</p></article>
           </div>
         </section>
       </main>
@@ -455,7 +457,7 @@
     const pauseIcon = '<rect class="solid" x="6" y="4" width="4" height="16"/><rect class="solid" x="14" y="4" width="4" height="16"/>';
     const playIcon = '<path class="solid" d="M7 4l13 8-13 8z"/>';
     let activeView = 'home';
-    let state = { status: 'offline', deviceId: '', device: { id: '', name: 'Player', location: '', timezone: '' }, display: { mode: 'single', hasDedicatedDisplay: false }, appVersion: '1.0.0', development: false, serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, refresh: { status: 'idle', lastRefreshedAt: null, lastError: null }, remoteDownloads: { status: 'idle', assignedCount: 0, items: [] }, operator: { unlocked: false, user: null }, now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
+    let state = { status: 'offline', deviceId: '', device: { id: '', name: 'Player', location: '', timezone: '' }, display: { mode: 'single', hasDedicatedDisplay: false }, appVersion: '1.0.0', development: false, serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, realtime: { status: 'disabled', connected: false, lastError: null }, refresh: { status: 'idle', lastRefreshedAt: null, lastError: null }, remoteDownloads: { status: 'idle', assignedCount: 0, items: [] }, operator: { unlocked: false, user: null }, now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
     let assetState = { loaded: false, loading: false, error: '', directory: '', items: [] };
     let jumpPanelOpen = false;
     let jumpMaxSeconds = 0;
@@ -500,6 +502,16 @@
       if (status === 'vlc-error') return 'VLC Error'; if (status === 'vlc-recovering') return 'VLC Recovering';
       if (status === 'authentication-error') return 'Pairing Invalid';
       return status ? status.charAt(0).toUpperCase() + status.slice(1) : 'Offline';
+    }
+    function realtimeLabel(realtime) {
+      const status = realtime && realtime.status || 'disabled';
+      if (status === 'connected') return 'Socket.IO connected';
+      if (status === 'connecting' || status === 'reconnecting') return 'Socket.IO reconnecting';
+      if (status === 'session-replaced') return 'Session replaced · REST fallback';
+      if (status === 'authentication-error') return 'Pairing invalid';
+      if (status === 'test-mode') return 'Disabled in Test Mode';
+      if (status === 'fallback') return 'REST fallback';
+      return 'REST heartbeat';
     }
     function titleFor(file) { return file && (file.title || file.path || file.assetId) || 'Untitled media'; }
     function currentPlayback() { return state.vlc && state.vlc.playback ? state.vlc.playback : {}; }
@@ -783,6 +795,7 @@
     function render() {
       $('operatorLock').classList.toggle('hidden', Boolean(state.bypass || state.operator && state.operator.unlocked));
       $('badge').className = badgeClass(state.status); $('badge').textContent = badgeLabel(state.status); $('device').textContent = state.deviceId || '—';
+      const realtime = state.realtime || {}; $('realtimeStatus').textContent = `Realtime: ${realtimeLabel(realtime)}`; $('realtimeStatus').title = realtime.lastError || realtime.url || '';
       const deviceInfo = state.device || {}; const fullDeviceId = deviceInfo.id || state.deviceId || ''; const shortDeviceId = fullDeviceId.length > 13 ? `${fullDeviceId.slice(0, 13)}…` : fullDeviceId;
       const deviceLocation = deviceInfo.location || 'Location not set'; const deviceName = deviceInfo.name || 'Player';
       $('sidebarDeviceName').textContent = deviceName; $('sidebarLocation').querySelector('span').textContent = deviceLocation;
@@ -830,7 +843,7 @@
       for (const item of state.upcoming || []) { const li = document.createElement('li'); const time = document.createElement('span'); const title = document.createElement('span'); const meta = document.createElement('span'); time.className = 'time'; title.className = 'title'; meta.className = 'meta'; time.textContent = fmtDate(item.startMs); title.textContent = item.title; meta.textContent = item.freqLabel || ''; li.append(time, title, meta); upcoming.appendChild(li); }
       renderMediaHealth(); renderSkipped(); renderRemoteDownloads(); if (assetState.loaded || assetState.loading || assetState.error) renderAssets();
       renderPlaybackSettings(); renderRecoveryTestState();
-      $('aboutVersion').textContent = state.appVersion || '1.0.0'; $('aboutDevice').textContent = state.deviceId || 'Not registered'; $('aboutMode').textContent = badgeLabel(state.status); $('aboutHeartbeat').textContent = state.cms && state.cms.lastHeartbeatAt ? new Date(state.cms.lastHeartbeatAt).toLocaleString() : '—'; $('aboutServer').textContent = state.serverURL || (state.bypass ? 'Test mode' : '—'); $('aboutVlc').textContent = displayState; $('aboutRc').textContent = vlc.rcReady ? 'Ready' : 'Unavailable';
+      $('aboutVersion').textContent = state.appVersion || '1.0.0'; $('aboutDevice').textContent = state.deviceId || 'Not registered'; $('aboutMode').textContent = badgeLabel(state.status); $('aboutHeartbeat').textContent = state.cms && state.cms.lastHeartbeatAt ? new Date(state.cms.lastHeartbeatAt).toLocaleString() : '—'; $('aboutServer').textContent = state.serverURL || (state.bypass ? 'Test mode' : '—'); $('aboutRealtime').textContent = realtimeLabel(realtime); $('aboutRealtime').title = realtime.lastError || realtime.url || ''; $('aboutVlc').textContent = displayState; $('aboutRc').textContent = vlc.rcReady ? 'Ready' : 'Unavailable';
     }
 
     ipcRenderer.on('dashboard:update', (_event, payload) => { state = Object.assign({}, state, payload); render(); });

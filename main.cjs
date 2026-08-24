@@ -5,7 +5,6 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { pathToFileURL } = require('url');
-const { io } = require('socket.io-client');
 const { VlcController } = require('./vlcController.cjs');
 const { Scheduler, nextOccurrenceStart } = require('./scheduler.cjs');
 const {
@@ -28,6 +27,7 @@ const {
 const { resolveResumeTarget } = require('./playbackResume.cjs');
 const { MediaHealthMonitor } = require('./mediaHealth.cjs');
 const { CmsClient, normalizeServerUrl, parseSessionExpiry } = require('./cmsClient.cjs');
+const { RealtimeClient } = require('./realtimeClient.cjs');
 const { DeviceCredentials } = require('./deviceCredentials.cjs');
 const { removeManagedAsset } = require('./managedAssetCleanup.cjs');
 const { normalizeRevision, revisionSyncAction } = require('./revisionSync.cjs');
@@ -74,15 +74,18 @@ let loginWin = null;
 let dashboardWin = null;
 let scheduleAdderWin = null;
 let scheduleManagerWin = null;
-let socket = null;
+let realtimeClient = null;
 let cmsClient = null;
 let cmsState = { status: 'offline', lastHeartbeatAt: null, lastError: null };
+let realtimeState = {
+  status: 'disabled', connected: false, url: '', lastConnectedAt: null,
+  lastEventAt: null, lastError: null
+};
 let setupSession = null;
 let operatorSession = null;
 let vlc = null;
 let scheduler = null;
 let cfg = null;
-let connecting = false;
 let statusLabel = 'offline';
 let nowSchedule = null;
 let broadcastHandle = null;
@@ -214,7 +217,8 @@ function applyDeviceMetadata(data) {
     deviceId: data.device_id,
     deviceName: data.device_name,
     deviceLocation: data.device_location,
-    deviceTimezone: data.device_timezone
+    deviceTimezone: data.device_timezone,
+    realtimeUrl: data.realtime_url
   };
   let changed = false;
   for (const [key, value] of Object.entries(fields)) {
@@ -257,6 +261,7 @@ function buildTrayMenu() {
     : (statusLabel === 'online' ? 'Idle (no active schedule)' : (statusLabel && statusLabel.indexOf('test-mode') === 0 ? 'Test Mode — idle' : 'Offline'));
   const items = [
     { label: `Status: ${statusLabel.toUpperCase()}`, enabled: false },
+    { label: `Realtime: ${trayRealtimeLabel()}`, enabled: false },
     { label: `Device: ${cfg && cfg.deviceId || '-'}`, enabled: false },
     { label: next, enabled: false }
   ];
@@ -274,7 +279,7 @@ function buildTrayMenu() {
     label: 'Reconnect CMS',
     click: () => {
       if (cfg && !cfg.bypass) startCmsConnection();
-      if (CFG.SOCKET_ENABLED && socket) socket.connect();
+      if (CFG.SOCKET_ENABLED) ensureRealtimeConnection();
     }
   });
   items.push({
@@ -290,6 +295,16 @@ function buildTrayMenu() {
   items.push({ type: 'separator' });
   items.push({ label: 'Quit Player', click: () => { void quitApp(); } });
   return Menu.buildFromTemplate(items);
+}
+
+function trayRealtimeLabel() {
+  if (realtimeState.status === 'connected') return 'SOCKET.IO CONNECTED';
+  if (realtimeState.status === 'connecting' || realtimeState.status === 'reconnecting') return 'RECONNECTING';
+  if (realtimeState.status === 'session-replaced') return 'SESSION REPLACED — REST FALLBACK';
+  if (realtimeState.status === 'authentication-error') return 'PAIRING INVALID';
+  if (realtimeState.status === 'test-mode') return 'DISABLED IN TEST MODE';
+  if (realtimeState.status === 'fallback') return 'REST FALLBACK';
+  return 'REST HEARTBEAT';
 }
 
 function refreshTray() {
@@ -1317,38 +1332,63 @@ async function syncRemoteDistribution() {
 }
 
 function synchronizeHeartbeatRevisions(data = {}) {
-  if (!cfg || cfg.bypass) return Promise.resolve();
-  if (heartbeatRevisionSyncPromise) return heartbeatRevisionSyncPromise;
+  if (!cfg || cfg.bypass) return Promise.resolve({ ok: true, skipped: true });
+  if (heartbeatRevisionSyncPromise) {
+    return heartbeatRevisionSyncPromise.then(() => synchronizeHeartbeatRevisions(data));
+  }
 
   const assetRevision = normalizeRevision(data.asset_revision);
   const scheduleRevision = normalizeRevision(data.schedule_revision);
   const licenseRefreshNeeded = nextLdgLicenseRefreshAt > 0 && Date.now() >= nextLdgLicenseRefreshAt;
   const initialSyncNeeded = !initialAssetSyncStarted || licenseRefreshNeeded;
-  if (initialSyncNeeded && Date.now() < nextAssetSyncAttemptAt) return Promise.resolve();
+  if (initialSyncNeeded && Date.now() < nextAssetSyncAttemptAt) {
+    return Promise.resolve({ ok: false, deferred: true, error: 'Asset synchronization is waiting for its retry window.' });
+  }
   const action = revisionSyncAction({
     initialSyncNeeded, pendingRemovalRetry, assetRevision, appliedAssetRevision,
     scheduleRevision, appliedScheduleRevision
   });
-  if (action === null) return Promise.resolve();
+  if (action === null) return Promise.resolve({ ok: true, unchanged: true });
 
   heartbeatRevisionSyncPromise = (async () => {
     if (action === 'assets') {
       await syncRemoteDistribution();
       appliedAssetRevision = assetRevision;
       appliedScheduleRevision = scheduleRevision;
-      return;
+      return { ok: true, action };
     }
     if (action === 'schedules') {
       await syncScheduleSnapshot();
       appliedScheduleRevision = scheduleRevision;
+      return { ok: true, action };
     }
   })().catch(error => {
     nextAssetSyncAttemptAt = Date.now() + 60000;
     appendVlcLog(`[cms] automatic revision sync failed: ${error.message || error}`);
+    return { ok: false, error: error.message || String(error) };
   }).finally(() => {
     heartbeatRevisionSyncPromise = null;
   });
   return heartbeatRevisionSyncPromise;
+}
+
+async function applyRealtimeHint(hint) {
+  if (!cfg || cfg.bypass || hint.deviceId !== cfg.deviceId) return;
+  realtimeState.lastEventAt = new Date().toISOString();
+  pushDashboard();
+  const result = await synchronizeHeartbeatRevisions({
+    asset_revision: hint.assetRevision,
+    schedule_revision: hint.scheduleRevision
+  });
+  if (realtimeClient) {
+    realtimeClient.reportApplied({
+      eventId: hint.eventId,
+      assetRevision: appliedAssetRevision === null ? 0 : appliedAssetRevision,
+      scheduleRevision: appliedScheduleRevision === null ? 0 : appliedScheduleRevision,
+      ok: Boolean(result && result.ok),
+      error: result && result.error
+    });
+  }
 }
 
 async function waitForVlcRecovery(timeoutMs = 10000) {
@@ -1380,6 +1420,7 @@ function pushDashboard() {
     bypass: !!(cfg && cfg.bypass),
     serverURL: cfg && cfg.serverURL || '',
     cms: { ...cmsState },
+    realtime: { ...realtimeState },
     refresh: { ...refreshState },
     assetSync: { ...assetSyncState },
     remoteDownloads: { ...remoteDownloadState, items: remoteDownloadState.items.map(item => ({ ...item })) },
@@ -1491,7 +1532,8 @@ ipcMain.handle('claim-player', async (_event, payload) => {
     const next = {
       serverURL: setupSession.serverURL, installId, deviceId: data.device_id,
       deviceName: data.device_name || os.hostname(), deviceLocation: data.device_location || '',
-      deviceTimezone: data.device_timezone || 'Asia/Jakarta', token: data.token, bypass: false
+      deviceTimezone: data.device_timezone || 'Asia/Jakarta', realtimeUrl: data.realtime_url || '',
+      token: data.token, bypass: false
     };
     setupSession = null;
     saveConfig(next);
@@ -1558,6 +1600,7 @@ ipcMain.handle('pair-player', async (_e, payload) => {
       deviceName: data.device_name || os.hostname(),
       deviceLocation: data.device_location || '',
       deviceTimezone: data.device_timezone || 'Asia/Jakarta',
+      realtimeUrl: data.realtime_url || '',
       token: data.token,
       bypass: false
     };
@@ -2301,6 +2344,8 @@ async function shutdownPlaybackComponents() {
 
 async function startRuntime() {
   if (!cfg || !cfg.token) return;
+  stopCmsConnection();
+  stopRealtimeConnection(cfg.bypass ? 'test-mode' : 'connecting');
   await shutdownPlaybackComponents();
   remoteDownloadState = { status: 'idle', assignedCount: 0, updatedAt: null, lastError: null, items: [] };
   downloadProgressBroadcastAt.clear();
@@ -2578,7 +2623,7 @@ async function startRuntime() {
 
   playbackWatchdog.start();
   startCmsConnection();
-  if (CFG.SOCKET_ENABLED) connectSocket();
+  if (CFG.SOCKET_ENABLED) ensureRealtimeConnection();
   refreshTray();
 }
 
@@ -2615,7 +2660,8 @@ function startCmsConnection() {
   cmsClient.on('heartbeat', data => {
     cmsState.lastHeartbeatAt = new Date().toISOString();
     cmsState.lastError = null;
-    applyDeviceMetadata(data);
+    const metadataChanged = applyDeviceMetadata(data);
+    if (metadataChanged && CFG.SOCKET_ENABLED) ensureRealtimeConnection();
     pushDashboard();
     void synchronizeHeartbeatRevisions(data);
   });
@@ -2809,13 +2855,6 @@ function queueSync(operation, acknowledgement) {
   syncQueue = syncQueue
     .then(operation)
     .then(result => {
-      if (socket && socket.connected && result && result.applied) {
-        socket.emit('sync:applied', {
-          deviceId: cfg.deviceId,
-          revision: result.revision,
-          appliedAt: new Date().toISOString()
-        });
-      }
       if (typeof acknowledgement === 'function') acknowledgement({ ok: true, ...result });
       return result;
     })
@@ -2832,55 +2871,97 @@ function queueSync(operation, acknowledgement) {
     });
 }
 
-function connectSocket() {
-  if (socket) {
-    try { socket.disconnect(); } catch (_) {}
-    socket = null;
-  }
-  if (!cfg) return;
-  if (cfg.bypass) {
-    setStatus('test-mode (no server)');
+function stopRealtimeConnection(status = 'disabled') {
+  if (realtimeClient) realtimeClient.stop();
+  realtimeClient = null;
+  realtimeState = {
+    ...realtimeState, status, connected: false,
+    url: cfg && cfg.realtimeUrl || '', lastError: null
+  };
+  refreshTray();
+  pushDashboard();
+}
+
+function ensureRealtimeConnection() {
+  if (!CFG.SOCKET_ENABLED || !cfg || cfg.bypass || !cfg.realtimeUrl) {
+    stopRealtimeConnection(cfg && cfg.bypass ? 'test-mode' : 'disabled');
     return;
   }
-  connecting = true;
-  setStatus('connecting');
-  socket = io(cfg.serverURL + '/player', {
-    auth: { token: cfg.token },
-    transports: ['websocket'],
-    reconnection: true,
-    reconnectionDelay: 2000,
-    reconnectionDelayMax: 15000
+  const expectedUrl = String(cfg.realtimeUrl).replace(/\/+$/, '');
+  if (realtimeClient && realtimeState.url === expectedUrl) {
+    realtimeClient.reconnect();
+    return;
+  }
+  stopRealtimeConnection('connecting');
+  const client = new RealtimeClient();
+  realtimeClient = client;
+  client.on('status', next => {
+    realtimeState = { ...realtimeState, ...next };
+    refreshTray();
+    pushDashboard();
   });
-  socket.on('connect', () => {
-    connecting = false;
-    setStatus('online');
-    const cache = readJson(CACHE_PATH, { revision: 0 });
-    socket.emit('register', {
-      deviceId: cfg.deviceId,
-      revision: Number(cache.revision) || 0,
-      appVersion: app.getVersion()
+  client.on('hint', hint => {
+    void applyRealtimeHint(hint).catch(error => {
+      realtimeState = { ...realtimeState, lastError: error.message || String(error) };
+      appendVlcLog(`[realtime] revision hint failed: ${realtimeState.lastError}`);
+      pushDashboard();
     });
   });
-  socket.on('disconnect', () => {
-    if (connecting) setStatus('connecting');
-    else setStatus('offline');
+  client.on('message-error', error => {
+    realtimeState = { ...realtimeState, lastError: error.message || String(error) };
+    appendVlcLog(`[realtime] invalid message: ${realtimeState.lastError}`);
+    pushDashboard();
   });
-  socket.on('connect_error', (err) => {
-    console.error('socket connect_error', err && err.message);
-    setStatus('offline');
+  client.on('connect-error', error => {
+    const code = error && error.data && error.data.code || error && error.code || '';
+    const message = error && error.message || 'Realtime connection failed.';
+    realtimeState = {
+      ...realtimeState,
+      status: code === 'invalid_player_token' ? 'authentication-error' : 'fallback',
+      connected: false, url: expectedUrl, lastError: message
+    };
+    appendVlcLog(`[realtime] ${message}; REST heartbeat remains active.`);
+    refreshTray();
+    pushDashboard();
+    if (code === 'invalid_player_token') handleRealtimeRevocation();
   });
-  socket.on('sync:initial', (payload, acknowledgement) => {
-    queueSync(() => applySyncPayload(payload, 'replace'), acknowledgement);
+  client.on('revoked', () => handleRealtimeRevocation());
+  client.on('session-replaced', payload => {
+    client.stop();
+    realtimeState = {
+      ...realtimeState, status: 'session-replaced', connected: false,
+      lastError: payload && payload.reason || 'A newer Player connection replaced this realtime session.'
+    };
+    appendVlcLog(`[realtime] ${realtimeState.lastError} REST heartbeat remains active.`);
+    refreshTray();
+    pushDashboard();
   });
-  socket.on('schedule:set', (payload, acknowledgement) => {
-    queueSync(() => applySyncPayload(payload, 'merge'), acknowledgement);
-  });
-  socket.on('schedule:clear', (payload, acknowledgement) => {
-    queueSync(() => applyClearPayload(payload), acknowledgement);
-  });
-  socket.on('schedule:replaceAll', (payload, acknowledgement) => {
-    queueSync(() => applySyncPayload(payload, 'replace'), acknowledgement);
-  });
+  try {
+    client.start({ url: expectedUrl, token: cfg.token, deviceId: cfg.deviceId });
+  } catch (error) {
+    realtimeState = {
+      ...realtimeState, status: 'fallback', connected: false,
+      url: expectedUrl, lastError: error.message || String(error)
+    };
+    appendVlcLog(`[realtime] ${realtimeState.lastError}; REST heartbeat remains active.`);
+    refreshTray();
+    pushDashboard();
+  }
+}
+
+let realtimeRevocationHandled = false;
+function handleRealtimeRevocation() {
+  if (realtimeRevocationHandled || !cfg) return;
+  realtimeRevocationHandled = true;
+  const notice = 'This Player was revoked by the CMS administrator. Pairing is required before it can be used again.';
+  void logout(notice).then(() => {
+    if (loginWin && !loginWin.isDestroyed()) {
+      return dialog.showMessageBox(loginWin, {
+        type: 'warning', title: 'Player revoked', message: 'Player revoked',
+        detail: notice, buttons: ['Continue']
+      });
+    }
+  }).finally(() => { realtimeRevocationHandled = false; });
 }
 
 function mergeSchedules(current, incoming) {
@@ -2904,8 +2985,7 @@ async function logout(notice = '') {
   playbackCheckpoint = null;
   lastResumeInfo = null;
   const wasBypass = Boolean(cfg && cfg.bypass);
-  try { if (socket) socket.disconnect(); } catch (_) {}
-  socket = null;
+  stopRealtimeConnection('disabled');
   stopCmsConnection();
   if (broadcastHandle) { clearInterval(broadcastHandle); broadcastHandle = null; }
   await shutdownPlaybackComponents();
@@ -2924,8 +3004,7 @@ function quitApp() {
   if (quitPromise) return quitPromise;
   isShuttingDown = true;
   quitPromise = (async () => {
-    try { if (socket) socket.disconnect(); } catch (_) {}
-    socket = null;
+    stopRealtimeConnection('disabled');
     stopCmsConnection();
     if (broadcastHandle) { clearInterval(broadcastHandle); broadcastHandle = null; }
     await shutdownPlaybackComponents();
@@ -2987,7 +3066,7 @@ app.on('before-quit', event => {
     return;
   }
   isShuttingDown = true;
-  try { if (socket) socket.disconnect(); } catch (_) {}
+  stopRealtimeConnection('disabled');
   stopCmsConnection();
 });
 

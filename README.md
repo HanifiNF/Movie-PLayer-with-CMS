@@ -88,16 +88,17 @@ size/modified-time cache, so unchanged films are not probed again.
 
 ### Socket
 
-Namespace `/player`, websocket transport, auth via `auth: { token }`.
+Namespace `/player`, websocket with polling fallback, authenticated via
+`auth: { token, deviceId }`. The CMS advertises the gateway URL during pairing
+and heartbeat; the Player persists it with the encrypted credentials.
 
-Client emits `register` with `{ deviceId }` after connect.
-
-Server pushes to that client (room `device:<deviceId>`):
-
-- `sync:initial` → `Schedule[]` (full snapshot, on connect)
-- `schedule:set` → `Schedule[]` (merge into cache)
-- `schedule:replaceAll` → `Schedule[]` (full replace)
-- `schedule:clear` → `{ ids: string[] }` (remove from cache)
+The gateway sends `sync:initial` and `sync:hint` revision messages. The Player
+does not trust Socket.IO as a schedule or media source: it compares the hinted
+asset/schedule revisions and retrieves the authoritative authenticated REST
+snapshot. It reports `sync:applied` for operational logging. `device:revoked`
+returns the installation to pairing; `session:replaced` keeps REST fallback
+active. REST heartbeat continues every ten seconds even while Socket.IO is
+connected.
 
 The recommended CMS contract is documented in `CMS_CONTRACT.md`. The player
 accepts a versioned envelope containing schedules plus an asset catalog. Media

@@ -10,9 +10,9 @@ module.exports = {
 
   HEARTBEAT_INTERVAL_MS: 10000,
 
-  // The Socket.IO gateway is a later CMS phase. REST pairing and heartbeat
-  // remain active while this is disabled.
-  SOCKET_ENABLED: false,
+  // Realtime is used only when the CMS advertises a gateway URL. REST
+  // heartbeat remains active as the fallback and source of synchronization.
+  SOCKET_ENABLED: process.env.PLAYER_SOCKET_DISABLED !== '1',
 
   // VLC RC interface settings (used by vlcController.cjs).
   VLC_RC_PORT: 4212,

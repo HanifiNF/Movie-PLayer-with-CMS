@@ -45,6 +45,7 @@
       "playbackState.cjs",
       "playbackResume.cjs",
       "cmsClient.cjs",
+      "realtimeClient.cjs",
       "deviceCredentials.cjs",
       "managedAssetCleanup.cjs",
       "displaySelector.cjs",
