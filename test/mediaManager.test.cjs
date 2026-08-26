@@ -102,6 +102,44 @@ test('pre-downloads assigned assets with device authorization', async t => {
   assert.equal(fs.readFileSync(result.ready[0].localPath, 'utf8'), content.toString());
 });
 
+test('downloads managed media into its readable nested folder', async t => {
+  const content = Buffer.from('nested protected film');
+  const sha256 = crypto.createHash('sha256').update(content).digest('hex');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wir-player-nested-'));
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  const server = http.createServer((_request, response) => {
+    response.writeHead(200, { 'content-length': content.length });
+    response.end(content);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const manager = new MediaManager({ mediaDir: path.join(tempDir, 'media') });
+  const asset = {
+    id: 'nested-asset', filename: 'Film.ldg',
+    relativePath: 'Top-Gun-Maverick--0a6a9ff9/0a6a9ff9-613c-4a5b-aee9-6882bbff68ba-r1.ldg',
+    size: content.length, sha256,
+    downloadUrl: `http://127.0.0.1:${server.address().port}/film`
+  };
+
+  const result = await manager.prepareAsset(asset);
+
+  assert.equal(result, path.join(
+    tempDir, 'media', 'Top-Gun-Maverick--0a6a9ff9',
+    '0a6a9ff9-613c-4a5b-aee9-6882bbff68ba-r1.ldg'
+  ));
+  assert.deepEqual(fs.readFileSync(result), content);
+});
+
+test('defense in depth refuses a nested path that escapes the Media Folder', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wir-player-path-'));
+  try {
+    const manager = new MediaManager({ mediaDir: directory });
+    assert.throws(() => manager.getAssetPath({ id: 'unsafe', relativePath: '../outside.ldg' }), /Unsafe managed asset path/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('resumes an interrupted download from the saved partial byte', async t => {
   const content = Buffer.from('0123456789-resumable-media-content');
   const sha256 = crypto.createHash('sha256').update(content).digest('hex');

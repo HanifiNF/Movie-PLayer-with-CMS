@@ -24,7 +24,19 @@ function removeManagedAsset(options = {}) {
     fs.unlinkSync(candidate);
     removed.push(candidate);
   }
+  removeEmptyParents(path.dirname(target), options.mediaManager.mediaDir);
   return { status: 'removed', assetId: options.asset.id, path: target, removed };
 }
 
-module.exports = { removeManagedAsset, samePath };
+function removeEmptyParents(startDirectory, mediaDirectory) {
+  if (!mediaDirectory) return;
+  const root = path.resolve(mediaDirectory);
+  let current = path.resolve(startDirectory);
+  while (current !== root && current.startsWith(`${root}${path.sep}`)) {
+    if (!fs.existsSync(current) || fs.readdirSync(current).length > 0) return;
+    fs.rmdirSync(current);
+    current = path.dirname(current);
+  }
+}
+
+module.exports = { removeManagedAsset, removeEmptyParents, samePath };

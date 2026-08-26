@@ -113,6 +113,7 @@ class CmsClient extends EventEmitter {
       id: String(asset.id || ''),
       title: String(asset.title || ''),
       filename: String(asset.filename || ''),
+      relativePath: String(asset.relative_path || asset.relativePath || ''),
       downloadUrl: new URL(String(asset.download_url || ''), `${this.serverURL}/`).toString(),
       size: Number(asset.size),
       sha256: String(asset.sha256 || '').toLowerCase(),
@@ -143,6 +144,7 @@ class CmsClient extends EventEmitter {
     const removals = await this.#request('/api/player/assets/removals', { method: 'GET', token });
     return (Array.isArray(removals) ? removals : []).map(asset => ({
       id: String(asset.id || ''), filename: String(asset.filename || ''),
+      relativePath: String(asset.relative_path || asset.relativePath || ''),
       ...(asset.encryption_format ? { encryptionFormat: String(asset.encryption_format) } : {})
     })).filter(asset => asset.id && asset.filename);
   }

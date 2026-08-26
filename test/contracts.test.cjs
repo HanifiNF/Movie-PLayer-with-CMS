@@ -45,6 +45,7 @@ test('canonical payload accepts asset references and catalog metadata', () => {
       id: 'asset-1',
       title: 'Catalog Promo',
       filename: 'promo.mp4',
+      relativePath: 'Catalog-Promo--12345678/12345678-1234-4234-8234-1234567890ab-r1.ldg',
       downloadUrl: 'https://example.test/promo.mp4',
       size: 12,
       sha256: 'a'.repeat(64)
@@ -54,6 +55,16 @@ test('canonical payload accepts asset references and catalog metadata', () => {
   assert.equal(payload.schedules[0].playlist[0].assetId, 'asset-1');
   assert.equal(payload.assets[0].sha256.length, 64);
   assert.equal(payload.assets[0].title, 'Catalog Promo');
+  assert.equal(payload.assets[0].relativePath, 'Catalog-Promo--12345678/12345678-1234-4234-8234-1234567890ab-r1.ldg');
+});
+
+test('managed asset paths reject traversal and absolute paths', () => {
+  for (const relativePath of ['../outside.ldg', 'Film/../../outside.ldg', 'C:\\outside.ldg', '/outside.ldg']) {
+    assert.throws(() => normalizeSyncPayload({ assets: [{
+      id: 'unsafe-asset', filename: 'film.ldg', relativePath,
+      downloadUrl: 'https://example.test/film', size: 12, sha256: 'a'.repeat(64)
+    }] }), ContractError);
+  }
 });
 
 test('multi-item playlists preserve their explicit playback order', () => {

@@ -139,6 +139,22 @@ function normalizeSchedule(value) {
   };
 }
 
+function normalizePortableRelativePath(value, field, errors) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  const candidate = String(value).trim().replace(/\\/g, '/');
+  const segments = candidate.split('/');
+  const unsafe = candidate.length > 240
+    || candidate.startsWith('/')
+    || /^[a-zA-Z]:/.test(candidate)
+    || segments.some(segment => !segment || segment === '.' || segment === '..'
+      || segment.length > 120 || /[<>:"|?*\x00-\x1F]/.test(segment) || /[. ]$/.test(segment));
+  if (unsafe) {
+    errors.push(`${field} must be a safe portable relative path`);
+    return null;
+  }
+  return segments.join('/');
+}
+
 function normalizeAsset(value) {
   const asset = value && typeof value === 'object' ? value : {};
   const errors = [];
@@ -146,6 +162,11 @@ function normalizeAsset(value) {
   const downloadUrl = asNonEmptyString(asset.downloadUrl, `asset ${id}.downloadUrl`, errors);
   const sha256 = asNonEmptyString(asset.sha256, `asset ${id}.sha256`, errors).toLowerCase();
   const size = Number(asset.size);
+  const relativePath = normalizePortableRelativePath(
+    asset.relativePath ?? asset.relative_path,
+    `asset ${id}.relativePath`,
+    errors
+  );
 
   if (downloadUrl && !/^https?:\/\//i.test(downloadUrl)) {
     errors.push(`asset ${id}.downloadUrl must use http or https`);
@@ -177,6 +198,7 @@ function normalizeAsset(value) {
     filename: typeof asset.filename === 'string' && asset.filename.trim()
       ? path.basename(asset.filename.trim())
       : `${id}.bin`,
+    relativePath,
     downloadUrl,
     sha256,
     size,

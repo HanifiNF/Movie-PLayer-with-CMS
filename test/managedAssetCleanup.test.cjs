@@ -38,3 +38,19 @@ test('managed cleanup defers deletion while VLC is using the exact file', t => {
   assert.equal(result.status, 'deferred');
   assert.equal(fs.existsSync(target), true);
 });
+
+test('managed cleanup removes the empty film folder but keeps the Media Folder', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wir-cleanup-nested-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const filmDirectory = path.join(directory, 'Film Title--12345678');
+  fs.mkdirSync(filmDirectory);
+  const target = path.join(filmDirectory, '12345678-1234-4234-8234-1234567890ab-r1.ldg');
+  fs.writeFileSync(target, 'film');
+  const mediaManager = { mediaDir: directory, getAssetPath: () => target };
+
+  const result = removeManagedAsset({ asset: { id: 'asset-nested' }, mediaManager, activePath: '' });
+
+  assert.equal(result.status, 'removed');
+  assert.equal(fs.existsSync(filmDirectory), false);
+  assert.equal(fs.existsSync(directory), true);
+});

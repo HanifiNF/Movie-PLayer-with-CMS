@@ -175,6 +175,23 @@ class MediaManager extends EventEmitter {
   }
 
   getAssetPath(asset) {
+    const relativePath = asset && (asset.relativePath || asset.relative_path);
+    if (relativePath) {
+      const normalized = String(relativePath).trim().replace(/\\/g, '/');
+      const segments = normalized.split('/');
+      const unsafe = normalized.length > 240
+        || normalized.startsWith('/')
+        || /^[a-zA-Z]:/.test(normalized)
+        || segments.some(segment => !segment || segment === '.' || segment === '..'
+          || segment.length > 120 || /[<>:"|?*\x00-\x1F]/.test(segment) || /[. ]$/.test(segment));
+      if (unsafe) throw new Error(`Unsafe managed asset path for ${asset.id}`);
+      const target = path.resolve(this.mediaDir, ...segments);
+      const root = path.resolve(this.mediaDir);
+      if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+        throw new Error(`Managed asset path escapes the Media Folder for ${asset.id}`);
+      }
+      return target;
+    }
     const extension = asset && (asset.encryptionFormat === 'ldg-v1' || asset.encryption_format === 'ldg-v1')
       ? '.ldg'
       : path.extname(asset.filename || '').slice(0, 16);
@@ -192,6 +209,7 @@ class MediaManager extends EventEmitter {
 
   async prepareAsset(asset, allowIntegrityRetry = true) {
     const target = this.getAssetPath(asset);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
     const partial = `${target}.part`;
     if (await this.isReady(asset)) {
       removeDownloadState(partial);

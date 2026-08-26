@@ -123,6 +123,7 @@ test('assigned asset manifest resolves relative download URLs against the config
       request = { url, options };
       return response(200, { data: [{
         id: 'asset-1', title: 'Film A Catalog Title', filename: 'raw-upload.mp4',
+        relative_path: 'Film-A-Catalog-Title--12345678/12345678-1234-4234-8234-1234567890ab-r1.ldg',
         download_url: '/api/player/assets/asset-1/download', size: 123,
         sha256: 'a'.repeat(64), mime_type: 'video/mp4', duration_ms: 1000, revision: 1
       }] });
@@ -136,6 +137,10 @@ test('assigned asset manifest resolves relative download URLs against the config
   assert.equal(assets[0].downloadUrl, 'http://192.168.1.10:8080/api/player/assets/asset-1/download');
   assert.equal(assets[0].size, 123);
   assert.equal(assets[0].title, 'Film A Catalog Title');
+  assert.equal(
+    assets[0].relativePath,
+    'Film-A-Catalog-Title--12345678/12345678-1234-4234-8234-1234567890ab-r1.ldg'
+  );
 });
 
 test('assigned LDG manifest preserves the device license and original filename', async () => {
@@ -169,7 +174,10 @@ test('pending removal and acknowledgment use the Player token', async () => {
     serverURL: 'http://localhost:8080',
     fetch: async (url, options) => {
       requests.push({ url, options });
-      if (url.endsWith('/removals')) return response(200, { data: [{ id: 'asset-1', filename: 'Film.mp4' }] });
+      if (url.endsWith('/removals')) return response(200, { data: [{
+        id: 'asset-1', filename: 'Film.mp4',
+        relative_path: 'Film--12345678/12345678-1234-4234-8234-1234567890ab-r1.ldg'
+      }] });
       return response(200, { data: { removed: true, asset_id: 'asset-1' } });
     }
   });
@@ -177,7 +185,10 @@ test('pending removal and acknowledgment use the Player token', async () => {
   const removals = await client.pendingAssetRemovals('device-token');
   const acknowledgment = await client.acknowledgeAssetRemoval('device-token', removals[0].id);
 
-  assert.deepEqual(removals, [{ id: 'asset-1', filename: 'Film.mp4' }]);
+  assert.deepEqual(removals, [{
+    id: 'asset-1', filename: 'Film.mp4',
+    relativePath: 'Film--12345678/12345678-1234-4234-8234-1234567890ab-r1.ldg'
+  }]);
   assert.equal(requests[0].options.headers.Authorization, 'Bearer device-token');
   assert.equal(requests[1].url, 'http://localhost:8080/api/player/assets/asset-1/removed');
   assert.equal(requests[1].options.method, 'POST');
