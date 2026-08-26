@@ -118,10 +118,14 @@ ID; the other two events replace the schedule collection.
         {
           "assetId": "asset-001",
           "mediaKey": "managed:asset-001",
+          "durationMs": 120000,
+          "gapAfterMs": 10000,
           "order": 0
         },
         {
           "mediaKey": "local:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "durationMs": 90000,
+          "gapAfterMs": 0,
           "order": 1
         }
       ]
@@ -158,6 +162,12 @@ ID; the other two events replace the schedule collection.
   ]
 }
 ```
+
+`gapAfterMs` is a non-negative black, silent interval after its playlist item.
+The final item's gap is ignored for a non-looping playlist and becomes the
+loop-boundary gap when `loop` is enabled. Older payloads that omit the field are
+normalized to `0`. Timeline resolution includes gaps, so a Player joining or
+recovering during one remains black until the next media segment begins.
 
 Rules:
 

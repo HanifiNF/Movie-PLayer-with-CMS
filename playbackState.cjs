@@ -1,7 +1,7 @@
 'use strict';
 
 function isPlaybackExpected(active) {
-  return Boolean(active && Array.isArray(active.files) && active.files.length);
+  return Boolean(active && active.phase !== 'gap' && Array.isArray(active.files) && active.files.length);
 }
 
 function isVlcPlaybackHealthy(vlc, active) {

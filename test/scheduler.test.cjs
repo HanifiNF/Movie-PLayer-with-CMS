@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   Scheduler,
+  buildTimelineSegments,
   nextOccurrenceStart,
   resolveTimelineTarget,
   selectActiveOccurrence
@@ -166,11 +167,10 @@ test('late join resolves the active playlist item and elapsed position', () => {
     { durationMs: 120000 }
   ], new Date('2026-08-21T10:00:00.000Z'), new Date('2026-08-21T10:01:30.000Z'), false);
 
-  assert.deepEqual(target, {
-    currentIndex: 1,
-    positionSeconds: 30,
-    elapsedMs: 90000
-  });
+  assert.equal(target.phase, 'media');
+  assert.equal(target.currentIndex, 1);
+  assert.equal(target.positionSeconds, 30);
+  assert.equal(target.elapsedMs, 90000);
 });
 
 test('late join wraps elapsed playback when playlist looping is enabled', () => {
@@ -179,11 +179,10 @@ test('late join wraps elapsed playback when playlist looping is enabled', () => 
     { durationMs: 120000 }
   ], new Date('2026-08-21T10:00:00.000Z'), new Date('2026-08-21T10:04:00.000Z'), true);
 
-  assert.deepEqual(target, {
-    currentIndex: 1,
-    positionSeconds: 0,
-    elapsedMs: 240000
-  });
+  assert.equal(target.phase, 'media');
+  assert.equal(target.currentIndex, 1);
+  assert.equal(target.positionSeconds, 0);
+  assert.equal(target.elapsedMs, 240000);
 });
 
 test('scheduler forwards a late-join target to VLC during active reconciliation', () => {
@@ -213,7 +212,41 @@ test('scheduler forwards a late-join target to VLC during active reconciliation'
   scheduler.clear();
 
   assert.deepEqual(received, {
-    files: ['C:\\media\\opening.mp4', 'C:\\media\\feature.mp4'],
-    options: { loop: false, startIndex: 1, startPositionSeconds: 30 }
+    files: ['C:\\media\\feature.mp4'],
+    options: { loop: false, startPositionSeconds: 30 }
   });
+});
+
+test('film gaps become explicit black timeline segments', () => {
+  const files = [
+    { title: 'Trailer', durationMs: 60000, gapAfterMs: 10000 },
+    { title: 'Feature', durationMs: 120000, gapAfterMs: 5000 }
+  ];
+  assert.deepEqual(buildTimelineSegments(files, false).map(segment => [segment.phase, segment.itemIndex, segment.durationMs]), [
+    ['media', 0, 60000],
+    ['gap', 0, 10000],
+    ['media', 1, 120000]
+  ]);
+  const target = resolveTimelineTarget(files, new Date('2026-08-21T10:00:00.000Z'), new Date('2026-08-21T10:01:05.000Z'), false);
+  assert.equal(target.phase, 'gap');
+  assert.equal(target.currentIndex, 0);
+  assert.equal(target.segmentRemainingMs, 5000);
+});
+
+test('scheduler stops VLC during a gap and exposes its countdown', () => {
+  let idleCalls = 0;
+  const vlc = { replacePlaylist() {}, playIdle() { idleCalls += 1; }, clear() {} };
+  const scheduler = new Scheduler(vlc);
+  const active = schedule({ id: 'gap', loop: false, files: [
+    { title: 'Trailer', path: 'C:\\media\\trailer.mp4', durationMs: 60000, gapAfterMs: 10000 },
+    { title: 'Feature', path: 'C:\\media\\feature.mp4', durationMs: 120000 }
+  ] });
+  scheduler.schedules = [active];
+  scheduler._activate(active, new Date('2026-08-21T10:00:00.000Z'), 190000, new Date('2026-08-21T10:01:05.000Z'));
+  const now = scheduler.getNow();
+  assert.equal(idleCalls, 1);
+  assert.equal(now.phase, 'gap');
+  assert.equal(now.gapRemainingMs, 5000);
+  assert.equal(now.nextTitle, 'Feature');
+  scheduler.clear();
 });

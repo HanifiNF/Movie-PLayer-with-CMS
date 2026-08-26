@@ -81,7 +81,8 @@ function normalizePlaylistItem(value, index, errors) {
       ? item.title.trim()
       : (localPath ? path.basename(localPath) : (assetId || mediaKey)),
     order: Number.isFinite(Number(item.order)) ? Number(item.order) : index,
-    durationMs: Math.max(0, Number(item.durationMs) || 0)
+    durationMs: Math.max(0, Number(item.durationMs) || 0),
+    gapAfterMs: Math.max(0, Number(item.gapAfterMs) || 0)
   };
 }
 
@@ -132,7 +133,8 @@ function normalizeSchedule(value) {
       path: item.localPath,
       title: item.title,
       order: item.order,
-      durationMs: item.durationMs
+      durationMs: item.durationMs,
+      gapAfterMs: item.gapAfterMs
     }))
   };
 }

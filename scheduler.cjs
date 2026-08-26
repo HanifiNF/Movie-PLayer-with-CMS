@@ -144,30 +144,48 @@ function selectActiveOccurrence(schedules, now = new Date(), isFinished = () => 
   return active[0] || null;
 }
 
+function buildTimelineSegments(files, loop = false) {
+  const source = Array.isArray(files) ? files : [];
+  const segments = [];
+  source.forEach((file, index) => {
+    const durationMs = Math.max(0, Number(file.durationMs) || 0);
+    if (durationMs > 0) segments.push({ phase: 'media', itemIndex: index, durationMs, file });
+    const gapAfterMs = Math.max(0, Number(file.gapAfterMs) || 0);
+    if (gapAfterMs > 0 && (index < source.length - 1 || loop)) {
+      segments.push({ phase: 'gap', itemIndex: index, durationMs: gapAfterMs, file });
+    }
+  });
+  return segments;
+}
+
 function resolveTimelineTarget(files, occurrenceStart, now = new Date(), loop = false) {
   const startMs = occurrenceStart instanceof Date ? occurrenceStart.getTime() : new Date(occurrenceStart).getTime();
   const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
   if (!Number.isFinite(startMs) || !Number.isFinite(nowMs)) return null;
 
-  const durations = (Array.isArray(files) ? files : []).map(file => Math.max(0, Number(file.durationMs) || 0));
-  const totalMs = durations.reduce((sum, duration) => sum + duration, 0);
+  const segments = buildTimelineSegments(files, loop);
+  const totalMs = segments.reduce((sum, segment) => sum + segment.durationMs, 0);
   const elapsedMs = Math.max(0, nowMs - startMs);
   // Sub-second startup differences do not warrant a disruptive seek.
-  if (!durations.length || totalMs <= 0 || elapsedMs < 1000) return null;
+  if (!segments.length || totalMs <= 0) return null;
   if (!loop && elapsedMs >= totalMs) return null;
 
   let cursorMs = loop ? elapsedMs % totalMs : elapsedMs;
-  for (let index = 0; index < durations.length; index += 1) {
-    const durationMs = durations[index];
-    if (durationMs <= 0) continue;
-    if (cursorMs < durationMs) {
+  for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
+    const segment = segments[segmentIndex];
+    if (cursorMs < segment.durationMs) {
       return {
-        currentIndex: index,
+        phase: segment.phase,
+        segmentIndex,
+        currentIndex: segment.itemIndex,
         positionSeconds: Math.max(0, Math.floor(cursorMs / 1000)),
-        elapsedMs
+        segmentElapsedMs: cursorMs,
+        segmentRemainingMs: Math.max(0, segment.durationMs - cursorMs),
+        elapsedMs,
+        cycle: totalMs > 0 ? Math.floor(elapsedMs / totalMs) : 0
       };
     }
-    cursorMs -= durationMs;
+    cursorMs -= segment.durationMs;
   }
   return null;
 }
@@ -182,6 +200,9 @@ class Scheduler extends EventEmitter {
     this.currentDuration = null;
     this.currentOccurrenceKey = null;
     this.currentFiles = [];
+    this.currentTimelineFiles = [];
+    this.currentTimeline = null;
+    this.currentTimelineSegmentKey = null;
     this.tickHandle = null;
     this._idlePlaying = false;
     this._reconciling = false;
@@ -277,7 +298,10 @@ class Scheduler extends EventEmitter {
       }
 
       const nextKey = this._occurrenceKey(active.schedule, active.start.getTime());
-      if (this.currentOccurrenceKey === nextKey) return;
+      if (this.currentOccurrenceKey === nextKey) {
+        this._syncTimeline({ ...active.schedule, files: this.currentTimelineFiles }, active.start, now);
+        return;
+      }
 
       const previous = this.schedules.find(item => item.id === this.currentScheduleId);
       if (previous) this.emit('finish', { schedule: previous });
@@ -307,24 +331,53 @@ class Scheduler extends EventEmitter {
     const playableItems = readyFiles
       .map(file => ({ file, source: file.playbackSource || file.localPath || file.path }))
       .filter(item => Boolean(item.source));
-    const files = playableItems.map(item => item.source);
     const playableFiles = playableItems.map(item => item.file);
+    this.currentTimelineFiles = playableFiles;
     this.currentFiles = playableFiles;
 
-    if (files.length) {
-      const timelineTarget = resolveTimelineTarget(playableFiles, startAt, now, schedule.loop !== false);
-      const playbackOptions = { loop: schedule.loop !== false };
-      if (timelineTarget) {
-        playbackOptions.startIndex = timelineTarget.currentIndex;
-        playbackOptions.startPositionSeconds = timelineTarget.positionSeconds;
-      }
-      Promise.resolve(this.vlc.replacePlaylist(files, playbackOptions))
-        .catch(error => this.emit('error', error));
+    if (playableFiles.length) {
+      this._syncTimeline({ ...schedule, files: playableFiles }, startAt, now, true);
     } else {
       Promise.resolve(this.vlc.playIdle()).catch(error => this.emit('error', error));
       this.emit('error', new Error(`Schedule ${schedule.id} has no ready media files`));
     }
     this.emit('activate', { schedule, start: startAt, duration });
+  }
+
+  _syncTimeline(schedule, startAt, now, force = false) {
+    const files = schedule.files || [];
+    const target = resolveTimelineTarget(files, startAt, now, schedule.loop !== false);
+    if (!target) {
+      // Legacy locally-authored schedules may not contain duration metadata.
+      // Preserve their original VLC playlist behavior; CMS schedules always
+      // carry durations and therefore use the segment timeline below.
+      if (force && files.length) {
+        const sources = files.map(file => file.playbackSource || file.localPath || file.path).filter(Boolean);
+        if (sources.length) Promise.resolve(this.vlc.replacePlaylist(sources, { loop: schedule.loop !== false })).catch(error => this.emit('error', error));
+      }
+      return;
+    }
+    const segmentKey = `${this.currentOccurrenceKey}:${target.cycle}:${target.segmentIndex}:${target.phase}`;
+    this.currentTimeline = target;
+    if (!force && this.currentTimelineSegmentKey === segmentKey) return;
+    this.currentTimelineSegmentKey = segmentKey;
+
+    if (target.phase === 'gap') {
+      this.currentFiles = [];
+      Promise.resolve(this.vlc.playIdle()).catch(error => this.emit('error', error));
+      this.emit('gap', { schedule, ...target });
+      return;
+    }
+
+    const file = files[target.currentIndex];
+    const source = file && (file.playbackSource || file.localPath || file.path);
+    if (!source) return;
+    this.currentFiles = [file];
+    Promise.resolve(this.vlc.replacePlaylist([source], {
+      loop: false,
+      startPositionSeconds: target.positionSeconds
+    })).catch(error => this.emit('error', error));
+    this.emit('media', { schedule, file, ...target });
   }
 
   reactivate(scheduleId) {
@@ -352,6 +405,13 @@ class Scheduler extends EventEmitter {
       scheduleId: schedule.id,
       title: schedule.title || schedule.id,
       files: this.currentFiles.slice(),
+      phase: this.currentTimeline?.phase || 'media',
+      itemIndex: this.currentTimeline?.currentIndex ?? 0,
+      gapRemainingMs: this.currentTimeline?.phase === 'gap' ? this.currentTimeline.segmentRemainingMs : 0,
+      nextTitle: this.currentTimeline?.phase === 'gap'
+        ? (this.currentTimelineFiles[this.currentTimeline.currentIndex + 1]?.title || (schedule.loop !== false ? this.currentTimelineFiles[0]?.title : null))
+        : null,
+      playlistSize: this.currentTimelineFiles.length,
       startTime: this.currentStart ? this.currentStart.toISOString() : null,
       endMs: this.currentStart && this.currentDuration
         ? this.currentStart.getTime() + this.currentDuration
@@ -400,7 +460,12 @@ class Scheduler extends EventEmitter {
     this.currentStart = start;
     this.currentDuration = duration;
     this.currentOccurrenceKey = id && start ? occurrenceKey : null;
-    if (!id) this.currentFiles = [];
+    if (!id) {
+      this.currentFiles = [];
+      this.currentTimelineFiles = [];
+      this.currentTimeline = null;
+      this.currentTimelineSegmentKey = null;
+    }
   }
 
   clearTimers() {
@@ -438,6 +503,7 @@ function describeRecurrence(schedule) {
 
 module.exports = {
   Scheduler,
+  buildTimelineSegments,
   compareOccurrences,
   nextOccurrenceStart,
   resolveTimelineTarget,
