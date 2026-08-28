@@ -39,6 +39,7 @@ const {
 } = require('./playbackSettings.cjs');
 const { LdgGateway } = require('./ldg.cjs');
 const { resolveVlcRcPort } = require('./runtimeIsolation.cjs');
+const { listWindowsAudioOutputs } = require('./windowsAudioDevices.cjs');
 const CFG = require('./config.cjs');
 
 if (process.env.PLAYER_USER_DATA) {
@@ -84,6 +85,9 @@ let realtimeState = {
 let setupSession = null;
 let operatorSession = null;
 let vlc = null;
+let windowsAudioDevices = [];
+let windowsAudioLastError = null;
+let windowsAudioRefreshPromise = null;
 let scheduler = null;
 let cfg = null;
 let statusLabel = 'offline';
@@ -1401,6 +1405,58 @@ async function waitForVlcRecovery(timeoutMs = 10000) {
   throw new Error('VLC did not return to a healthy playback state in time');
 }
 
+function getCombinedAudioStatus() {
+  const vlcAudio = vlc ? vlc.getAudioStatus() : {
+    devices: [], selectedDeviceId: playbackSettings.audioDeviceId,
+    currentDeviceId: null, volumePercent: playbackSettings.volumePercent,
+    available: false
+  };
+  const devicesById = new Map();
+
+  for (const device of windowsAudioDevices) {
+    devicesById.set(String(device.id).toLowerCase(), { ...device, active: false });
+  }
+  for (const device of Array.isArray(vlcAudio.devices) ? vlcAudio.devices : []) {
+    const key = String(device.id).toLowerCase();
+    devicesById.set(key, { ...(devicesById.get(key) || {}), ...device, source: 'vlc' });
+  }
+
+  return {
+    ...vlcAudio,
+    devices: [...devicesById.values()],
+    systemDetected: windowsAudioDevices.length > 0,
+    detectionError: windowsAudioLastError
+  };
+}
+
+async function refreshWindowsAudioOutputs() {
+  if (process.platform !== 'win32') {
+    windowsAudioDevices = [];
+    windowsAudioLastError = 'Windows audio endpoint detection is unavailable on this platform.';
+    return windowsAudioDevices;
+  }
+  if (windowsAudioRefreshPromise) return windowsAudioRefreshPromise;
+
+  windowsAudioRefreshPromise = listWindowsAudioOutputs()
+    .then(devices => {
+      windowsAudioDevices = devices;
+      windowsAudioLastError = null;
+      pushDashboard();
+      return devices;
+    })
+    .catch(error => {
+      windowsAudioLastError = error.message || String(error);
+      appendVlcLog(`[audio] Windows output detection failed: ${windowsAudioLastError}`);
+      pushDashboard();
+      return windowsAudioDevices;
+    })
+    .finally(() => {
+      windowsAudioRefreshPromise = null;
+    });
+
+  return windowsAudioRefreshPromise;
+}
+
 function pushDashboard() {
   if (!dashboardWin || dashboardWin.isDestroyed() || !dashboardWin.webContents) return;
   const now = scheduler ? scheduler.getNow() : null;
@@ -1448,7 +1504,8 @@ function pushDashboard() {
       state: vlc ? vlc.state : 'idle',
       rcReady: vlc ? vlc.ready : false,
       idleMode: vlc ? vlc.idleMode : false,
-      playback: vlc ? vlc.getPlaybackStatus() : null
+      playback: vlc ? vlc.getPlaybackStatus() : null,
+      audio: getCombinedAudioStatus()
     },
     watchdog: playbackWatchdog ? playbackWatchdog.getStatus() : { state: 'idle', attempts: 0 },
     recoveryResume: lastResumeInfo,
@@ -1706,6 +1763,41 @@ ipcMain.handle('vlc-retry', async () => {
   return retryVlcPlayback();
 });
 
+ipcMain.handle('vlc-set-volume', async (_event, value) => {
+  const denied = operatorAccessError(); if (denied) return denied;
+  try {
+    const normalized = normalizePlaybackSettings({ ...playbackSettings, volumePercent: value });
+    playbackSettings = { ...playbackSettings, volumePercent: normalized.volumePercent };
+    appliedPlaybackSettings = { ...appliedPlaybackSettings, volumePercent: normalized.volumePercent };
+    writeJson(PLAYBACK_SETTINGS_PATH, playbackSettings);
+    const audio = vlc ? vlc.setVolumePercent(normalized.volumePercent) : null;
+    pushDashboard();
+    return { ok: true, volumePercent: normalized.volumePercent, audio };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('refresh-vlc-audio-devices', async () => {
+  const denied = operatorAccessError(); if (denied) return denied;
+  if (!vlc) return { ok: false, error: 'VLC controller is not initialized.' };
+  try {
+    await refreshWindowsAudioOutputs();
+    if (vlc.ready) await vlc.refreshAudioDevices();
+    const audio = getCombinedAudioStatus();
+    pushDashboard();
+    return {
+      ok: true,
+      audio,
+      message: audio.devices.length
+        ? `${audio.devices.length} audio output${audio.devices.length === 1 ? '' : 's'} detected.`
+        : 'Windows did not report any active audio outputs. System default remains available.'
+    };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
 ipcMain.handle('test-vlc-recovery', async () => {
   const denied = operatorAccessError(); if (denied) return denied;
   if (app.isPackaged) {
@@ -1751,6 +1843,13 @@ ipcMain.handle('save-playback-settings', async (_event, payload) => {
       appliedPlaybackSettings = { ...playbackSettings };
       refreshPlaybackDisplay();
     } else {
+      // Volume is safe to apply without restarting the active film. Display
+      // and audio-device routing changes remain deferred until it finishes.
+      appliedPlaybackSettings = {
+        ...appliedPlaybackSettings,
+        volumePercent: playbackSettings.volumePercent
+      };
+      if (vlc) vlc.setVolumePercent(playbackSettings.volumePercent);
       pushDashboard();
     }
     return { ok: true, settings: playbackSettings, appliesAfterCurrentSchedule: active };
@@ -1769,6 +1868,11 @@ ipcMain.handle('restore-playback-settings', async () => {
     appliedPlaybackSettings = { ...playbackSettings };
     refreshPlaybackDisplay();
   } else {
+    appliedPlaybackSettings = {
+      ...appliedPlaybackSettings,
+      volumePercent: playbackSettings.volumePercent
+    };
+    if (vlc) vlc.setVolumePercent(playbackSettings.volumePercent);
     pushDashboard();
   }
   return { ok: true, settings: playbackSettings, appliesAfterCurrentSchedule: active };
@@ -2344,6 +2448,7 @@ async function shutdownPlaybackComponents() {
 
 async function startRuntime() {
   if (!cfg || !cfg.token) return;
+  void refreshWindowsAudioOutputs();
   stopCmsConnection();
   stopRealtimeConnection(cfg.bypass ? 'test-mode' : 'connecting');
   await shutdownPlaybackComponents();
@@ -2489,6 +2594,7 @@ async function startRuntime() {
       pushDashboard();
     }
   });
+  vlc.on('audio-change', () => pushDashboard());
   scheduler = new Scheduler(vlc, {
     isMediaReady: file => mediaHealthMonitor.isReady(file)
   });

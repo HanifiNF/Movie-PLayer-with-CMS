@@ -31,6 +31,18 @@ function aspectRatio(width, height) {
   return `${Math.round(width / divisor)}:${Math.round(height / divisor)}`;
 }
 
+const VLC_VOLUME_AT_100_PERCENT = 256;
+
+function parseAudioDeviceLine(line) {
+  const match = String(line || '').trim().match(/^\|\s+(.+?)\s+-\s+(.+)$/);
+  if (!match) return null;
+  const id = match[1].trim();
+  const active = /\s\*$/.test(match[2]);
+  const name = match[2].replace(/\s\*$/, '').trim();
+  if (!id || !name || /^(state|audio volume)$/i.test(id)) return null;
+  return { id, name, active };
+}
+
 class VlcController extends EventEmitter {
   constructor(options = {}) {
     super();
@@ -51,6 +63,8 @@ class VlcController extends EventEmitter {
     this._pollHandle = null;
     this._buffer = '';
     this._pendingMetricResponses = [];
+    this._audioDeviceCapture = null;
+    this.audioDevices = [];
     this.playback = {
       currentPath: null,
       currentIndex: -1,
@@ -65,6 +79,8 @@ class VlcController extends EventEmitter {
     this._startedDisplayId = null;
     this._startPromise = null;
     this.settings = normalizePlaybackSettings(options.settings);
+    this.volumePercent = this.settings.volumePercent;
+    this.currentAudioDeviceId = this.settings.audioDeviceId;
   }
 
   _setState(next) {
@@ -98,6 +114,16 @@ class VlcController extends EventEmitter {
 
   getPlaybackStatus() {
     return { ...this.playback };
+  }
+
+  getAudioStatus() {
+    return {
+      devices: this.audioDevices.map(device => ({ ...device })),
+      selectedDeviceId: this.settings.audioDeviceId,
+      currentDeviceId: this.currentAudioDeviceId,
+      volumePercent: this.volumePercent,
+      available: this.ready
+    };
   }
 
   _emitPlaybackProgress() {
@@ -166,6 +192,22 @@ class VlcController extends EventEmitter {
       const t = line.trim();
       if (!t) continue;
       this.emit('rc-data', line);
+
+      if (this._audioDeviceCapture) {
+        const device = parseAudioDeviceLine(t);
+        if (device && !this._audioDeviceCapture.devices.some(item => item.id === device.id)) {
+          this._audioDeviceCapture.devices.push(device);
+          if (device.active) this._audioDeviceCapture.currentDeviceId = device.id;
+        }
+      }
+
+      const volumeMatch = t.match(/audio volume:\s*(\d+)/i);
+      if (volumeMatch) {
+        this.volumePercent = Math.max(0, Math.min(100, Math.round(
+          (Number(volumeMatch[1]) / VLC_VOLUME_AT_100_PERCENT) * 100
+        )));
+        this.emit('audio-change', this.getAudioStatus());
+      }
 
       const inputMatch = t.match(/new input\s*:\s*(.+?)\s*\)?$/i);
       if (inputMatch) {
@@ -269,6 +311,7 @@ class VlcController extends EventEmitter {
       '--height', String(output.height),
       embeddedOutput ? '--no-fullscreen' : (fullscreen ? '--fullscreen' : '--no-fullscreen'),
       '--no-video-title-show',
+      '--volume', String(Math.round((settings.volumePercent / 100) * VLC_VOLUME_AT_100_PERCENT)),
       '--loop'
     ];
     if (embeddedOutput) args.push(`--drawable-hwnd=${this.drawableHwnd}`);
@@ -411,6 +454,69 @@ class VlcController extends EventEmitter {
     if (this._pollHandle) { clearInterval(this._pollHandle); this._pollHandle = null; }
   }
 
+  refreshAudioDevices(timeoutMs = 600) {
+    if (!this.ready) return Promise.resolve(this.getAudioStatus());
+    if (this._audioDeviceCapture) {
+      clearTimeout(this._audioDeviceCapture.timer);
+      this._audioDeviceCapture.resolve(this.getAudioStatus());
+      this._audioDeviceCapture = null;
+    }
+    return new Promise(resolve => {
+      const capture = { devices: [], currentDeviceId: null, resolve, timer: null };
+      capture.timer = setTimeout(() => {
+        if (this._audioDeviceCapture !== capture) return;
+        this._audioDeviceCapture = null;
+        if (capture.devices.length) {
+          this.audioDevices = capture.devices.map(({ id, name }) => ({ id, name }));
+          this.currentAudioDeviceId = capture.currentDeviceId;
+        }
+        this.emit('audio-change', this.getAudioStatus());
+        resolve(this.getAudioStatus());
+      }, Math.max(200, Number(timeoutMs) || 600));
+      this._audioDeviceCapture = capture;
+      if (!this.send('adev')) {
+        clearTimeout(capture.timer);
+        this._audioDeviceCapture = null;
+        resolve(this.getAudioStatus());
+      }
+    });
+  }
+
+  setAudioDevice(deviceId) {
+    const normalized = normalizePlaybackSettings({
+      ...this.settings,
+      audioDeviceId: deviceId
+    });
+    this.settings = normalized;
+    this.currentAudioDeviceId = normalized.audioDeviceId;
+    if (this.ready && normalized.audioDeviceId) this.send(`adev ${normalized.audioDeviceId}`);
+    this.emit('audio-change', this.getAudioStatus());
+    return this.getAudioStatus();
+  }
+
+  setVolumePercent(value) {
+    const normalized = normalizePlaybackSettings({
+      ...this.settings,
+      volumePercent: value
+    });
+    this.settings = normalized;
+    this.volumePercent = normalized.volumePercent;
+    if (this.ready) {
+      this.send(`volume ${Math.round((this.volumePercent / 100) * VLC_VOLUME_AT_100_PERCENT)}`);
+    }
+    this.emit('audio-change', this.getAudioStatus());
+    return this.getAudioStatus();
+  }
+
+  applyAudioSettings() {
+    if (this.settings.audioDeviceId) this.setAudioDevice(this.settings.audioDeviceId);
+    this.setVolumePercent(this.settings.volumePercent);
+    const refreshTimer = setTimeout(() => {
+      this.refreshAudioDevices().catch(() => {});
+    }, 500);
+    if (refreshTimer.unref) refreshTimer.unref();
+  }
+
   async replacePlaylist(filePaths, options = {}) {
     if (!Array.isArray(filePaths)) filePaths = [];
     const nextIdleMode = Boolean(options.idle);
@@ -461,6 +567,7 @@ class VlcController extends EventEmitter {
     this.send(`loop ${shouldLoop ? 'on' : 'off'}`);
     if (filePaths.length) this.send('play');
     await sleep(300);
+    if (filePaths.length) this.applyAudioSettings();
     this.send('status');
     if (filePaths.length) this._setState(this.idleMode ? 'idle' : 'playing');
 
@@ -613,4 +720,4 @@ class VlcController extends EventEmitter {
   }
 }
 
-module.exports = { VlcController };
+module.exports = { VlcController, parseAudioDeviceLine };

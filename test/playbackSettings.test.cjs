@@ -21,6 +21,8 @@ test('playback settings reject unsupported values and bound custom sizes', () =>
     customWidth: 20,
     customHeight: 9000,
     scaling: 'unknown',
+    audioDeviceId: 'speaker-id\nvolume 0',
+    volumePercent: 250,
     hideVlcUi: false
   }), {
     displayId: '22',
@@ -30,8 +32,17 @@ test('playback settings reject unsupported values and bound custom sizes', () =>
     customWidth: 1920,
     customHeight: 1080,
     scaling: 'fit',
+    audioDeviceId: 'speaker-idvolume 0',
+    volumePercent: 100,
     hideVlcUi: false
   });
+});
+
+test('audio settings support system default, a VLC device id, and safe volume bounds', () => {
+  assert.equal(normalizePlaybackSettings({ audioDeviceId: 'default' }).audioDeviceId, null);
+  assert.equal(normalizePlaybackSettings({ audioDeviceId: 'device-123' }).audioDeviceId, 'device-123');
+  assert.equal(normalizePlaybackSettings({ volumePercent: 0 }).volumePercent, 0);
+  assert.equal(normalizePlaybackSettings({ volumePercent: 75 }).volumePercent, 75);
 });
 
 test('idle monitor defaults to the scheduled film output monitor', () => {

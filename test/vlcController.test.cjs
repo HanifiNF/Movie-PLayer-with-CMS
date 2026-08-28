@@ -2,7 +2,18 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { VlcController } = require('../vlcController.cjs');
+const { VlcController, parseAudioDeviceLine } = require('../vlcController.cjs');
+
+test('VLC audio device responses are parsed without accepting unrelated RC lines', () => {
+  assert.deepEqual(parseAudioDeviceLine('| device-id - Speakers (USB Audio) *'), {
+    id: 'device-id',
+    name: 'Speakers (USB Audio)',
+    active: true
+  });
+  assert.equal(parseAudioDeviceLine('| another-id - HDMI Output').active, false);
+  assert.equal(parseAudioDeviceLine('| state playing'), null);
+  assert.equal(parseAudioDeviceLine('status change: ( audio volume: 256 )'), null);
+});
 
 test('VLC startup defaults to a production-safe hidden fullscreen interface', () => {
   const controller = new VlcController();
@@ -101,6 +112,7 @@ test('replacePlaylist enqueues every item before starting the first one', async 
     'enqueue file:///C:/media/film%20B.mp4',
     'loop off',
     'play',
+    'volume 256',
     'status'
   ]);
   assert.deepEqual(controller.currentPlaylist, [
@@ -132,6 +144,7 @@ test('replacePlaylist seeks to the requested late-join playlist position', async
     'enqueue file:///C:/media/film%20B.mp4',
     'loop off',
     'play',
+    'volume 256',
     'status',
     'goto 2',
     'seek 42',

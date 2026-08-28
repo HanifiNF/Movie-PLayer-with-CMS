@@ -50,6 +50,7 @@
       "managedAssetCleanup.cjs",
       "displaySelector.cjs",
       "playbackSettings.cjs",
+      "windowsAudioDevices.cjs",
       "runtimeIsolation.cjs",
       "ldg.cjs",
       "config.cjs",

@@ -8,6 +8,8 @@ const DEFAULT_PLAYBACK_SETTINGS = Object.freeze({
   customWidth: 1920,
   customHeight: 1080,
   scaling: 'fit',
+  audioDeviceId: null,
+  volumePercent: 100,
   hideVlcUi: true
 });
 
@@ -35,6 +37,9 @@ function normalizePlaybackSettings(input = {}) {
   const idleDisplayId = source.idleDisplayId == null || source.idleDisplayId === '' || source.idleDisplayId === 'same'
     ? null
     : String(source.idleDisplayId);
+  const audioDeviceId = source.audioDeviceId == null || source.audioDeviceId === '' || source.audioDeviceId === 'default'
+    ? null
+    : String(source.audioDeviceId).replace(/[\r\n\0]/g, '').slice(0, 1024) || null;
 
   return {
     displayId,
@@ -44,6 +49,8 @@ function normalizePlaybackSettings(input = {}) {
     customWidth: boundedInteger(source.customWidth, 1920, 320, 7680),
     customHeight: boundedInteger(source.customHeight, 1080, 240, 4320),
     scaling,
+    audioDeviceId,
+    volumePercent: boundedInteger(source.volumePercent, 100, 0, 100),
     hideVlcUi: source.hideVlcUi !== false
   };
 }

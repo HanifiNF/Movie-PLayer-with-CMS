@@ -157,6 +157,14 @@
     .vlc-state.idle { background: #eee9e5; color: var(--muted); }
     .vlc-state.error { background: #fbe5e4; color: var(--red-dark); }
     .vlc-note { min-height: 15px; margin-top: 7px; color: var(--red-dark); font-size: 10px; line-height: 1.4; }
+    .volume-control { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+    .volume-control-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; color: var(--muted); font-size: 10px; font-weight: 650; }
+    .volume-control-head output { color: var(--text); font-size: 12px; font-weight: 750; font-variant-numeric: tabular-nums; }
+    .volume-control input[type="range"] { display: block; margin: 0; }
+    .audio-output-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+    .audio-output-current { display: flex; align-items: center; gap: 7px; min-height: 18px; margin-top: 7px; color: var(--muted); font-size: 10px; }
+    .audio-output-current strong { overflow: hidden; color: var(--text); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .audio-output-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
 
     .jump-panel { margin-top: 13px; padding: 13px; border: 1px solid #ead6d1; background: #fff8f6; border-radius: 10px; }
     .jump-panel.hidden { display: none; }
@@ -380,6 +388,10 @@
               <div class="section-label">VLC Player</div>
               <div>State: <span id="vlcState" class="vlc-state idle">idle</span></div>
               <div id="vlcNote" class="vlc-note"></div>
+              <div class="volume-control">
+                <div class="volume-control-head"><label for="vlcVolume" style="margin:0">Volume</label><output id="vlcVolumeValue" for="vlcVolume">100%</output></div>
+                <input id="vlcVolume" type="range" min="0" max="100" value="100" step="1" aria-label="VLC volume" />
+              </div>
               <div class="btn-row"><button id="btnRetry" class="btn primary">Retry VLC</button><button id="btnAddSchedule" class="btn" style="display:none">Add Schedule</button><button id="btnManageSchedules" class="btn" style="display:none">Manage Schedules</button></div>
             </article>
           </div>
@@ -422,6 +434,7 @@
                 <div class="setting-field"><label for="settingOutputMode">Display mode</label><select id="settingOutputMode"><option value="fullscreen">Fullscreen</option><option value="windowed">Windowed (testing)</option></select></div>
                 <div class="setting-field"><label for="settingResolution">Output resolution</label><select id="settingResolution"><option value="native">Native display</option><option value="1080p">1920 × 1080</option><option value="720p">1280 × 720</option><option value="custom">Custom</option></select><div id="customResolution" class="custom-resolution hidden"><input id="settingWidth" type="number" min="320" max="7680" aria-label="Custom width" placeholder="Width" /><input id="settingHeight" type="number" min="240" max="4320" aria-label="Custom height" placeholder="Height" /></div></div>
                 <div class="setting-field"><label for="settingScaling">Video scaling</label><select id="settingScaling"><option value="fit">Fit / Letterbox</option><option value="fill">Fill / Crop</option><option value="stretch">Stretch</option></select></div>
+                <div class="setting-field full"><label for="settingAudioOutput">Audio output</label><div class="audio-output-picker"><select id="settingAudioOutput"><option value="default">System default output</option></select><button id="btnRefreshAudioOutputs" class="btn" type="button">Refresh devices</button></div><div id="audioOutputCurrent" class="audio-output-current"></div><span id="audioOutputHelp" class="setting-help">Windows audio outputs are available even while the Player is idle.</span></div>
                 <label class="setting-field full switch-row"><input id="settingHideUi" type="checkbox" /><span><strong>Hide VLC interface</strong><span>Production kiosk mode: hides the menu, title bar, fullscreen controller, logo window, and console. Dashboard controls remain available.</span></span></label>
               </div>
               <div class="btn-row"><button id="btnSavePlaybackSettings" class="btn primary" type="submit">Save Settings</button></div>
@@ -468,6 +481,8 @@
     let playbackSettingsStatus = '';
     let playbackSettingsError = false;
     let recoveryTestStartedAt = 0;
+    let volumeDragging = false;
+    let volumeUpdateTimer = null;
 
     function fmtCountdown(ms) {
       if (ms == null || isNaN(ms)) return '';
@@ -730,6 +745,40 @@
       $('settingWidth').value = String(settings.customWidth || 1920);
       $('settingHeight').value = String(settings.customHeight || 1080);
       $('settingScaling').value = settings.scaling || 'fit';
+      const audio = state.vlc && state.vlc.audio || {};
+      const selectedAudioId = settings.audioDeviceId == null ? 'default' : String(settings.audioDeviceId);
+      const currentAudioId = audio.currentDeviceId == null ? null : String(audio.currentDeviceId);
+      const devices = Array.isArray(audio.devices) ? audio.devices : [];
+      const currentDevice = devices.find(device => String(device.id).toLowerCase() === String(currentAudioId || '').toLowerCase()) || null;
+      const audioSelect = $('settingAudioOutput'); audioSelect.innerHTML = '';
+      const defaultOption = document.createElement('option'); defaultOption.value = 'default';
+      defaultOption.textContent = currentDevice ? `System default — ${currentDevice.name}` : 'System default output';
+      audioSelect.appendChild(defaultOption);
+      for (const device of devices) {
+        const option = document.createElement('option'); option.value = String(device.id);
+        option.textContent = `${device.name}${String(device.id) === currentAudioId ? ' — In use' : ''}`;
+        audioSelect.appendChild(option);
+      }
+      if (selectedAudioId !== 'default' && !devices.some(device => String(device.id) === selectedAudioId)) {
+        const unavailable = document.createElement('option'); unavailable.value = selectedAudioId; unavailable.textContent = 'Saved audio output — Unavailable'; audioSelect.appendChild(unavailable);
+      }
+      audioSelect.value = selectedAudioId;
+      const currentOutput = $('audioOutputCurrent'); currentOutput.innerHTML = '';
+      if (currentDevice) {
+        const dot = document.createElement('span'); dot.className = 'audio-output-dot';
+        const label = document.createElement('span'); label.textContent = 'VLC is currently using ';
+        const name = document.createElement('strong'); name.textContent = currentDevice.name;
+        currentOutput.append(dot, label, name);
+      } else {
+        currentOutput.textContent = audio.available
+          ? 'VLC has not reported the active physical output.'
+          : (audio.systemDetected ? 'Outputs were detected from Windows. VLC will confirm the active output during playback.' : 'The active physical output will appear while a film is playing.');
+      }
+      $('audioOutputHelp').textContent = audio.available
+        ? ((audio.devices || []).length ? 'Select the output VLC will use. Changes during a film apply after the current schedule finishes.' : 'VLC reported no selectable outputs. System default remains available.')
+        : (audio.systemDetected
+          ? 'Audio outputs are available while idle. VLC will validate the selected device when playback starts.'
+          : 'Press Refresh to detect Windows audio outputs. System default remains available.');
       $('settingHideUi').checked = settings.hideVlcUi !== false;
       updateCustomResolutionVisibility();
       playbackSettingsDirty = false;
@@ -751,6 +800,8 @@
         customWidth: Number($('settingWidth').value),
         customHeight: Number($('settingHeight').value),
         scaling: $('settingScaling').value,
+        audioDeviceId: $('settingAudioOutput').value === 'default' ? null : $('settingAudioOutput').value,
+        volumePercent: Number((state.vlc && state.vlc.audio && state.vlc.audio.volumePercent) ?? settings.volumePercent ?? 100),
         hideVlcUi: $('settingHideUi').checked
       };
     }
@@ -818,6 +869,10 @@
       else { $('nowTitle').textContent = 'No active schedule'; $('nowTitle').classList.add('empty'); $('nowFile').textContent = ''; $('nowCountdown').textContent = ''; }
       const vlc = state.vlc || {}; renderPlayback(now, vlc);
       const displayState = vlc.state === 'playing' && vlc.idleMode ? 'idle' : vlc.state || 'idle'; $('vlcState').className = `vlc-state ${displayState}`; $('vlcState').textContent = displayState;
+      const audio = vlc.audio || {};
+      const volumePercent = Math.max(0, Math.min(100, Math.round(Number(audio.volumePercent ?? 100))));
+      if (!volumeDragging) $('vlcVolume').value = String(volumePercent);
+      $('vlcVolumeValue').value = `${volumeDragging ? $('vlcVolume').value : volumePercent}%`;
       const watchdog = state.watchdog || {};
       const recoveryBusy = ['degraded', 'recovering', 'waiting'].includes(watchdog.state);
       const inGap = Boolean(now && now.phase === 'gap');
@@ -855,7 +910,7 @@
     });
     $('operatorLoginForm').onsubmit = async event => { event.preventDefault(); $('operatorLoginError').textContent = ''; $('btnOperatorLogin').disabled = true; const result = await ipcRenderer.invoke('operator-login', { email: $('operatorEmail').value, password: $('operatorPassword').value }); $('btnOperatorLogin').disabled = false; if (!result || !result.ok) { $('operatorLoginError').textContent = result && result.error || 'Login failed'; return; } $('operatorPassword').value = ''; };
     document.querySelectorAll('.nav-btn').forEach(button => button.onclick = () => setView(button.dataset.view));
-    ['settingDisplay', 'settingIdleDisplay', 'settingOutputMode', 'settingResolution', 'settingWidth', 'settingHeight', 'settingScaling', 'settingHideUi'].forEach(id => {
+    ['settingDisplay', 'settingIdleDisplay', 'settingOutputMode', 'settingResolution', 'settingWidth', 'settingHeight', 'settingScaling', 'settingAudioOutput', 'settingHideUi'].forEach(id => {
       $(id).addEventListener('input', () => { playbackSettingsDirty = true; if (id === 'settingResolution') updateCustomResolutionVisibility(); });
       $(id).addEventListener('change', () => { playbackSettingsDirty = true; if (id === 'settingResolution') updateCustomResolutionVisibility(); });
     });
@@ -869,6 +924,17 @@
     $('btnIdentifyDisplays').onclick = async () => { const result = await ipcRenderer.invoke('identify-displays'); playbackSettingsStatus = result && result.ok ? 'Display numbers are visible for a few seconds.' : result && result.error || 'Could not identify displays.'; playbackSettingsError = !(result && result.ok); renderPlaybackSettings(true); };
     $('btnTestOutput').onclick = async () => { const result = await ipcRenderer.invoke('test-playback-output'); playbackSettingsStatus = result && result.ok ? 'Test output is visible for five seconds.' : result && result.error || 'Could not test output.'; playbackSettingsError = !(result && result.ok); renderPlaybackSettings(true); };
     $('btnTestIdleOutput').onclick = async () => { const result = await ipcRenderer.invoke('test-idle-output', collectPlaybackSettings()); playbackSettingsStatus = result && result.ok ? 'The selected idle monitor is identified for five seconds.' : result && result.error || 'Could not test the idle monitor.'; playbackSettingsError = !(result && result.ok); $('playbackSettingsStatus').className = `settings-status${playbackSettingsError ? ' error' : ''}`; $('playbackSettingsStatus').textContent = playbackSettingsStatus; };
+    $('btnRefreshAudioOutputs').onclick = async () => {
+      const draftSettings = collectPlaybackSettings();
+      const hadUnsavedChanges = playbackSettingsDirty;
+      playbackSettingsStatus = 'Detecting Windows audio outputs...'; playbackSettingsError = false; $('btnRefreshAudioOutputs').disabled = true;
+      $('playbackSettingsStatus').className = 'settings-status'; $('playbackSettingsStatus').textContent = playbackSettingsStatus;
+      const result = await ipcRenderer.invoke('refresh-vlc-audio-devices'); $('btnRefreshAudioOutputs').disabled = false;
+      if (result && result.audio) state.vlc = Object.assign({}, state.vlc || {}, { audio: result.audio });
+      state.display = Object.assign({}, state.display || {}, { settings: draftSettings });
+      playbackSettingsStatus = result && result.ok ? (result.message || `${result.audio.devices.length} audio output(s) detected.`) : result && result.error || 'Could not detect audio outputs.';
+      playbackSettingsError = !(result && result.ok); renderPlaybackSettings(true); playbackSettingsDirty = hadUnsavedChanges;
+    };
     $('btnTestRecovery').onclick = async () => {
       if (!window.confirm('Terminate the current VLC process and test automatic recovery? The film should resume automatically.')) return;
       $('btnTestRecovery').disabled = true;
@@ -888,6 +954,23 @@
     $('btnRewind').onclick = () => invokePlaybackControl('vlc-seek-relative', -10);
     $('btnPlayPause').onclick = () => invokePlaybackControl(state.vlc && state.vlc.state === 'paused' ? 'vlc-resume' : 'vlc-pause');
     $('btnForward').onclick = () => invokePlaybackControl('vlc-seek-relative', 10); $('btnJump').onclick = () => jumpPanelOpen ? closeJumpPanel() : openJumpPanel();
+    $('vlcVolume').addEventListener('pointerdown', () => { volumeDragging = true; });
+    $('vlcVolume').addEventListener('input', () => {
+      volumeDragging = true; $('vlcVolumeValue').value = `${$('vlcVolume').value}%`;
+      clearTimeout(volumeUpdateTimer);
+      volumeUpdateTimer = setTimeout(() => { ipcRenderer.invoke('vlc-set-volume', Number($('vlcVolume').value)); }, 80);
+    });
+    const finishVolumeChange = async () => {
+      clearTimeout(volumeUpdateTimer);
+      const result = await invokePlaybackControl('vlc-set-volume', Number($('vlcVolume').value));
+      volumeDragging = false;
+      if (result && result.ok) {
+        state.vlc = Object.assign({}, state.vlc || {}, { audio: Object.assign({}, state.vlc && state.vlc.audio || {}, { volumePercent: result.volumePercent }) });
+      }
+      render();
+    };
+    $('vlcVolume').addEventListener('change', finishVolumeChange);
+    $('vlcVolume').addEventListener('pointerup', () => { volumeDragging = false; });
     $('jumpSlider').oninput = () => setJumpTarget($('jumpSlider').value); $('jumpMinutes').oninput = syncJumpTargetFromInputs; $('jumpSeconds').oninput = syncJumpTargetFromInputs; $('btnJumpCancel').onclick = closeJumpPanel;
     $('btnJumpApply').onclick = async () => { const target = syncJumpTargetFromInputs(); $('btnJumpApply').disabled = true; const result = await invokePlaybackControl('vlc-seek-to', target); $('btnJumpApply').disabled = false; if (result) closeJumpPanel(); };
     $('btnSkip').onclick = () => ipcRenderer.invoke('vlc-skip'); $('btnRetry').onclick = () => ipcRenderer.invoke('vlc-retry'); $('btnAddSchedule').onclick = () => ipcRenderer.invoke('open-schedule-adder'); $('btnManageSchedules').onclick = () => ipcRenderer.invoke('open-schedule-manager');
