@@ -105,6 +105,22 @@ test('playlist film gap is normalized and old payloads default to zero', () => {
   assert.equal(normalized.files[1].gapAfterMs, 0);
 });
 
+test('playlist film start offset is preserved and old payloads default to zero', () => {
+  const normalized = normalizeSchedule({
+    id: 'start-offset-contract',
+    startTime: '2026-08-01T10:00:00+07:00',
+    endTime: '2026-08-01T11:00:00+07:00',
+    playlist: [
+      { mediaKey: 'local:first', durationMs: 60000, startOffsetMs: 120000 },
+      { mediaKey: 'local:second', durationMs: 120000 }
+    ]
+  });
+  assert.equal(normalized.playlist[0].startOffsetMs, 120000);
+  assert.equal(normalized.playlist[1].startOffsetMs, 0);
+  assert.equal(normalized.files[0].startOffsetMs, 120000);
+  assert.equal(normalized.files[1].startOffsetMs, 0);
+});
+
 test('invalid payload is rejected before reaching the scheduler', () => {
   assert.throws(() => normalizeSyncPayload({
     schedules: [{

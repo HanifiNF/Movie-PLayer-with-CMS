@@ -82,6 +82,7 @@ function normalizePlaylistItem(value, index, errors) {
       : (localPath ? path.basename(localPath) : (assetId || mediaKey)),
     order: Number.isFinite(Number(item.order)) ? Number(item.order) : index,
     durationMs: Math.max(0, Number(item.durationMs) || 0),
+    startOffsetMs: Math.max(0, Number(item.startOffsetMs) || 0),
     gapAfterMs: Math.max(0, Number(item.gapAfterMs) || 0)
   };
 }
@@ -134,6 +135,7 @@ function normalizeSchedule(value) {
       title: item.title,
       order: item.order,
       durationMs: item.durationMs,
+      startOffsetMs: item.startOffsetMs,
       gapAfterMs: item.gapAfterMs
     }))
   };

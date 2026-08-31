@@ -1,0 +1,1 @@
+1. Menambahkan film previe di dashboard sehingga operator dapat melihat film yang diputar di monitor kedua dengan melihatnnya di dashboard, tidak perlu hd, dan berbentuk layar kecil agar bisa muat di dashboard, tujuannya hanya untuk mengetahui apakah film berjalan dengan normal

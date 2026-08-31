@@ -268,6 +268,12 @@ scheduler is updated. VLC starts the resolved ordered playlist when a one-time
 or recurring occurrence becomes active. If the CMS later becomes unavailable, the
 Player continues using the last valid cached revision.
 
+Each playlist item may include a `startOffsetMs` position. The schedule timeline
+uses the effective played duration supplied by the CMS, while VLC seeks to the
+configured source position plus any elapsed time when the Player joins late or
+recovers during an occurrence. Payloads without the field continue from the
+beginning of the film.
+
 ### Test an interrupted download locally
 
 Localhost downloads can finish too quickly to interrupt. Source runs support an

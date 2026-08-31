@@ -63,6 +63,10 @@ class VlcController extends EventEmitter {
     this._pollHandle = null;
     this._buffer = '';
     this._pendingMetricResponses = [];
+    // Unlike playback.currentIndex, this value is only updated from VLC's
+    // "new input" response. It prevents optimistic UI state from being
+    // mistaken for confirmation that an input is already seekable.
+    this._confirmedInputIndex = -1;
     this._audioDeviceCapture = null;
     this.audioDevices = [];
     this.playback = {
@@ -98,6 +102,7 @@ class VlcController extends EventEmitter {
     this.idleMode = false;
     this._startedDisplayId = null;
     this._pendingMetricResponses = [];
+    this._confirmedInputIndex = -1;
     this._resetPlaybackProgress();
   }
 
@@ -138,16 +143,20 @@ class VlcController extends EventEmitter {
       this._toMrl(file).toLowerCase() === normalizedMrl.toLowerCase()
     ));
     const currentPath = index >= 0 ? this.currentPlaylist[index] : normalizedMrl;
+    const newlyConfirmed = this._confirmedInputIndex !== index;
+    this._confirmedInputIndex = index;
     if (index !== this.playback.currentIndex || currentPath !== this.playback.currentPath) {
       this._resetPlaybackProgress(currentPath, index);
+    } else if (newlyConfirmed) {
+      this._emitPlaybackProgress();
     }
   }
 
   _waitForPlaylistIndex(targetIndex, timeoutMs = this.resumeInputTimeoutMs) {
-    if (this.playback.currentIndex === targetIndex) return Promise.resolve();
+    if (this._confirmedInputIndex === targetIndex) return Promise.resolve();
     return new Promise((resolve, reject) => {
-      const onProgress = playback => {
-        if (playback.currentIndex !== targetIndex) return;
+      const onProgress = () => {
+        if (this._confirmedInputIndex !== targetIndex) return;
         cleanup();
         resolve();
       };
@@ -533,12 +542,15 @@ class VlcController extends EventEmitter {
 
     if (targetDisplay) this.display = targetDisplay;
     this.currentPlaylist = filePaths.slice();
+    this._confirmedInputIndex = -1;
     this._resetPlaybackProgress(filePaths[0] || null, filePaths.length ? 0 : -1);
     const shouldLoop = options.loop !== false;
 
     const useTransition = this.transitionDuration > 0;
     if (useTransition && this.onTransitionStart) {
-      this.onTransitionStart();
+      // The output window and its black cover must be fully stacked before
+      // VLC is allowed to decode the first frame of the next input.
+      await Promise.resolve(this.onTransitionStart());
       await sleep(this.transitionDuration);
     }
 
@@ -579,7 +591,7 @@ class VlcController extends EventEmitter {
 
     if (useTransition && this.onTransitionEnd) {
       await sleep(this.transitionDuration);
-      this.onTransitionEnd();
+      await Promise.resolve(this.onTransitionEnd());
     }
   }
 
@@ -587,6 +599,7 @@ class VlcController extends EventEmitter {
     this.currentPlaylist = [];
     this.idleMode = false;
     this._pendingMetricResponses = [];
+    this._confirmedInputIndex = -1;
     this._resetPlaybackProgress();
     this.send('stop');
     await sleep(100);
@@ -653,9 +666,15 @@ class VlcController extends EventEmitter {
     const targetPosition = Math.max(0, Math.floor(Number(positionSeconds) || 0));
 
     // The bundled VLC 3 old-RC interface addresses playlist items from 1,
-    // while the player keeps zero-based array indexes internally.
+    // while the player keeps zero-based array indexes internally. Do not send
+    // goto when VLC already confirmed the requested input. In particular,
+    // goto 1 reloads a one-item playlist asynchronously and can reset a seek
+    // that was issued immediately afterwards.
     const inputConfirmation = this._waitForPlaylistIndex(targetIndex);
-    this.send(`goto ${targetIndex + 1}`);
+    const awaitingNaturalFirstInput = this._confirmedInputIndex < 0 && targetIndex === 0;
+    if (this._confirmedInputIndex !== targetIndex && !awaitingNaturalFirstInput) {
+      this.send(`goto ${targetIndex + 1}`);
+    }
     await inputConfirmation;
     // Give the newly confirmed input a short moment to become seekable.
     await sleep(100);
@@ -675,8 +694,9 @@ class VlcController extends EventEmitter {
     this.idleMode = true;
     this.currentPlaylist = [];
     this._pendingMetricResponses = [];
+    this._confirmedInputIndex = -1;
     this._resetPlaybackProgress();
-    if (this.onTransitionStart) this.onTransitionStart();
+    if (this.onTransitionStart) await Promise.resolve(this.onTransitionStart());
     await this._stopForOutputChange();
     this._setState('idle');
   }

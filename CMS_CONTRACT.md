@@ -119,6 +119,7 @@ ID; the other two events replace the schedule collection.
           "assetId": "asset-001",
           "mediaKey": "managed:asset-001",
           "durationMs": 120000,
+          "startOffsetMs": 600000,
           "gapAfterMs": 10000,
           "order": 0
         },
@@ -168,6 +169,12 @@ The final item's gap is ignored for a non-looping playlist and becomes the
 loop-boundary gap when `loop` is enabled. Older payloads that omit the field are
 normalized to `0`. Timeline resolution includes gaps, so a Player joining or
 recovering during one remains black until the next media segment begins.
+
+`startOffsetMs` is the non-negative position inside the source film where
+playback begins. `durationMs` is the effective amount of that film included in
+the schedule timeline after the skipped prefix has been removed. Older payloads
+that omit `startOffsetMs` are normalized to `0`. A late join or VLC recovery
+seeks to `startOffsetMs` plus the elapsed time inside the active media segment.
 
 Rules:
 

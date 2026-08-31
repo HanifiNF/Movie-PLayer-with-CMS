@@ -174,11 +174,15 @@ function resolveTimelineTarget(files, occurrenceStart, now = new Date(), loop = 
   for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
     const segment = segments[segmentIndex];
     if (cursorMs < segment.durationMs) {
+      const playbackOffsetMs = segment.phase === 'media'
+        ? Math.max(0, Number(segment.file.startOffsetMs) || 0)
+        : 0;
       return {
         phase: segment.phase,
         segmentIndex,
         currentIndex: segment.itemIndex,
-        positionSeconds: Math.max(0, Math.floor(cursorMs / 1000)),
+        positionSeconds: Math.max(0, Math.floor((playbackOffsetMs + cursorMs) / 1000)),
+        playbackOffsetMs,
         segmentElapsedMs: cursorMs,
         segmentRemainingMs: Math.max(0, segment.durationMs - cursorMs),
         elapsedMs,
@@ -231,9 +235,17 @@ class Scheduler extends EventEmitter {
 
   _occurrenceKey(schedule, startMs) {
     const mediaFingerprint = (schedule.files || [])
-      .map(file => `${file.assetId || ''}:${file.localPath || file.path || ''}`)
+      .map((file, index) => [
+        file.assetId || '',
+        file.mediaKey || '',
+        file.localPath || file.path || '',
+        Number.isFinite(Number(file.order)) ? Number(file.order) : index,
+        Math.max(0, Number(file.durationMs) || 0),
+        Math.max(0, Number(file.startOffsetMs) || 0),
+        Math.max(0, Number(file.gapAfterMs) || 0)
+      ].join(':'))
       .join('|');
-    return `${schedule.id}:${startMs}:${Number(schedule.revision) || 0}:${mediaFingerprint}`;
+    return `${schedule.id}:${startMs}:${Number(schedule.revision) || 0}:${schedule.loop !== false}:${mediaFingerprint}`;
   }
 
   _isFinished(scheduleId, startMs) {

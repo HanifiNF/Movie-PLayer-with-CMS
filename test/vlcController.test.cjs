@@ -154,6 +154,65 @@ test('replacePlaylist seeks to the requested late-join playlist position', async
   ]);
 });
 
+test('single-item scheduled playback waits for VLC input and seeks without reloading it', async () => {
+  const controller = new VlcController();
+  const commands = [];
+  controller.ready = true;
+  controller.send = command => {
+    commands.push(command);
+    if (command === 'status') {
+      setTimeout(() => {
+        controller._setCurrentInput('http://127.0.0.1:62862/ldg/v1/film-b');
+      }, 10);
+    }
+    return true;
+  };
+
+  await controller.replacePlaylist([
+    'http://127.0.0.1:62862/ldg/v1/film-b'
+  ], { loop: false, startPositionSeconds: 60 });
+
+  assert.deepEqual(commands, [
+    'clear',
+    'enqueue http://127.0.0.1:62862/ldg/v1/film-b',
+    'loop off',
+    'play',
+    'volume 256',
+    'status',
+    'seek 60',
+    'status',
+    'get_time',
+    'get_length'
+  ]);
+  assert.equal(commands.includes('goto 1'), false);
+  assert.equal(controller.getPlaybackStatus().positionSeconds, 60);
+});
+
+test('playlist replacement waits for the black transition cover before decoding', async () => {
+  const events = [];
+  const controller = new VlcController({
+    transitionDuration: 1,
+    onTransitionStart: async () => {
+      events.push('cover-start');
+      await new Promise(resolve => setTimeout(resolve, 10));
+      events.push('cover-ready');
+    },
+    onTransitionEnd: async () => {
+      events.push('cover-end');
+    }
+  });
+  controller.ready = true;
+  controller.send = command => {
+    events.push(command);
+    return true;
+  };
+
+  await controller.replacePlaylist(['C:\\media\\film.mp4'], { loop: false });
+
+  assert.ok(events.indexOf('cover-ready') < events.indexOf('clear'));
+  assert.ok(events.indexOf('cover-end') > events.indexOf('play'));
+});
+
 test('start replaces an owned VLC process whose RC endpoint never becomes ready', async () => {
   const controller = new VlcController({ existingRcTimeoutMs: 250 });
   let stopped = 0;
@@ -304,6 +363,24 @@ test('resumePlaylistAt converts to VLC 3 one-based item and waits before seeking
   assert.equal(playback.currentIndex, 1);
   assert.equal(playback.currentPath, 'C:\\media\\film B.mp4');
   assert.equal(playback.positionSeconds, 42);
+});
+
+test('resumePlaylistAt does not reload an input VLC already confirmed', async () => {
+  const controller = new VlcController();
+  const commands = [];
+  controller.ready = true;
+  controller.currentPlaylist = ['C:\\media\\film B.mp4'];
+  controller._setCurrentInput('file:///C:/media/film%20B.mp4');
+  controller.send = command => commands.push(command);
+
+  await controller.resumePlaylistAt(0, 60);
+
+  assert.deepEqual(commands, [
+    'seek 60',
+    'status',
+    'get_time',
+    'get_length'
+  ]);
 });
 
 test('resumePlaylistAt never seeks when VLC does not confirm the target item', async () => {

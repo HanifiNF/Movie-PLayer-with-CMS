@@ -513,7 +513,14 @@ function showTransitionOverlay() {
       destroyTransitionOverlay();
     }
     if (!transitionWin || transitionWin.isDestroyed()) createTransitionWindow();
-    if (transitionWin && !transitionWin.isDestroyed()) transitionWin.showInactive();
+    if (transitionWin && !transitionWin.isDestroyed()) {
+      transitionWin.showInactive();
+      // filmOutputWin uses the same screen-saver always-on-top level and may
+      // have been shown after this cover. Reassert and move the cover to the
+      // top so VLC's pre-seek frame can never flash through.
+      transitionWin.setAlwaysOnTop(true, 'screen-saver');
+      if (typeof transitionWin.moveTop === 'function') transitionWin.moveTop();
+    }
   } catch (e) {
     console.error('showTransitionOverlay failed', e);
   }
@@ -2534,11 +2541,16 @@ async function startRuntime() {
     drawableHwnd,
     settings: appliedPlaybackSettings,
     transitionDuration: 500,
-    onTransitionStart: () => {
+    onTransitionStart: async () => {
       showTransitionOverlay();
-      Promise.resolve(showFilmOutput()).catch(error => {
+      try {
+        await showFilmOutput();
+        // showFilmOutput can move the film window above an already-visible
+        // transition window. Restack black only after film output is ready.
+        showTransitionOverlay();
+      } catch (error) {
         appendVlcLog(`[display] film output failed: ${error.message}`);
-      });
+      }
     },
     onTransitionEnd: () => {
       destroyIdleOutput();

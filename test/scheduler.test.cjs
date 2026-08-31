@@ -185,6 +185,58 @@ test('late join wraps elapsed playback when playlist looping is enabled', () => 
   assert.equal(target.elapsedMs, 240000);
 });
 
+test('film start offset is added to on-time, late-join, and loop seek positions', () => {
+  const files = [{ durationMs: 120000, startOffsetMs: 600000 }];
+  const start = new Date('2026-08-21T10:00:00.000Z');
+
+  assert.equal(resolveTimelineTarget(files, start, start, false).positionSeconds, 600);
+  assert.equal(resolveTimelineTarget(files, start, new Date('2026-08-21T10:00:30.000Z'), false).positionSeconds, 630);
+  assert.equal(resolveTimelineTarget(files, start, new Date('2026-08-21T10:02:10.000Z'), true).positionSeconds, 610);
+});
+
+test('film start offsets keep gap boundaries and the following film seek aligned', () => {
+  const files = [
+    { durationMs: 50000, startOffsetMs: 10000, gapAfterMs: 10000 },
+    { durationMs: 60000, startOffsetMs: 30000 }
+  ];
+  const start = new Date('2026-08-21T10:00:00.000Z');
+  const gap = resolveTimelineTarget(files, start, new Date('2026-08-21T10:00:55.000Z'), false);
+  const secondFilm = resolveTimelineTarget(files, start, new Date('2026-08-21T10:01:10.000Z'), false);
+
+  assert.equal(gap.phase, 'gap');
+  assert.equal(gap.segmentRemainingMs, 5000);
+  assert.equal(secondFilm.currentIndex, 1);
+  assert.equal(secondFilm.positionSeconds, 40);
+});
+
+test('scheduler forwards the configured film offset plus elapsed segment time to VLC', () => {
+  let received = null;
+  const vlc = {
+    replacePlaylist(files, options) { received = { files, options }; },
+    playIdle() {},
+    clear() {}
+  };
+  const scheduler = new Scheduler(vlc);
+  const active = schedule({
+    id: 'start-inside-film', loop: false,
+    files: [{ path: 'C:\\media\\feature.mp4', durationMs: 120000, startOffsetMs: 600000 }]
+  });
+
+  scheduler.schedules = [active];
+  scheduler._activate(
+    active,
+    new Date('2026-08-21T10:00:00.000Z'),
+    120000,
+    new Date('2026-08-21T10:00:30.000Z')
+  );
+  scheduler.clear();
+
+  assert.deepEqual(received, {
+    files: ['C:\\media\\feature.mp4'],
+    options: { loop: false, startPositionSeconds: 630 }
+  });
+});
+
 test('scheduler forwards a late-join target to VLC during active reconciliation', () => {
   let received = null;
   const vlc = {
@@ -214,6 +266,46 @@ test('scheduler forwards a late-join target to VLC during active reconciliation'
   assert.deepEqual(received, {
     files: ['C:\\media\\feature.mp4'],
     options: { loop: false, startPositionSeconds: 30 }
+  });
+});
+
+test('active schedule metadata refresh seeks the next film to its newly synchronized start offset', () => {
+  const received = [];
+  const vlc = {
+    replacePlaylist(files, options) { received.push({ files, options }); },
+    playIdle() {},
+    clear() {}
+  };
+  const scheduler = new Scheduler(vlc);
+  const start = new Date('2026-08-31T04:39:00.000Z');
+  const base = schedule({
+    id: 'offset-sync',
+    revision: 1,
+    recurrence: null,
+    loop: false,
+    startTime: start.toISOString(),
+    endTime: new Date(start.getTime() + 132000).toISOString(),
+    files: [
+      { path: 'C:\\media\\film-a.mp4', durationMs: 25000, gapAfterMs: 35000 },
+      { path: 'C:\\media\\film-b.mp4', durationMs: 72000, startOffsetMs: 0 }
+    ]
+  });
+  const refreshed = {
+    ...base,
+    files: base.files.map((file, index) => (
+      index === 1 ? { ...file, startOffsetMs: 60000 } : { ...file }
+    ))
+  };
+
+  scheduler.schedules = [base];
+  scheduler._activate(base, start, 132000, start);
+  scheduler.schedules = [refreshed];
+  scheduler._reconcile(new Date(start.getTime() + 60000));
+  scheduler.clear();
+
+  assert.deepEqual(received.at(-1), {
+    files: ['C:\\media\\film-b.mp4'],
+    options: { loop: false, startPositionSeconds: 60 }
   });
 });
 
