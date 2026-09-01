@@ -104,6 +104,7 @@ let broadcastHandle = null;
 let playbackPreviewHandle = null;
 let playbackPreviewBusy = false;
 let playbackPreviewSignature = '';
+let playbackPreviewStreaming = false;
 let secondDisplay = null;
 let idleDisplay = null;
 let hasDedicatedPlaybackDisplay = false;
@@ -1563,7 +1564,7 @@ function sendPlaybackPreview(payload) {
 
 async function capturePlaybackPreview() {
   if (
-    playbackPreviewBusy || isShuttingDown || !dashboardWin || dashboardWin.isDestroyed() ||
+    playbackPreviewStreaming || playbackPreviewBusy || isShuttingDown || !dashboardWin || dashboardWin.isDestroyed() ||
     !dashboardWin.isVisible() || dashboardWin.isMinimized()
   ) return;
   const preview = currentPlaybackPreviewState();
@@ -1618,6 +1619,7 @@ function stopPlaybackPreviewLoop() {
   playbackPreviewHandle = null;
   playbackPreviewBusy = false;
   playbackPreviewSignature = '';
+  playbackPreviewStreaming = false;
 }
 
 function startBroadcastLoop() {
@@ -1822,6 +1824,45 @@ ipcMain.handle('vlc-resume', async () => {
   } catch (error) {
     pushDashboard();
     return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('playback-preview-source', async event => {
+  if (
+    !dashboardWin || dashboardWin.isDestroyed() ||
+    !dashboardWin.webContents || event.sender !== dashboardWin.webContents
+  ) {
+    return { ok: false, error: 'Preview capture is only available to the Player dashboard.' };
+  }
+  const preview = currentPlaybackPreviewState();
+  if (!shouldCapturePreview(preview.status) || !preview.displayId) {
+    return { ok: false, error: 'Film output is not currently available for live preview.' };
+  }
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: 0, height: 0 },
+      fetchWindowIcons: false
+    });
+    const source = selectDisplaySource(sources, preview.displayId);
+    if (!source || !source.id) throw new Error('The selected output monitor could not be captured.');
+    return {
+      ok: true,
+      sourceId: source.id,
+      displayId: preview.displayId,
+      displayLabel: preview.displayLabel || source.name || 'Output monitor'
+    };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.on('playback-preview-stream-state', (event, payload) => {
+  if (
+    dashboardWin && !dashboardWin.isDestroyed() && dashboardWin.webContents &&
+    event.sender === dashboardWin.webContents
+  ) {
+    playbackPreviewStreaming = Boolean(payload && payload.active);
   }
 });
 
