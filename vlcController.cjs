@@ -57,12 +57,17 @@ class VlcController extends EventEmitter {
     this.transitionDuration = options.transitionDuration || 0;
     this.pollIntervalMs = Math.max(250, Number(options.pollIntervalMs) || 1000);
     this.resumeInputTimeoutMs = Math.max(250, Number(options.resumeInputTimeoutMs) || 3000);
+    this.replacementStopTimeoutMs = Math.max(250, Number(options.replacementStopTimeoutMs) || 2000);
     this.existingRcTimeoutMs = Math.max(250, Number(options.existingRcTimeoutMs) || 1500);
     this.onTransitionStart = options.onTransitionStart || null;
     this.onTransitionEnd = options.onTransitionEnd || null;
     this._pollHandle = null;
     this._buffer = '';
     this._pendingMetricResponses = [];
+    // RC metric replies do not carry a request/input id. During a playlist
+    // replacement, ignore numeric replies until VLC confirms the new input so
+    // late get_time/get_length values cannot leak into the next film.
+    this._metricsBlockedUntilInput = true;
     // Unlike playback.currentIndex, this value is only updated from VLC's
     // "new input" response. It prevents optimistic UI state from being
     // mistaken for confirmation that an input is already seekable.
@@ -102,6 +107,7 @@ class VlcController extends EventEmitter {
     this.idleMode = false;
     this._startedDisplayId = null;
     this._pendingMetricResponses = [];
+    this._metricsBlockedUntilInput = true;
     this._confirmedInputIndex = -1;
     this._resetPlaybackProgress();
   }
@@ -145,6 +151,10 @@ class VlcController extends EventEmitter {
     const currentPath = index >= 0 ? this.currentPlaylist[index] : normalizedMrl;
     const newlyConfirmed = this._confirmedInputIndex !== index;
     this._confirmedInputIndex = index;
+    if (normalizedMrl && newlyConfirmed) {
+      this._pendingMetricResponses = [];
+      this._metricsBlockedUntilInput = false;
+    }
     if (index !== this.playback.currentIndex || currentPath !== this.playback.currentPath) {
       this._resetPlaybackProgress(currentPath, index);
     } else if (newlyConfirmed) {
@@ -169,6 +179,24 @@ class VlcController extends EventEmitter {
         this.removeListener('playback-progress', onProgress);
       };
       this.on('playback-progress', onProgress);
+    });
+  }
+
+  _waitForStopAcknowledgement(timeoutMs = this.replacementStopTimeoutMs) {
+    return new Promise((resolve, reject) => {
+      const onStopped = () => {
+        cleanup();
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('VLC did not acknowledge the stop command'));
+      }, timeoutMs);
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.removeListener('stop-acknowledged', onStopped);
+      };
+      this.on('stop-acknowledged', onStopped);
     });
   }
 
@@ -244,6 +272,7 @@ class VlcController extends EventEmitter {
         raw = raw.toLowerCase();
         const map = { playing: 'playing', paused: 'paused', opening: 'playing', buffering: 'playing', stopped: 'idle', ended: 'idle', error: 'error' };
         const next = map[raw] || 'idle';
+        if (raw === 'stopped') this.emit('stop-acknowledged');
         this._setState(this.idleMode && next === 'playing' ? 'idle' : next);
         continue;
       }
@@ -251,7 +280,10 @@ class VlcController extends EventEmitter {
       const l = t.toLowerCase();
       if (l.includes('play state:')) this._setState(this.idleMode ? 'idle' : 'playing');
       else if (l.includes('pause state:')) this._setState('paused');
-      else if (l.includes('stop state:')) this._setState('idle');
+      else if (l.includes('stop state:')) {
+        this.emit('stop-acknowledged');
+        this._setState('idle');
+      }
     }
   }
 
@@ -450,7 +482,7 @@ class VlcController extends EventEmitter {
 
   _pollPlayback() {
     this.send('status');
-    if (this.idleMode) {
+    if (this.idleMode || this._metricsBlockedUntilInput || this._confirmedInputIndex < 0) {
       this._pendingMetricResponses = [];
       return;
     }
@@ -528,6 +560,12 @@ class VlcController extends EventEmitter {
 
   async replacePlaylist(filePaths, options = {}) {
     if (!Array.isArray(filePaths)) filePaths = [];
+    const hadActiveInput = Boolean(
+      this.playback.currentPath ||
+      this._confirmedInputIndex >= 0 ||
+      this.state === 'playing' ||
+      this.state === 'paused'
+    );
     const nextIdleMode = Boolean(options.idle);
     this.idleMode = nextIdleMode;
 
@@ -541,9 +579,7 @@ class VlcController extends EventEmitter {
     );
 
     if (targetDisplay) this.display = targetDisplay;
-    this.currentPlaylist = filePaths.slice();
-    this._confirmedInputIndex = -1;
-    this._resetPlaybackProgress(filePaths[0] || null, filePaths.length ? 0 : -1);
+    this._beginInputTransition(filePaths);
     const shouldLoop = options.loop !== false;
 
     const useTransition = this.transitionDuration > 0;
@@ -557,14 +593,32 @@ class VlcController extends EventEmitter {
     if (outputDisplayChanged) await this._stopForOutputChange();
 
     if (!this.ready) await this.start();
-    // If the player is paused, the old RC "play" command means resume and the
-    // prompt mode may ignore the new item. Unpause first, then stop, so the
-    // subsequent clear/add/play actually switches to the new content.
+    // VLC old-RC "clear" only clears the playlist; it does not reliably close
+    // the decoder that is currently playing. Always stop and wait for VLC's
+    // acknowledgement before loading the replacement so time/length replies
+    // from the previous film cannot bleed into the next one.
     if (this.state === 'paused') {
       this.send('pause');
       await sleep(100);
+    }
+    if (hadActiveInput) {
+      // Do not use the cached `idle` state as proof that this stop completed.
+      // At a natural media boundary VLC is already reported idle while its old
+      // input/decoder may still be releasing. Wait for a fresh RC response to
+      // this stop command, then give the decoder a short quiescence window.
+      const stopped = this._waitForStopAcknowledgement();
       this.send('stop');
-      await sleep(200);
+      this.send('status');
+      try {
+        await stopped;
+        await sleep(150);
+      } catch (error) {
+        // A missing old-RC acknowledgement must not allow stale decoder state
+        // into the next film. Recreate VLC, matching the already-safe gap path.
+        this.emit('vlc-log', `[transition] ${error.message}; restarting VLC before replacement`);
+        await this._stopForOutputChange();
+        await this.start();
+      }
     }
     this.send('clear');
     await sleep(200);
@@ -577,10 +631,14 @@ class VlcController extends EventEmitter {
       await sleep(100);
     }
     this.send(`loop ${shouldLoop ? 'on' : 'off'}`);
+    const firstInputConfirmation = filePaths.length && !this.idleMode
+      ? this._waitForPlaylistIndex(0)
+      : null;
     if (filePaths.length) this.send('play');
     await sleep(300);
     if (filePaths.length) this.applyAudioSettings();
     this.send('status');
+    if (firstInputConfirmation) await firstInputConfirmation;
     if (filePaths.length) this._setState(this.idleMode ? 'idle' : 'playing');
 
     const startIndex = Math.max(0, Math.floor(Number(options.startIndex) || 0));
@@ -599,6 +657,7 @@ class VlcController extends EventEmitter {
     this.currentPlaylist = [];
     this.idleMode = false;
     this._pendingMetricResponses = [];
+    this._metricsBlockedUntilInput = true;
     this._confirmedInputIndex = -1;
     this._resetPlaybackProgress();
     this.send('stop');
@@ -607,6 +666,15 @@ class VlcController extends EventEmitter {
     await sleep(100);
     this._setState('idle');
     this.send('status');
+  }
+
+  _beginInputTransition(filePaths) {
+    const files = Array.isArray(filePaths) ? filePaths.slice() : [];
+    this.currentPlaylist = files;
+    this._pendingMetricResponses = [];
+    this._metricsBlockedUntilInput = files.length > 0 && !this.idleMode;
+    this._confirmedInputIndex = -1;
+    this._resetPlaybackProgress(files[0] || null, files.length ? 0 : -1);
   }
 
   async pause() {

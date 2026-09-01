@@ -104,6 +104,21 @@
     .card-pad { padding: 19px 20px; }
     .section-label { margin: 0 0 11px; color: var(--muted); font-size: 10px; font-weight: 750; letter-spacing: 1.1px; text-transform: uppercase; }
     .home-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, .8fr); gap: 16px; margin-top: 16px; }
+    .home-side { display: grid; align-content: start; gap: 16px; }
+    .preview-card { padding: 16px; }
+    .preview-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .preview-card-head .section-label { margin: 0; }
+    .preview-state { display: inline-flex; padding: 4px 7px; border-radius: 999px; background: #eee9e5; color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: .35px; text-transform: uppercase; }
+    .preview-state.live { background: #e3f5ec; color: var(--green); }
+    .preview-state.paused, .preview-state.gap { background: #f6ecd9; color: var(--amber); }
+    .preview-state.error, .preview-state.unavailable { background: #fbe5e4; color: var(--red-dark); }
+    .playback-preview-frame { position: relative; display: grid; aspect-ratio: 16 / 9; margin-top: 11px; overflow: hidden; place-items: center; border: 1px solid #352e2b; border-radius: 10px; background: #161312; }
+    .playback-preview-frame img { width: 100%; height: 100%; object-fit: contain; background: #000; }
+    .playback-preview-frame img.hidden { display: none; }
+    .playback-preview-placeholder { max-width: 220px; padding: 16px; color: #b8ada8; font-size: 10px; line-height: 1.45; text-align: center; }
+    .playback-preview-placeholder.hidden { display: none; }
+    .preview-meta { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; color: var(--subtle); font-size: 9px; }
+    .preview-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .now-card { padding: 21px 22px; border-top: 4px solid var(--red); }
     .now-title { margin-bottom: 4px; font-size: 23px; font-weight: 720; letter-spacing: -.45px; }
     .now-title.empty { color: var(--subtle); font-style: italic; font-weight: 500; }
@@ -384,6 +399,12 @@
           </article>
           <div class="home-grid">
             <article class="card card-pad"><div class="section-label">Upcoming schedules</div><ul id="upcoming" class="list"></ul></article>
+            <div class="home-side">
+            <article class="card preview-card">
+              <div class="preview-card-head"><div class="section-label">Film output preview</div><span id="previewState" class="preview-state waiting">Waiting</span></div>
+              <div class="playback-preview-frame"><img id="previewImage" class="hidden" alt="Low-resolution preview of the film output monitor"><div id="previewPlaceholder" class="playback-preview-placeholder">Preview starts with the next active schedule.</div></div>
+              <div class="preview-meta"><span id="previewDisplay">Output monitor</span><span id="previewCapturedAt">Not capturing</span></div>
+            </article>
             <article class="card card-pad">
               <div class="section-label">VLC Player</div>
               <div>State: <span id="vlcState" class="vlc-state idle">idle</span></div>
@@ -394,6 +415,7 @@
               </div>
               <div class="btn-row"><button id="btnRetry" class="btn primary">Retry VLC</button><button id="btnAddSchedule" class="btn" style="display:none">Add Schedule</button><button id="btnManageSchedules" class="btn" style="display:none">Manage Schedules</button></div>
             </article>
+            </div>
           </div>
         </section>
 
@@ -470,7 +492,8 @@
     const pauseIcon = '<rect class="solid" x="6" y="4" width="4" height="16"/><rect class="solid" x="14" y="4" width="4" height="16"/>';
     const playIcon = '<path class="solid" d="M7 4l13 8-13 8z"/>';
     let activeView = 'home';
-    let state = { status: 'offline', deviceId: '', device: { id: '', name: 'Player', location: '', timezone: '' }, display: { mode: 'single', hasDedicatedDisplay: false }, appVersion: '1.0.0', development: false, serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, realtime: { status: 'disabled', connected: false, lastError: null }, refresh: { status: 'idle', lastRefreshedAt: null, lastError: null }, remoteDownloads: { status: 'idle', assignedCount: 0, items: [] }, operator: { unlocked: false, user: null }, now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
+    let state = { status: 'offline', deviceId: '', device: { id: '', name: 'Player', location: '', timezone: '' }, display: { mode: 'single', hasDedicatedDisplay: false }, appVersion: '1.0.0', development: false, serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, realtime: { status: 'disabled', connected: false, lastError: null }, refresh: { status: 'idle', lastRefreshedAt: null, lastError: null }, remoteDownloads: { status: 'idle', assignedCount: 0, items: [] }, operator: { unlocked: false, user: null }, now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, preview: { status: 'waiting', label: 'Waiting', message: 'Preview starts with the next active schedule.' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
+    let previewFrame = { status: 'waiting', frame: null, capturedAt: null };
     let assetState = { loaded: false, loading: false, error: '', directory: '', items: [] };
     let jumpPanelOpen = false;
     let jumpMaxSeconds = 0;
@@ -677,6 +700,27 @@
       $('progressFill').style.width = `${length > 0 ? Math.min(100, position / length * 100) : 0}%`;
       $('playbackElapsed').textContent = fmtPlaybackTime(position); $('playbackDuration').textContent = length > 0 ? fmtPlaybackTime(length) : 'Detecting duration...';
       $('nextMedia').textContent = nextIndex >= 0 ? `Next: ${titleFor(files[nextIndex])}` : 'Last item in playlist'; $('playbackDetails').classList.remove('hidden');
+    }
+
+    function renderPlaybackPreview() {
+      const expected = state.preview || { status: 'waiting', label: 'Waiting', message: 'Preview starts with the next active schedule.' };
+      const canContainFrame = expected.status === 'live' || expected.status === 'paused';
+      const preview = canContainFrame && previewFrame.received ? { ...expected, ...previewFrame } : expected;
+      const showFrame = canContainFrame && (preview.status === 'live' || preview.status === 'paused') && Boolean(preview.frame);
+      const image = $('previewImage'); const placeholder = $('previewPlaceholder');
+      $('previewState').className = `preview-state ${preview.status || 'waiting'}`;
+      $('previewState').textContent = preview.label || preview.status || 'Waiting';
+      if (showFrame) {
+        if (image.src !== preview.frame) image.src = preview.frame;
+        image.classList.remove('hidden'); placeholder.classList.add('hidden');
+      } else {
+        image.classList.add('hidden'); image.removeAttribute('src'); placeholder.classList.remove('hidden');
+        placeholder.textContent = preview.message || 'Preview is not available.';
+      }
+      $('previewDisplay').textContent = preview.displayLabel || expected.displayLabel || 'Output monitor';
+      $('previewCapturedAt').textContent = showFrame && preview.capturedAt
+        ? `Updated ${new Date(preview.capturedAt).toLocaleTimeString()}`
+        : 'Not capturing';
     }
 
     function renderSkipped() {
@@ -898,12 +942,16 @@
       const upcoming = $('upcoming'); upcoming.innerHTML = '';
       if (!(state.upcoming || []).length) { const li = document.createElement('li'); li.innerHTML = '<div class="empty-state" style="width:100%">No upcoming schedules.</div>'; upcoming.appendChild(li); }
       for (const item of state.upcoming || []) { const li = document.createElement('li'); const time = document.createElement('span'); const title = document.createElement('span'); const meta = document.createElement('span'); time.className = 'time'; title.className = 'title'; meta.className = 'meta'; time.textContent = fmtDate(item.startMs); title.textContent = item.title; meta.textContent = item.freqLabel || ''; li.append(time, title, meta); upcoming.appendChild(li); }
-      renderMediaHealth(); renderSkipped(); renderRemoteDownloads(); if (assetState.loaded || assetState.loading || assetState.error) renderAssets();
+      renderMediaHealth(); renderSkipped(); renderRemoteDownloads(); renderPlaybackPreview(); if (assetState.loaded || assetState.loading || assetState.error) renderAssets();
       renderPlaybackSettings(); renderRecoveryTestState();
       $('aboutVersion').textContent = state.appVersion || '1.0.0'; $('aboutDevice').textContent = state.deviceId || 'Not registered'; $('aboutMode').textContent = badgeLabel(state.status); $('aboutHeartbeat').textContent = state.cms && state.cms.lastHeartbeatAt ? new Date(state.cms.lastHeartbeatAt).toLocaleString() : '—'; $('aboutServer').textContent = state.serverURL || (state.bypass ? 'Test mode' : '—'); $('aboutRealtime').textContent = realtimeLabel(realtime); $('aboutRealtime').title = realtime.lastError || realtime.url || ''; $('aboutVlc').textContent = displayState; $('aboutRc').textContent = vlc.rcReady ? 'Ready' : 'Unavailable';
     }
 
     ipcRenderer.on('dashboard:update', (_event, payload) => { state = Object.assign({}, state, payload); render(); });
+    ipcRenderer.on('playback-preview:update', (_event, payload) => {
+      previewFrame = { ...(payload || {}), received: true };
+      renderPlaybackPreview();
+    });
     ipcRenderer.on('assets:inventory-updated', (_event, payload) => {
       assetState = { loaded: true, loading: false, error: '', directory: payload && payload.directory || '', items: payload && Array.isArray(payload.items) ? payload.items : [] };
       renderAssets();

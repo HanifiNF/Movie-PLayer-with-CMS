@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, shell, screen, dialog, safeStorage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, shell, screen, dialog, safeStorage, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -40,6 +40,14 @@ const {
 const { LdgGateway } = require('./ldg.cjs');
 const { resolveVlcRcPort } = require('./runtimeIsolation.cjs');
 const { listWindowsAudioOutputs } = require('./windowsAudioDevices.cjs');
+const {
+  PREVIEW_WIDTH,
+  PREVIEW_HEIGHT,
+  PREVIEW_INTERVAL_MS,
+  resolvePreviewState,
+  selectDisplaySource,
+  shouldCapturePreview
+} = require('./playbackPreview.cjs');
 const CFG = require('./config.cjs');
 
 if (process.env.PLAYER_USER_DATA) {
@@ -93,6 +101,9 @@ let cfg = null;
 let statusLabel = 'offline';
 let nowSchedule = null;
 let broadcastHandle = null;
+let playbackPreviewHandle = null;
+let playbackPreviewBusy = false;
+let playbackPreviewSignature = '';
 let secondDisplay = null;
 let idleDisplay = null;
 let hasDedicatedPlaybackDisplay = false;
@@ -383,6 +394,10 @@ function createDashboardWindow() {
   });
   dashboardWin.removeMenu();
   dashboardWin.loadFile(path.join(__dirname, 'dashboard.html'));
+  dashboardWin.webContents.once('did-finish-load', () => {
+    startPlaybackPreviewLoop();
+    void capturePlaybackPreview();
+  });
   dashboardWin.on('close', (e) => {
     if (!app.isQuiting) {
         e.preventDefault();
@@ -1469,6 +1484,7 @@ function pushDashboard() {
   const now = scheduler ? scheduler.getNow() : null;
   const upcoming = scheduler ? scheduler.getUpcoming(6) : [];
   const skipped = scheduler ? scheduler.getSkipped() : [];
+  const preview = currentPlaybackPreviewState(now);
   const payload = {
     status: statusLabel,
     deviceId: cfg && cfg.deviceId || '',
@@ -1507,6 +1523,7 @@ function pushDashboard() {
     now,
     upcoming,
     skipped,
+    preview,
     vlc: {
       state: vlc ? vlc.state : 'idle',
       rcReady: vlc ? vlc.ready : false,
@@ -1523,6 +1540,84 @@ function pushDashboard() {
   } catch (e) {
     console.error('pushDashboard send failed', e);
   }
+}
+
+function currentPlaybackPreviewState(now = scheduler ? scheduler.getNow() : null) {
+  return {
+    ...resolvePreviewState({
+      hasDedicatedDisplay: hasDedicatedPlaybackDisplay,
+      now,
+      vlcState: vlc ? vlc.state : 'idle',
+      idleMode: vlc ? vlc.idleMode : false
+    }),
+    displayId: secondDisplay ? String(secondDisplay.id) : null,
+    displayLabel: secondDisplay && secondDisplay.label || ''
+  };
+}
+
+function sendPlaybackPreview(payload) {
+  if (!dashboardWin || dashboardWin.isDestroyed() || !dashboardWin.webContents) return;
+  try { dashboardWin.webContents.send('playback-preview:update', payload); }
+  catch (error) { console.error('playback preview send failed', error); }
+}
+
+async function capturePlaybackPreview() {
+  if (
+    playbackPreviewBusy || isShuttingDown || !dashboardWin || dashboardWin.isDestroyed() ||
+    !dashboardWin.isVisible() || dashboardWin.isMinimized()
+  ) return;
+  const preview = currentPlaybackPreviewState();
+  if (!shouldCapturePreview(preview.status)) {
+    const signature = `${preview.status}:${preview.message}:${preview.displayId || ''}`;
+    if (signature !== playbackPreviewSignature) {
+      playbackPreviewSignature = signature;
+      sendPlaybackPreview({ ...preview, frame: null, capturedAt: null });
+    }
+    return;
+  }
+
+  playbackPreviewBusy = true;
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: PREVIEW_WIDTH, height: PREVIEW_HEIGHT },
+      fetchWindowIcons: false
+    });
+    const source = selectDisplaySource(sources, preview.displayId);
+    if (!source || !source.thumbnail || source.thumbnail.isEmpty()) {
+      throw new Error('The selected output monitor could not be captured.');
+    }
+    const jpeg = source.thumbnail.toJPEG(52);
+    if (!jpeg || jpeg.length === 0) throw new Error('The output monitor returned an empty frame.');
+    playbackPreviewSignature = `${preview.status}:${preview.displayId || ''}:frame`;
+    sendPlaybackPreview({
+      ...preview,
+      frame: `data:image/jpeg;base64,${jpeg.toString('base64')}`,
+      capturedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    const failed = { ...preview, status: 'unavailable', label: 'Preview unavailable', message: error.message || String(error) };
+    const signature = `${failed.status}:${failed.message}:${failed.displayId || ''}`;
+    if (signature !== playbackPreviewSignature) {
+      playbackPreviewSignature = signature;
+      sendPlaybackPreview({ ...failed, frame: null, capturedAt: null });
+    }
+  } finally {
+    playbackPreviewBusy = false;
+  }
+}
+
+function startPlaybackPreviewLoop() {
+  if (playbackPreviewHandle) clearInterval(playbackPreviewHandle);
+  playbackPreviewHandle = setInterval(() => { void capturePlaybackPreview(); }, PREVIEW_INTERVAL_MS);
+  if (playbackPreviewHandle.unref) playbackPreviewHandle.unref();
+}
+
+function stopPlaybackPreviewLoop() {
+  if (playbackPreviewHandle) clearInterval(playbackPreviewHandle);
+  playbackPreviewHandle = null;
+  playbackPreviewBusy = false;
+  playbackPreviewSignature = '';
 }
 
 function startBroadcastLoop() {
@@ -3106,6 +3201,7 @@ async function logout(notice = '') {
   stopRealtimeConnection('disabled');
   stopCmsConnection();
   if (broadcastHandle) { clearInterval(broadcastHandle); broadcastHandle = null; }
+  stopPlaybackPreviewLoop();
   await shutdownPlaybackComponents();
   if (scheduleAdderWin && !scheduleAdderWin.isDestroyed()) scheduleAdderWin.destroy();
   if (scheduleManagerWin && !scheduleManagerWin.isDestroyed()) scheduleManagerWin.destroy();
@@ -3125,6 +3221,7 @@ function quitApp() {
     stopRealtimeConnection('disabled');
     stopCmsConnection();
     if (broadcastHandle) { clearInterval(broadcastHandle); broadcastHandle = null; }
+    stopPlaybackPreviewLoop();
     await shutdownPlaybackComponents();
     allowAppQuit = true;
     app.quit();
@@ -3184,6 +3281,7 @@ app.on('before-quit', event => {
     return;
   }
   isShuttingDown = true;
+  stopPlaybackPreviewLoop();
   stopRealtimeConnection('disabled');
   stopCmsConnection();
 });

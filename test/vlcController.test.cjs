@@ -98,6 +98,9 @@ test('replacePlaylist enqueues every item before starting the first one', async 
   controller.ready = true;
   controller.send = command => {
     commands.push(command);
+    if (command === 'status') {
+      setTimeout(() => controller._setCurrentInput('file:///C:/media/film%20A.mp4'), 10);
+    }
     return true;
   };
 
@@ -127,6 +130,9 @@ test('replacePlaylist seeks to the requested late-join playlist position', async
   controller.ready = true;
   controller.send = command => {
     commands.push(command);
+    if (command === 'status' && controller._confirmedInputIndex < 0) {
+      setTimeout(() => controller._setCurrentInput('file:///C:/media/film%20A.mp4'), 10);
+    }
     if (command === 'goto 2') {
       setTimeout(() => controller._setCurrentInput('file:///C:/media/film%20B.mp4'), 10);
     }
@@ -204,6 +210,9 @@ test('playlist replacement waits for the black transition cover before decoding'
   controller.ready = true;
   controller.send = command => {
     events.push(command);
+    if (command === 'status') {
+      setTimeout(() => controller._setCurrentInput('file:///C:/media/film.mp4'), 10);
+    }
     return true;
   };
 
@@ -211,6 +220,67 @@ test('playlist replacement waits for the black transition cover before decoding'
 
   assert.ok(events.indexOf('cover-ready') < events.indexOf('clear'));
   assert.ok(events.indexOf('cover-end') > events.indexOf('play'));
+});
+
+test('replacing a naturally ended input confirms a fresh stop before starting the next film', async () => {
+  const controller = new VlcController({ replacementStopTimeoutMs: 250 });
+  const commands = [];
+  controller.ready = true;
+  controller.currentPlaylist = ['C:\\media\\film A.mp4'];
+  controller._setCurrentInput('file:///C:/media/film%20A.mp4');
+  // This is the no-gap boundary: VLC already reported idle, but still owns
+  // the previous decoder and its 19/25 second metrics.
+  controller._setState('idle');
+  controller.playback.positionSeconds = 19;
+  controller.playback.lengthSeconds = 25;
+  controller.send = command => {
+    commands.push(command);
+    if (command === 'stop') {
+      setTimeout(() => controller._parseRc('( stop state: 0 )\n'), 10);
+    }
+    if (command === 'status' && commands.includes('play')) {
+      setTimeout(() => controller._setCurrentInput('file:///C:/media/film%20B.mp4'), 10);
+    }
+    return true;
+  };
+
+  await controller.replacePlaylist(['C:\\media\\film B.mp4'], { loop: false });
+
+  assert.ok(commands.indexOf('stop') < commands.indexOf('clear'));
+  assert.ok(commands.indexOf('clear') < commands.indexOf('enqueue file:///C:/media/film%20B.mp4'));
+  assert.ok(commands.indexOf('enqueue file:///C:/media/film%20B.mp4') < commands.indexOf('play'));
+  assert.equal(controller.getPlaybackStatus().currentPath, 'C:\\media\\film B.mp4');
+  assert.equal(controller.getPlaybackStatus().positionSeconds, 0);
+  assert.equal(controller.getPlaybackStatus().lengthSeconds, 0);
+});
+
+test('playlist replacement restarts VLC when stop acknowledgement is missing', async () => {
+  const controller = new VlcController({ replacementStopTimeoutMs: 250 });
+  const commands = [];
+  let restarts = 0;
+  controller.ready = true;
+  controller.currentPlaylist = ['C:\\media\\film A.mp4'];
+  controller._setCurrentInput('file:///C:/media/film%20A.mp4');
+  controller.send = command => {
+    commands.push(command);
+    if (command === 'status' && commands.includes('play')) {
+      setTimeout(() => controller._setCurrentInput('file:///C:/media/film%20B.mp4'), 10);
+    }
+    return true;
+  };
+  controller._stopForOutputChange = async () => {
+    restarts += 1;
+    controller.ready = false;
+  };
+  controller.start = async () => {
+    controller.ready = true;
+  };
+
+  await controller.replacePlaylist(['C:\\media\\film B.mp4'], { loop: false });
+
+  assert.equal(restarts, 1);
+  assert.ok(commands.indexOf('stop') < commands.indexOf('clear'));
+  assert.equal(controller.getPlaybackStatus().currentPath, 'C:\\media\\film B.mp4');
 });
 
 test('start replaces an owned VLC process whose RC endpoint never becomes ready', async () => {
@@ -288,6 +358,8 @@ test('recovery test refuses to run without a controller-owned VLC process', () =
 test('playback polling requests status, elapsed time, and media length', () => {
   const controller = new VlcController();
   const commands = [];
+  controller.currentPlaylist = ['C:\\media\\film A.mp4'];
+  controller._setCurrentInput('file:///C:/media/film%20A.mp4');
   controller.send = command => commands.push(command);
 
   controller._pollPlayback();
@@ -315,14 +387,9 @@ test('RC responses identify the active playlist item and its progress', () => {
     'C:\\media\\film A.mp4',
     'C:\\media\\film B.mp4'
   ];
+  controller._parseRc('( new input: file:///C:/media/film%20B.mp4 )\n');
   controller._pendingMetricResponses = ['positionSeconds', 'lengthSeconds'];
-
-  controller._parseRc([
-    '( new input: file:///C:/media/film%20B.mp4 )',
-    '42',
-    '120',
-    ''
-  ].join('\n'));
+  controller._parseRc('42\n120\n');
 
   assert.deepEqual(controller.getPlaybackStatus(), {
     currentPath: 'C:\\media\\film B.mp4',
@@ -332,6 +399,25 @@ test('RC responses identify the active playlist item and its progress', () => {
     updatedAt: controller.getPlaybackStatus().updatedAt
   });
   assert.ok(controller.getPlaybackStatus().updatedAt);
+});
+
+test('repeated status for the same input preserves pending time and length metrics', () => {
+  const controller = new VlcController();
+  controller.currentPlaylist = ['C:\\media\\film B.mp4'];
+  controller._setCurrentInput('file:///C:/media/film%20B.mp4');
+  controller._pendingMetricResponses = ['positionSeconds', 'lengthSeconds'];
+
+  controller._parseRc([
+    '( new input: file:///C:/media/film%20B.mp4 )',
+    '68',
+    '132',
+    ''
+  ].join('\n'));
+
+  assert.equal(controller.getPlaybackStatus().currentIndex, 0);
+  assert.equal(controller.getPlaybackStatus().positionSeconds, 68);
+  assert.equal(controller.getPlaybackStatus().lengthSeconds, 132);
+  assert.deepEqual(controller._pendingMetricResponses, []);
 });
 
 test('resumePlaylistAt converts to VLC 3 one-based item and waits before seeking', async () => {
@@ -405,6 +491,8 @@ test('relative and absolute seek clamp positions to the current media', async ()
   const controller = new VlcController();
   const commands = [];
   controller.ready = true;
+  controller.currentPlaylist = ['C:\\media\\film A.mp4'];
+  controller._setCurrentInput('file:///C:/media/film%20A.mp4');
   controller.playback.positionSeconds = 42;
   controller.playback.lengthSeconds = 60;
   controller.send = command => commands.push(command);
@@ -419,4 +507,36 @@ test('relative and absolute seek clamp positions to the current media', async ()
     'seek 59', 'status', 'get_time', 'get_length'
   ]);
   assert.equal(controller.getPlaybackStatus().positionSeconds, 59);
+});
+
+test('late metrics from the previous film cannot overwrite a replacement input', () => {
+  const controller = new VlcController();
+  const commands = [];
+  controller.currentPlaylist = ['C:\\media\\film A.mp4'];
+  controller._setCurrentInput('file:///C:/media/film%20A.mp4');
+  controller.playback.positionSeconds = 19;
+  controller.playback.lengthSeconds = 25;
+  controller._pendingMetricResponses = ['positionSeconds', 'lengthSeconds'];
+
+  controller._beginInputTransition(['C:\\media\\film B.mp4']);
+  controller._parseRc('19\n25\n');
+
+  assert.deepEqual(controller.getPlaybackStatus(), {
+    currentPath: 'C:\\media\\film B.mp4',
+    currentIndex: 0,
+    positionSeconds: 0,
+    lengthSeconds: 0,
+    updatedAt: controller.getPlaybackStatus().updatedAt
+  });
+  assert.equal(controller._metricsBlockedUntilInput, true);
+  controller.send = command => commands.push(command);
+  controller._pollPlayback();
+  assert.deepEqual(commands, ['status']);
+
+  controller._parseRc('( new input: file:///C:/media/film%20B.mp4 )\n');
+  controller._pollPlayback();
+  controller._parseRc('3\n120\n');
+  assert.equal(controller.getPlaybackStatus().positionSeconds, 3);
+  assert.equal(controller.getPlaybackStatus().lengthSeconds, 120);
+  assert.deepEqual(commands, ['status', 'status', 'get_time', 'get_length']);
 });
