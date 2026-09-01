@@ -1801,16 +1801,28 @@ ipcMain.handle('login-bypass', async () => {
 
 ipcMain.handle('vlc-pause', async () => {
   const denied = operatorAccessError(); if (denied) return denied;
-  if (vlc) vlc.pause();
-  pushDashboard();
-  return { ok: true };
+  if (!vlc) return { ok: false, error: 'VLC controller not initialized' };
+  try {
+    const playback = await vlc.pause();
+    pushDashboard();
+    return { ok: true, playback };
+  } catch (error) {
+    pushDashboard();
+    return { ok: false, error: error.message || String(error) };
+  }
 });
 
 ipcMain.handle('vlc-resume', async () => {
   const denied = operatorAccessError(); if (denied) return denied;
-  if (vlc) vlc.resume();
-  pushDashboard();
-  return { ok: true };
+  if (!vlc) return { ok: false, error: 'VLC controller not initialized' };
+  try {
+    const playback = await vlc.resume();
+    pushDashboard();
+    return { ok: true, playback };
+  } catch (error) {
+    pushDashboard();
+    return { ok: false, error: error.message || String(error) };
+  }
 });
 
 ipcMain.handle('vlc-seek-relative', async (_event, deltaSeconds) => {

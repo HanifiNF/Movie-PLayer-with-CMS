@@ -72,6 +72,10 @@ class VlcController extends EventEmitter {
     // "new input" response. It prevents optimistic UI state from being
     // mistaken for confirmation that an input is already seekable.
     this._confirmedInputIndex = -1;
+    // Playlist replacement is a transaction. Serializing it prevents a
+    // scheduler reconciliation from interleaving RC commands with a transition
+    // that is still preparing the previous target.
+    this._playlistOperation = Promise.resolve();
     this._audioDeviceCapture = null;
     this.audioDevices = [];
     this.playback = {
@@ -96,6 +100,13 @@ class VlcController extends EventEmitter {
     if (this.state === next) return;
     this.state = next;
     this.emit('state-change', next);
+  }
+
+  _acknowledgeState(next) {
+    this._setState(next);
+    // Unlike state-change, this event is emitted for every fresh VLC response,
+    // including when the cached state already has the same value.
+    this.emit('state-acknowledged', next);
   }
 
   _resetVlc() {
@@ -200,6 +211,69 @@ class VlcController extends EventEmitter {
     });
   }
 
+  _waitForPlaybackState(targetState, timeoutMs = this.resumeInputTimeoutMs, options = {}) {
+    if (!options.fresh && this.state === targetState) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const onStateChange = nextState => {
+        if (nextState !== targetState) return;
+        cleanup();
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`VLC did not confirm ${targetState} state`));
+      }, timeoutMs);
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.removeListener(options.fresh ? 'state-acknowledged' : 'state-change', onStateChange);
+      };
+      this.on(options.fresh ? 'state-acknowledged' : 'state-change', onStateChange);
+    });
+  }
+
+  _waitForFreshPlaybackState(targetState, timeoutMs = this.resumeInputTimeoutMs) {
+    return this._waitForPlaybackState(targetState, timeoutMs, { fresh: true });
+  }
+
+  _queryPlaybackState(timeoutMs = this.resumeInputTimeoutMs) {
+    return new Promise((resolve, reject) => {
+      const onState = nextState => {
+        cleanup();
+        resolve(nextState);
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('VLC did not report its playback state'));
+      }, timeoutMs);
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.removeListener('state-acknowledged', onState);
+      };
+      this.on('state-acknowledged', onState);
+      this.send('status');
+    });
+  }
+
+  _waitForPlaybackPosition(targetIndex, targetPosition, timeoutMs = this.resumeInputTimeoutMs) {
+    return new Promise((resolve, reject) => {
+      const onProgress = playback => {
+        if (this._confirmedInputIndex !== targetIndex) return;
+        if (Math.abs((Number(playback.positionSeconds) || 0) - targetPosition) > 1) return;
+        cleanup();
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`VLC did not confirm playback position ${targetPosition}s`));
+      }, timeoutMs);
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.removeListener('playback-progress', onProgress);
+      };
+      this.on('playback-progress', onProgress);
+    });
+  }
+
   _toMrl(p) {
     let s = String(p);
     if (/^https?:\/\//i.test(s)) return s.replace(/ /g, '%20');
@@ -246,6 +320,12 @@ class VlcController extends EventEmitter {
         this.emit('audio-change', this.getAudioStatus());
       }
 
+      const timeMatch = t.match(/\btime\s*:\s*(\d+)s\b/i);
+      if (timeMatch && !this._metricsBlockedUntilInput && this._confirmedInputIndex >= 0) {
+        this.playback.positionSeconds = Math.max(0, Number(timeMatch[1]) || 0);
+        this._emitPlaybackProgress();
+      }
+
       const inputMatch = t.match(/new input\s*:\s*(.+?)\s*\)?$/i);
       if (inputMatch) {
         this._setCurrentInput(inputMatch[1]);
@@ -273,16 +353,17 @@ class VlcController extends EventEmitter {
         const map = { playing: 'playing', paused: 'paused', opening: 'playing', buffering: 'playing', stopped: 'idle', ended: 'idle', error: 'error' };
         const next = map[raw] || 'idle';
         if (raw === 'stopped') this.emit('stop-acknowledged');
-        this._setState(this.idleMode && next === 'playing' ? 'idle' : next);
+        this._acknowledgeState(this.idleMode && next === 'playing' ? 'idle' : next);
         continue;
       }
       // VLC TCP RC numeric status-change notifications.
       const l = t.toLowerCase();
-      if (l.includes('play state:')) this._setState(this.idleMode ? 'idle' : 'playing');
-      else if (l.includes('pause state:')) this._setState('paused');
+      if (l.includes('play state:')) this._acknowledgeState(this.idleMode ? 'idle' : 'playing');
+      else if (l.includes('pause state:')) this._acknowledgeState('paused');
+      else if (l.includes("type 'pause' to continue")) this._acknowledgeState('paused');
       else if (l.includes('stop state:')) {
         this.emit('stop-acknowledged');
-        this._setState('idle');
+        this._acknowledgeState('idle');
       }
     }
   }
@@ -558,7 +639,14 @@ class VlcController extends EventEmitter {
     if (refreshTimer.unref) refreshTimer.unref();
   }
 
-  async replacePlaylist(filePaths, options = {}) {
+  replacePlaylist(filePaths, options = {}) {
+    const operation = () => this._replacePlaylist(filePaths, options);
+    const pending = this._playlistOperation.then(operation, operation);
+    this._playlistOperation = pending.catch(() => {});
+    return pending;
+  }
+
+  async _replacePlaylist(filePaths, options = {}) {
     if (!Array.isArray(filePaths)) filePaths = [];
     const hadActiveInput = Boolean(
       this.playback.currentPath ||
@@ -583,73 +671,107 @@ class VlcController extends EventEmitter {
     const shouldLoop = options.loop !== false;
 
     const useTransition = this.transitionDuration > 0;
-    if (useTransition && this.onTransitionStart) {
-      // The output window and its black cover must be fully stacked before
-      // VLC is allowed to decode the first frame of the next input.
-      await Promise.resolve(this.onTransitionStart());
-      await sleep(this.transitionDuration);
-    }
-
-    if (outputDisplayChanged) await this._stopForOutputChange();
-
-    if (!this.ready) await this.start();
-    // VLC old-RC "clear" only clears the playlist; it does not reliably close
-    // the decoder that is currently playing. Always stop and wait for VLC's
-    // acknowledgement before loading the replacement so time/length replies
-    // from the previous film cannot bleed into the next one.
-    if (this.state === 'paused') {
-      this.send('pause');
-      await sleep(100);
-    }
-    if (hadActiveInput) {
-      // Do not use the cached `idle` state as proof that this stop completed.
-      // At a natural media boundary VLC is already reported idle while its old
-      // input/decoder may still be releasing. Wait for a fresh RC response to
-      // this stop command, then give the decoder a short quiescence window.
-      const stopped = this._waitForStopAcknowledgement();
-      this.send('stop');
-      this.send('status');
-      try {
-        await stopped;
-        await sleep(150);
-      } catch (error) {
-        // A missing old-RC acknowledgement must not allow stale decoder state
-        // into the next film. Recreate VLC, matching the already-safe gap path.
-        this.emit('vlc-log', `[transition] ${error.message}; restarting VLC before replacement`);
-        await this._stopForOutputChange();
-        await this.start();
+    let transitionStarted = false;
+    let transitionEnded = false;
+    try {
+      if (useTransition && this.onTransitionStart) {
+        // Mark the cover active before invoking the UI hook so a partial UI
+        // failure still runs the cleanup in finally.
+        transitionStarted = true;
+        // The output window and its black cover must be fully stacked before
+        // VLC is allowed to decode the first frame of the next input.
+        await Promise.resolve(this.onTransitionStart());
+        await sleep(this.transitionDuration);
       }
-    }
-    this.send('clear');
-    await sleep(200);
-    // RC "add" starts the newly added item immediately, so repeatedly using it
-    // makes the last playlist item win. Enqueue everything first, then issue one
-    // play command so VLC starts from the first item in the requested order.
-    for (const p of filePaths) {
-      const mrl = this._toMrl(p);
-      this.send('enqueue ' + mrl);
-      await sleep(100);
-    }
-    this.send(`loop ${shouldLoop ? 'on' : 'off'}`);
-    const firstInputConfirmation = filePaths.length && !this.idleMode
-      ? this._waitForPlaylistIndex(0)
-      : null;
-    if (filePaths.length) this.send('play');
-    await sleep(300);
-    if (filePaths.length) this.applyAudioSettings();
-    this.send('status');
-    if (firstInputConfirmation) await firstInputConfirmation;
-    if (filePaths.length) this._setState(this.idleMode ? 'idle' : 'playing');
 
-    const startIndex = Math.max(0, Math.floor(Number(options.startIndex) || 0));
-    const startPositionSeconds = Math.max(0, Math.floor(Number(options.startPositionSeconds) || 0));
-    if (filePaths.length && !this.idleMode && (startIndex > 0 || startPositionSeconds > 0)) {
-      await this.resumePlaylistAt(startIndex, startPositionSeconds);
-    }
+      if (outputDisplayChanged) await this._stopForOutputChange();
 
-    if (useTransition && this.onTransitionEnd) {
-      await sleep(this.transitionDuration);
-      await Promise.resolve(this.onTransitionEnd());
+      if (!this.ready) await this.start();
+      // VLC old-RC "clear" only clears the playlist; it does not reliably close
+      // the decoder that is currently playing. Always stop and wait for VLC's
+      // acknowledgement before loading the replacement so time/length replies
+      // from the previous film cannot bleed into the next one. Stop works for
+      // both playing and paused inputs, so no toggle is needed here.
+      if (hadActiveInput) {
+        // Do not use the cached `idle` state as proof that this stop completed.
+        // At a natural media boundary VLC is already reported idle while its old
+        // input/decoder may still be releasing. Wait for a fresh RC response to
+        // this stop command, then give the decoder a short quiescence window.
+        const stopped = this._waitForStopAcknowledgement();
+        this.send('stop');
+        this.send('status');
+        try {
+          await stopped;
+          await sleep(150);
+        } catch (error) {
+          // A missing old-RC acknowledgement must not allow stale decoder state
+          // into the next film. Recreate VLC, matching the already-safe gap path.
+          this.emit('vlc-log', `[transition] ${error.message}; restarting VLC before replacement`);
+          await this._stopForOutputChange();
+          await this.start();
+        }
+      }
+      this.send('clear');
+      await sleep(200);
+      // RC "add" starts the newly added item immediately, so repeatedly using it
+      // makes the last playlist item win. Enqueue everything first, then issue one
+      // play command so VLC starts from the first item in the requested order.
+      for (const p of filePaths) {
+        const mrl = this._toMrl(p);
+        this.send('enqueue ' + mrl);
+        await sleep(100);
+      }
+      this.send(`loop ${shouldLoop ? 'on' : 'off'}`);
+      const firstInputConfirmation = filePaths.length && !this.idleMode
+        ? this._waitForPlaylistIndex(0)
+        : null;
+      const firstPlayingConfirmation = filePaths.length && !this.idleMode
+        ? this._waitForFreshPlaybackState('playing')
+        : null;
+      if (filePaths.length) this.send('play');
+      await sleep(300);
+      if (filePaths.length) this.applyAudioSettings();
+      this.send('status');
+      await Promise.all([firstInputConfirmation, firstPlayingConfirmation].filter(Boolean));
+      const startIndex = Math.max(0, Math.floor(Number(options.startIndex) || 0));
+      const startPositionSeconds = Math.max(0, Math.floor(Number(options.startPositionSeconds) || 0));
+      let preparedAtOffset = false;
+      if (filePaths.length && !this.idleMode && (startIndex > 0 || startPositionSeconds > 0)) {
+        await this.preparePlaylistAt(startIndex, startPositionSeconds);
+        preparedAtOffset = true;
+      } else if (filePaths.length) {
+        this._setState(this.idleMode ? 'idle' : 'playing');
+      }
+
+      if (useTransition && this.onTransitionEnd) {
+        await sleep(this.transitionDuration);
+        await Promise.resolve(this.onTransitionEnd());
+        transitionEnded = true;
+      }
+      if (preparedAtOffset) await this.resumePreparedPlayback();
+    } catch (error) {
+      // Never strand the decoder paused behind the black transition cover.
+      // A plain play command is an idempotent recovery action for old-RC even
+      // when its cached state no longer matches the actual VLC state.
+      if (filePaths.length && this.ready && !this.idleMode) {
+        try {
+          const recovered = this._waitForFreshPlaybackState('playing');
+          this.send('play');
+          this.send('status');
+          await recovered;
+        } catch (recoveryError) {
+          this.emit('vlc-log', `[transition] playback recovery failed: ${recoveryError.message}`);
+        }
+      }
+      throw error;
+    } finally {
+      if (transitionStarted && !transitionEnded && this.onTransitionEnd) {
+        try {
+          await Promise.resolve(this.onTransitionEnd());
+        } catch (overlayError) {
+          this.emit('vlc-log', `[transition] overlay cleanup failed: ${overlayError.message}`);
+        }
+      }
     }
   }
 
@@ -678,29 +800,37 @@ class VlcController extends EventEmitter {
   }
 
   async pause() {
+    const actualState = await this._queryPlaybackState();
+    if (actualState === 'paused') return this.getPlaybackStatus();
+    const paused = this._waitForFreshPlaybackState('paused');
     this.send('pause');
-    await sleep(100);
-    this._setState('paused');
     this.send('status');
+    await paused;
+    return this.getPlaybackStatus();
   }
 
   async play() {
+    const playing = this._waitForFreshPlaybackState('playing');
     this.send('play');
-    await sleep(100);
-    this._setState('playing');
     this.send('status');
+    await playing;
+    return this.getPlaybackStatus();
   }
 
   async resume() {
-    // VLC old RC pause is a toggle. When paused, send pause again to resume.
-    if (this.state === 'paused') {
+    const actualState = await this._queryPlaybackState();
+    if (actualState === 'playing') return this.getPlaybackStatus();
+    // VLC old RC pause is a toggle. Use it only after a fresh response has
+    // confirmed that the decoder is really paused.
+    const playing = this._waitForFreshPlaybackState('playing');
+    if (actualState === 'paused') {
       this.send('pause');
     } else {
       this.send('play');
     }
-    await sleep(100);
-    this._setState('playing');
     this.send('status');
+    await playing;
+    return this.getPlaybackStatus();
   }
 
   async seekTo(positionSeconds) {
@@ -753,6 +883,51 @@ class VlcController extends EventEmitter {
     this._emitPlaybackProgress();
     this._setState('playing');
     this._pollPlayback();
+    return this.getPlaybackStatus();
+  }
+
+  async preparePlaylistAt(index, positionSeconds = 0) {
+    if (!this.ready) throw new Error('VLC RC is not ready');
+    if (!this.currentPlaylist.length) throw new Error('Cannot prepare an empty playlist');
+    const targetIndex = Math.max(0, Math.min(
+      this.currentPlaylist.length - 1,
+      Math.floor(Number(index) || 0)
+    ));
+    const targetPosition = Math.max(0, Math.floor(Number(positionSeconds) || 0));
+
+    const inputConfirmation = this._waitForPlaylistIndex(targetIndex);
+    const awaitingNaturalFirstInput = this._confirmedInputIndex < 0 && targetIndex === 0;
+    if (this._confirmedInputIndex !== targetIndex && !awaitingNaturalFirstInput) {
+      this.send(`goto ${targetIndex + 1}`);
+    }
+    await inputConfirmation;
+
+    const positioned = this._waitForPlaybackPosition(targetIndex, targetPosition);
+    this.send(`seek ${targetPosition}`);
+    await sleep(120);
+    this._pollPlayback();
+    await positioned;
+
+    // Seeking old-RC while paused is unreliable. Confirm the requested frame
+    // while the decoder is running, then freeze that confirmed frame.
+    const paused = this._waitForFreshPlaybackState('paused');
+    this.send('pause');
+    this.send('status');
+    await paused;
+    this.playback.positionSeconds = targetPosition;
+    this._emitPlaybackProgress();
+    return this.getPlaybackStatus();
+  }
+
+  async resumePreparedPlayback() {
+    if (!this.ready) throw new Error('VLC RC is not ready');
+    if (this.state !== 'paused') throw new Error('VLC prepared playback is not paused');
+    const playing = this._waitForFreshPlaybackState('playing');
+    // VLC old-RC pause is a toggle; a second pause resumes the prepared frame.
+    this.send('pause');
+    this.send('status');
+    await playing;
+    this._setState('playing');
     return this.getPlaybackStatus();
   }
 

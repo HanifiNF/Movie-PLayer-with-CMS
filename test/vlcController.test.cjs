@@ -99,7 +99,10 @@ test('replacePlaylist enqueues every item before starting the first one', async 
   controller.send = command => {
     commands.push(command);
     if (command === 'status') {
-      setTimeout(() => controller._setCurrentInput('file:///C:/media/film%20A.mp4'), 10);
+      setTimeout(() => {
+        controller._setCurrentInput('file:///C:/media/film%20A.mp4');
+        controller._parseRc('status change: ( play state: 3 )\n');
+      }, 10);
     }
     return true;
   };
@@ -127,14 +130,27 @@ test('replacePlaylist enqueues every item before starting the first one', async 
 test('replacePlaylist seeks to the requested late-join playlist position', async () => {
   const controller = new VlcController();
   const commands = [];
+  let pauseCommands = 0;
   controller.ready = true;
   controller.send = command => {
     commands.push(command);
     if (command === 'status' && controller._confirmedInputIndex < 0) {
-      setTimeout(() => controller._setCurrentInput('file:///C:/media/film%20A.mp4'), 10);
+      setTimeout(() => {
+        controller._setCurrentInput('file:///C:/media/film%20A.mp4');
+        controller._parseRc('status change: ( play state: 3 )\n');
+      }, 10);
     }
     if (command === 'goto 2') {
       setTimeout(() => controller._setCurrentInput('file:///C:/media/film%20B.mp4'), 10);
+    }
+    if (command === 'pause') {
+      pauseCommands += 1;
+      setTimeout(() => controller._parseRc(
+        `status change: ( ${pauseCommands === 1 ? 'pause' : 'play'} state: 3 )\n`
+      ), 10);
+    }
+    if (command === 'seek 42') {
+      setTimeout(() => controller._parseRc('status change: ( time: 42s )\n'), 10);
     }
     return true;
   };
@@ -156,20 +172,35 @@ test('replacePlaylist seeks to the requested late-join playlist position', async
     'seek 42',
     'status',
     'get_time',
-    'get_length'
+    'get_length',
+    'pause',
+    'status',
+    'pause',
+    'status'
   ]);
 });
 
 test('single-item scheduled playback waits for VLC input and seeks without reloading it', async () => {
   const controller = new VlcController();
   const commands = [];
+  let pauseCommands = 0;
   controller.ready = true;
   controller.send = command => {
     commands.push(command);
     if (command === 'status') {
       setTimeout(() => {
         controller._setCurrentInput('http://127.0.0.1:62862/ldg/v1/film-b');
+        controller._parseRc('status change: ( play state: 3 )\n');
       }, 10);
+    }
+    if (command === 'pause') {
+      pauseCommands += 1;
+      setTimeout(() => controller._parseRc(
+        `status change: ( ${pauseCommands === 1 ? 'pause' : 'play'} state: 3 )\n`
+      ), 10);
+    }
+    if (command === 'seek 60') {
+      setTimeout(() => controller._parseRc('status change: ( time: 60s )\n'), 10);
     }
     return true;
   };
@@ -188,10 +219,108 @@ test('single-item scheduled playback waits for VLC input and seeks without reloa
     'seek 60',
     'status',
     'get_time',
-    'get_length'
+    'get_length',
+    'pause',
+    'status',
+    'pause',
+    'status'
   ]);
   assert.equal(commands.includes('goto 1'), false);
   assert.equal(controller.getPlaybackStatus().positionSeconds, 60);
+});
+
+test('offset playback stays paused behind the cover until VLC confirms the target frame', async () => {
+  const events = [];
+  let controller;
+  let pauseCommands = 0;
+  controller = new VlcController({
+    transitionDuration: 1,
+    onTransitionStart: () => events.push('cover-start'),
+    onTransitionEnd: () => events.push(`cover-end:${controller.state}`)
+  });
+  controller.ready = true;
+  controller.send = command => {
+    events.push(command);
+    if (command === 'status' && controller._confirmedInputIndex < 0) {
+      setTimeout(() => {
+        controller._setCurrentInput('file:///C:/media/feature.mp4');
+        controller._parseRc('status change: ( play state: 3 )\n');
+      }, 5);
+    }
+    if (command === 'pause') {
+      pauseCommands += 1;
+      setTimeout(() => controller._parseRc(
+        `status change: ( ${pauseCommands === 1 ? 'pause' : 'play'} state: 3 )\n`
+      ), 5);
+    }
+    if (command === 'seek 60') {
+      setTimeout(() => controller._parseRc('status change: ( time: 60s )\n'), 5);
+    }
+    return true;
+  };
+
+  await controller.replacePlaylist(['C:\\media\\feature.mp4'], {
+    loop: false,
+    startPositionSeconds: 60
+  });
+
+  const coverEnd = events.indexOf('cover-end:paused');
+  const seek = events.indexOf('seek 60');
+  const resume = events.lastIndexOf('pause');
+  assert.ok(seek >= 0 && seek < coverEnd);
+  assert.ok(coverEnd >= 0 && coverEnd < resume);
+  assert.equal(controller.state, 'playing');
+});
+
+test('fresh state confirmation does not accept a matching cached paused state', async () => {
+  const controller = new VlcController({ resumeInputTimeoutMs: 250 });
+  controller._setState('paused');
+  let resolved = false;
+  const confirmation = controller._waitForFreshPlaybackState('paused').then(() => { resolved = true; });
+
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(resolved, false);
+  controller._parseRc("Type 'pause' to continue.\n");
+  await confirmation;
+  assert.equal(resolved, true);
+});
+
+test('failed offset preparation resumes VLC and always removes the transition cover', async () => {
+  const events = [];
+  let playCommands = 0;
+  const controller = new VlcController({
+    transitionDuration: 1,
+    resumeInputTimeoutMs: 600,
+    onTransitionStart: () => events.push('cover-start'),
+    onTransitionEnd: () => events.push('cover-end')
+  });
+  controller.ready = true;
+  controller.send = command => {
+    events.push(command);
+    if (command === 'play') playCommands += 1;
+    if (command === 'status' && controller._confirmedInputIndex < 0) {
+      setTimeout(() => {
+        controller._setCurrentInput('file:///C:/media/feature.mp4');
+        controller._parseRc('status change: ( play state: 3 )\n');
+      }, 5);
+    } else if (command === 'status' && playCommands >= 2) {
+      setTimeout(() => controller._parseRc('status change: ( play state: 3 )\n'), 5);
+    }
+    // Deliberately never acknowledge seek 60.
+    return true;
+  };
+
+  await assert.rejects(
+    controller.replacePlaylist(['C:\\media\\feature.mp4'], {
+      loop: false,
+      startPositionSeconds: 60
+    }),
+    /did not confirm playback position/
+  );
+
+  assert.equal(playCommands, 2);
+  assert.equal(controller.state, 'playing');
+  assert.deepEqual(events.filter(event => event.startsWith('cover-')), ['cover-start', 'cover-end']);
 });
 
 test('playlist replacement waits for the black transition cover before decoding', async () => {
@@ -211,7 +340,10 @@ test('playlist replacement waits for the black transition cover before decoding'
   controller.send = command => {
     events.push(command);
     if (command === 'status') {
-      setTimeout(() => controller._setCurrentInput('file:///C:/media/film.mp4'), 10);
+      setTimeout(() => {
+        controller._setCurrentInput('file:///C:/media/film.mp4');
+        controller._parseRc('status change: ( play state: 3 )\n');
+      }, 10);
     }
     return true;
   };
@@ -239,7 +371,10 @@ test('replacing a naturally ended input confirms a fresh stop before starting th
       setTimeout(() => controller._parseRc('( stop state: 0 )\n'), 10);
     }
     if (command === 'status' && commands.includes('play')) {
-      setTimeout(() => controller._setCurrentInput('file:///C:/media/film%20B.mp4'), 10);
+      setTimeout(() => {
+        controller._setCurrentInput('file:///C:/media/film%20B.mp4');
+        controller._parseRc('status change: ( play state: 3 )\n');
+      }, 10);
     }
     return true;
   };
@@ -264,7 +399,10 @@ test('playlist replacement restarts VLC when stop acknowledgement is missing', a
   controller.send = command => {
     commands.push(command);
     if (command === 'status' && commands.includes('play')) {
-      setTimeout(() => controller._setCurrentInput('file:///C:/media/film%20B.mp4'), 10);
+      setTimeout(() => {
+        controller._setCurrentInput('file:///C:/media/film%20B.mp4');
+        controller._parseRc('status change: ( play state: 3 )\n');
+      }, 10);
     }
     return true;
   };
