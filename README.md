@@ -274,6 +274,11 @@ configured source position plus any elapsed time when the Player joins late or
 recovers during an occurrence. Payloads without the field continue from the
 beginning of the film.
 
+Each playlist item may also include an absolute `volumePercent` from 0 to 100.
+The Player applies it when that film starts and updates the dashboard slider to
+the same value. Manual operator changes affect the current playback, while the
+next film restores its own scheduled volume. Older payloads default to 100.
+
 ### Test an interrupted download locally
 
 Localhost downloads can finish too quickly to interrupt. Source runs support an

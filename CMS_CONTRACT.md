@@ -121,12 +121,14 @@ ID; the other two events replace the schedule collection.
           "durationMs": 120000,
           "startOffsetMs": 600000,
           "gapAfterMs": 10000,
+          "volumePercent": 80,
           "order": 0
         },
         {
           "mediaKey": "local:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "durationMs": 90000,
           "gapAfterMs": 0,
+          "volumePercent": 60,
           "order": 1
         }
       ]
@@ -175,6 +177,12 @@ playback begins. `durationMs` is the effective amount of that film included in
 the schedule timeline after the skipped prefix has been removed. Older payloads
 that omit `startOffsetMs` are normalized to `0`. A late join or VLC recovery
 seeks to `startOffsetMs` plus the elapsed time inside the active media segment.
+
+`volumePercent` is the absolute VLC volume for that playlist item, from `0` to
+`100`. It is applied whenever the item becomes active, including after recovery,
+and is reflected by the dashboard volume control. An operator may still change
+the current volume manually; the next item reapplies its own scheduled value.
+Older payloads that omit the field are normalized to `100`.
 
 Rules:
 

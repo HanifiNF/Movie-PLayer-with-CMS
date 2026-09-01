@@ -622,7 +622,14 @@ class VlcController extends EventEmitter {
       volumePercent: value
     });
     this.settings = normalized;
-    this.volumePercent = normalized.volumePercent;
+    return this.applyVolumePercent(normalized.volumePercent);
+  }
+
+  applyVolumePercent(value) {
+    const numeric = Number(value);
+    this.volumePercent = Number.isFinite(numeric)
+      ? Math.max(0, Math.min(100, Math.round(numeric)))
+      : 100;
     if (this.ready) {
       this.send(`volume ${Math.round((this.volumePercent / 100) * VLC_VOLUME_AT_100_PERCENT)}`);
     }
@@ -728,9 +735,21 @@ class VlcController extends EventEmitter {
       const firstPlayingConfirmation = filePaths.length && !this.idleMode
         ? this._waitForFreshPlaybackState('playing')
         : null;
+      // Set a scheduled item volume before decoding starts so the first audio
+      // frame cannot leak at the previous film/operator volume. Reapply it
+      // after the normal audio settings because VLC may initialize the output
+      // device only once playback has started.
+      if (filePaths.length && Object.prototype.hasOwnProperty.call(options, 'volumePercent')) {
+        this.applyVolumePercent(options.volumePercent);
+      }
       if (filePaths.length) this.send('play');
       await sleep(300);
-      if (filePaths.length) this.applyAudioSettings();
+      if (filePaths.length) {
+        this.applyAudioSettings();
+        if (Object.prototype.hasOwnProperty.call(options, 'volumePercent')) {
+          this.applyVolumePercent(options.volumePercent);
+        }
+      }
       this.send('status');
       await Promise.all([firstInputConfirmation, firstPlayingConfirmation].filter(Boolean));
       const startIndex = Math.max(0, Math.floor(Number(options.startIndex) || 0));

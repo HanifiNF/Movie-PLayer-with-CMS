@@ -233,7 +233,7 @@ test('scheduler forwards the configured film offset plus elapsed segment time to
 
   assert.deepEqual(received, {
     files: ['C:\\media\\feature.mp4'],
-    options: { loop: false, startPositionSeconds: 630 }
+    options: { loop: false, startPositionSeconds: 630, volumePercent: 100 }
   });
 });
 
@@ -265,7 +265,7 @@ test('scheduler forwards a late-join target to VLC during active reconciliation'
 
   assert.deepEqual(received, {
     files: ['C:\\media\\feature.mp4'],
-    options: { loop: false, startPositionSeconds: 30 }
+    options: { loop: false, startPositionSeconds: 30, volumePercent: 100 }
   });
 });
 
@@ -305,7 +305,35 @@ test('active schedule metadata refresh seeks the next film to its newly synchron
 
   assert.deepEqual(received.at(-1), {
     files: ['C:\\media\\film-b.mp4'],
-    options: { loop: false, startPositionSeconds: 60 }
+    options: { loop: false, startPositionSeconds: 60, volumePercent: 100 }
+  });
+});
+
+test('scheduler applies each film schedule volume as an absolute VLC volume', () => {
+  let received = null;
+  const vlc = {
+    replacePlaylist(files, options) { received = { files, options }; },
+    playIdle() {},
+    clear() {}
+  };
+  const scheduler = new Scheduler(vlc);
+  const active = schedule({
+    id: 'film-volume', loop: false,
+    files: [{ path: 'C:\\media\\feature.mp4', durationMs: 120000, volumePercent: 64 }]
+  });
+
+  scheduler.schedules = [active];
+  scheduler._activate(
+    active,
+    new Date('2026-08-21T10:00:00.000Z'),
+    120000,
+    new Date('2026-08-21T10:00:00.000Z')
+  );
+  scheduler.clear();
+
+  assert.deepEqual(received, {
+    files: ['C:\\media\\feature.mp4'],
+    options: { loop: false, startPositionSeconds: 0, volumePercent: 64 }
   });
 });
 

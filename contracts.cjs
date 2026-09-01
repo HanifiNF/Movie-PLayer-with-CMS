@@ -71,6 +71,10 @@ function normalizePlaylistItem(value, index, errors) {
   if (!assetId && !mediaKey && !localPath) {
     errors.push(`playlist[${index}] requires assetId, mediaKey, or localPath`);
   }
+  const rawVolumePercent = Number(item.volumePercent);
+  const volumePercent = item.volumePercent === undefined || item.volumePercent === null || item.volumePercent === ''
+    ? 100
+    : Math.max(0, Math.min(100, Number.isFinite(rawVolumePercent) ? Math.round(rawVolumePercent) : 100));
 
   return {
     assetId: assetId || null,
@@ -83,7 +87,8 @@ function normalizePlaylistItem(value, index, errors) {
     order: Number.isFinite(Number(item.order)) ? Number(item.order) : index,
     durationMs: Math.max(0, Number(item.durationMs) || 0),
     startOffsetMs: Math.max(0, Number(item.startOffsetMs) || 0),
-    gapAfterMs: Math.max(0, Number(item.gapAfterMs) || 0)
+    gapAfterMs: Math.max(0, Number(item.gapAfterMs) || 0),
+    volumePercent
   };
 }
 
@@ -136,7 +141,8 @@ function normalizeSchedule(value) {
       order: item.order,
       durationMs: item.durationMs,
       startOffsetMs: item.startOffsetMs,
-      gapAfterMs: item.gapAfterMs
+      gapAfterMs: item.gapAfterMs,
+      volumePercent: item.volumePercent
     }))
   };
 }

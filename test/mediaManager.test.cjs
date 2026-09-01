@@ -247,13 +247,15 @@ test('resolves a CMS schedule local media key without exposing its path to the C
   const mediaKey = `local:${'b'.repeat(64)}`;
 
   const prepared = await manager.prepareSchedules([{
-    id: 'local-schedule', playlist: [{ mediaKey, title: 'Local film', durationMs: 60000, gapAfterMs: 120000 }]
+    id: 'local-schedule', playlist: [{ mediaKey, title: 'Local film', durationMs: 60000, gapAfterMs: 120000, volumePercent: 72 }]
   }], [], new Map([[mediaKey, localPath]]));
 
   assert.equal(prepared[0].playlist[0].path, localPath);
   assert.equal(prepared[0].playlist[0].mediaKey, mediaKey);
   assert.equal(prepared[0].playlist[0].gapAfterMs, 120000);
   assert.equal(prepared[0].files[0].gapAfterMs, 120000);
+  assert.equal(prepared[0].playlist[0].volumePercent, 72);
+  assert.equal(prepared[0].files[0].volumePercent, 72);
 });
 
 test('schedule-only sync does not start a second managed download', async t => {

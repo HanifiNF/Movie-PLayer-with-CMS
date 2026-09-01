@@ -2834,6 +2834,7 @@ async function startRuntime() {
       if (resumeTarget) {
         await vlc.resumePlaylistAt(resumeTarget.currentIndex, resumeTarget.positionSeconds);
         const file = resumeTarget.file;
+        vlc.applyVolumePercent(Number.isFinite(Number(file && file.volumePercent)) ? Number(file.volumePercent) : 100);
         lastResumeInfo = {
           scheduleId: active.scheduleId,
           currentIndex: resumeTarget.currentIndex,

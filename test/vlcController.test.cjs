@@ -92,6 +92,19 @@ test('VLC preserves the localhost LDG gateway URL instead of converting it to a 
   assert.equal(controller._toMrl(url), url);
 });
 
+test('scheduled volume changes the active VLC output without overwriting the operator setting', () => {
+  const controller = new VlcController({ settings: { volumePercent: 75 } });
+  const commands = [];
+  controller.ready = true;
+  controller.send = command => commands.push(command);
+
+  const audio = controller.applyVolumePercent(60);
+
+  assert.deepEqual(commands, ['volume 154']);
+  assert.equal(audio.volumePercent, 60);
+  assert.equal(controller.settings.volumePercent, 75);
+});
+
 test('replacePlaylist enqueues every item before starting the first one', async () => {
   const controller = new VlcController();
   const commands = [];
@@ -110,15 +123,17 @@ test('replacePlaylist enqueues every item before starting the first one', async 
   await controller.replacePlaylist([
     'C:\\media\\film A.mp4',
     'C:\\media\\film B.mp4'
-  ], { loop: false });
+  ], { loop: false, volumePercent: 60 });
 
   assert.deepEqual(commands, [
     'clear',
     'enqueue file:///C:/media/film%20A.mp4',
     'enqueue file:///C:/media/film%20B.mp4',
     'loop off',
+    'volume 154',
     'play',
     'volume 256',
+    'volume 154',
     'status'
   ]);
   assert.deepEqual(controller.currentPlaylist, [

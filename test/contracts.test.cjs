@@ -121,6 +121,21 @@ test('playlist film start offset is preserved and old payloads default to zero',
   assert.equal(normalized.files[1].startOffsetMs, 0);
 });
 
+test('playlist film volume is preserved as an absolute percentage and old payloads default to 100', () => {
+  const normalized = normalizeSchedule({
+    id: 'volume-contract',
+    startTime: '2026-08-01T10:00:00+07:00',
+    endTime: '2026-08-01T11:00:00+07:00',
+    playlist: [
+      { mediaKey: 'local:first', durationMs: 60000, volumePercent: 80 },
+      { mediaKey: 'local:second', durationMs: 120000 },
+      { mediaKey: 'local:third', durationMs: 120000, volumePercent: 140 }
+    ]
+  });
+  assert.deepEqual(normalized.playlist.map(item => item.volumePercent), [80, 100, 100]);
+  assert.deepEqual(normalized.files.map(item => item.volumePercent), [80, 100, 100]);
+});
+
 test('invalid payload is rejected before reaching the scheduler', () => {
   assert.throws(() => normalizeSyncPayload({
     schedules: [{

@@ -242,7 +242,8 @@ class Scheduler extends EventEmitter {
         Number.isFinite(Number(file.order)) ? Number(file.order) : index,
         Math.max(0, Number(file.durationMs) || 0),
         Math.max(0, Number(file.startOffsetMs) || 0),
-        Math.max(0, Number(file.gapAfterMs) || 0)
+        Math.max(0, Number(file.gapAfterMs) || 0),
+        Math.max(0, Math.min(100, Number.isFinite(Number(file.volumePercent)) ? Math.round(Number(file.volumePercent)) : 100))
       ].join(':'))
       .join('|');
     return `${schedule.id}:${startMs}:${Number(schedule.revision) || 0}:${schedule.loop !== false}:${mediaFingerprint}`;
@@ -387,7 +388,8 @@ class Scheduler extends EventEmitter {
     this.currentFiles = [file];
     Promise.resolve(this.vlc.replacePlaylist([source], {
       loop: false,
-      startPositionSeconds: target.positionSeconds
+      startPositionSeconds: target.positionSeconds,
+      volumePercent: Number.isFinite(Number(file.volumePercent)) ? Number(file.volumePercent) : 100
     })).catch(error => this.emit('error', error));
     this.emit('media', { schedule, file, ...target });
   }
