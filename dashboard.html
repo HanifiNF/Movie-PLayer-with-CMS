@@ -203,6 +203,15 @@
     .list .time { color: var(--red); font-family: ui-monospace, Consolas, monospace; font-size: 11px; white-space: nowrap; }
     .list .title { flex: 1; min-width: 0; overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
     .list .meta { color: var(--muted); font-size: 10px; }
+    .upcoming-list { display: grid; gap: 8px; }
+    .upcoming-list .upcoming-card { display: grid; grid-template-columns: minmax(165px, 1.35fr) minmax(128px, 1fr) minmax(82px, .65fr) minmax(128px, 1fr) minmax(62px, .48fr); align-items: center; gap: 14px; min-width: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-soft); }
+    .upcoming-identity, .upcoming-detail { min-width: 0; }
+    .upcoming-identity { display: flex; align-items: center; gap: 8px; }
+    .upcoming-title { min-width: 0; overflow: hidden; font-size: 12px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+    .upcoming-type { flex: 0 0 auto; padding: 3px 7px; border-radius: 999px; background: #f8e7e6; color: var(--red-dark); font-size: 8px; font-weight: 850; letter-spacing: .35px; text-transform: uppercase; }
+    .upcoming-detail small { display: block; margin-bottom: 3px; color: var(--subtle); font-size: 8px; font-weight: 750; letter-spacing: .45px; text-transform: uppercase; }
+    .upcoming-detail strong { display: block; overflow: hidden; color: var(--text); font-family: ui-monospace, Consolas, monospace; font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+    .upcoming-assets strong { font-family: inherit; }
     .empty-state { padding: 34px 16px; color: var(--subtle); font-size: 12px; font-style: italic; text-align: center; }
 
     .toolbar { display: grid; grid-template-columns: minmax(220px, 1fr) 190px; gap: 10px; margin-bottom: 14px; }
@@ -306,6 +315,10 @@
       .remote-download-item { grid-template-columns: 1fr; gap: 9px; }
       .settings-layout { grid-template-columns: 1fr; }
     }
+    @media (max-width: 680px) {
+      .upcoming-list .upcoming-card { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .upcoming-identity { grid-column: 1 / -1; }
+    }
   </style>
 </head>
 <body>
@@ -398,7 +411,7 @@
             </div>
           </article>
           <div class="home-grid">
-            <article class="card card-pad"><div class="section-label">Upcoming schedules</div><ul id="upcoming" class="list"></ul></article>
+            <article class="card card-pad"><div class="section-label">Upcoming schedules</div><ul id="upcoming" class="list upcoming-list"></ul></article>
             <div class="home-side">
             <article class="card preview-card">
               <div class="preview-card-head"><div class="section-label">Film output preview</div><span id="previewState" class="preview-state waiting">Waiting</span></div>
@@ -1054,7 +1067,22 @@
       if (jumpPanelOpen) { if (!canSeek || jumpMediaKey !== playbackMediaKey(playback)) closeJumpPanel(); else { jumpMaxSeconds = Math.max(0, Math.floor(Number(playback.lengthSeconds)) - 1); $('jumpSlider').max = String(jumpMaxSeconds); $('jumpMinutes').max = String(Math.floor(jumpMaxSeconds / 60)); setJumpTarget($('jumpSlider').value); } }
       const upcoming = $('upcoming'); upcoming.innerHTML = '';
       if (!(state.upcoming || []).length) { const li = document.createElement('li'); li.innerHTML = '<div class="empty-state" style="width:100%">No upcoming schedules.</div>'; upcoming.appendChild(li); }
-      for (const item of state.upcoming || []) { const li = document.createElement('li'); const time = document.createElement('span'); const title = document.createElement('span'); const meta = document.createElement('span'); time.className = 'time'; title.className = 'title'; meta.className = 'meta'; time.textContent = fmtDate(item.startMs); title.textContent = item.title; meta.textContent = item.freqLabel || ''; li.append(time, title, meta); upcoming.appendChild(li); }
+      for (const item of state.upcoming || []) {
+        const li = document.createElement('li'); li.className = 'upcoming-card';
+        const identity = document.createElement('div'); identity.className = 'upcoming-identity';
+        const title = document.createElement('span'); title.className = 'upcoming-title'; title.textContent = item.title || 'Untitled schedule'; title.title = title.textContent;
+        const type = document.createElement('span'); type.className = 'upcoming-type'; type.textContent = String(item.type || 'one-time').replace('-', ' '); type.title = item.freqLabel || type.textContent;
+        identity.append(title, type);
+        const detail = (label, value, extraClass = '') => { const box = document.createElement('div'); box.className = `upcoming-detail ${extraClass}`.trim(); const caption = document.createElement('small'); const content = document.createElement('strong'); caption.textContent = label; content.textContent = value; content.title = value; box.append(caption, content); return box; };
+        li.append(
+          identity,
+          detail('Start time', fmtDate(item.startMs)),
+          detail('Duration', fmtPlaybackTime(Number(item.durationMs || 0) / 1000)),
+          detail('End time', fmtDate(item.endMs)),
+          detail('Assets', String(Math.max(0, Number(item.assetCount) || 0)), 'upcoming-assets')
+        );
+        upcoming.appendChild(li);
+      }
       renderMediaHealth(); renderSkipped(); renderRemoteDownloads(); renderPlaybackPreview(); if (assetState.loaded || assetState.loading || assetState.error) renderAssets();
       renderPlaybackSettings(); renderRecoveryTestState();
       $('aboutVersion').textContent = state.appVersion || '1.0.0'; $('aboutDevice').textContent = state.deviceId || 'Not registered'; $('aboutMode').textContent = badgeLabel(state.status); $('aboutHeartbeat').textContent = state.cms && state.cms.lastHeartbeatAt ? new Date(state.cms.lastHeartbeatAt).toLocaleString() : '—'; $('aboutServer').textContent = state.serverURL || (state.bypass ? 'Test mode' : '—'); $('aboutRealtime').textContent = realtimeLabel(realtime); $('aboutRealtime').title = realtime.lastError || realtime.url || ''; $('aboutVlc').textContent = displayState; $('aboutRc').textContent = vlc.rcReady ? 'Ready' : 'Unavailable';

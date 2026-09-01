@@ -445,6 +445,10 @@ class Scheduler extends EventEmitter {
         scheduleId: schedule.id,
         title: schedule.title || schedule.id,
         startMs: occurrence.start.getTime(),
+        durationMs: Math.max(0, Number(occurrence.duration) || 0),
+        endMs: occurrence.start.getTime() + Math.max(0, Number(occurrence.duration) || 0),
+        assetCount: Array.isArray(schedule.files) ? schedule.files.length : 0,
+        type: scheduleType(schedule),
         priority: Number(schedule.priority) || 0,
         freqLabel: describeRecurrence(schedule)
       });
@@ -513,6 +517,12 @@ function describeRecurrence(schedule) {
     return `weekly ${days.map(day => names[day - 1]).filter(Boolean).join(',')}`;
   }
   return schedule.recurrence.freq;
+}
+
+function scheduleType(schedule) {
+  const frequency = schedule && schedule.recurrence && schedule.recurrence.freq;
+  if (frequency === 'daily' || frequency === 'weekly') return frequency;
+  return 'one-time';
 }
 
 module.exports = {

@@ -98,6 +98,34 @@ test('overlap resolution selects priority, then latest start time', () => {
   assert.equal(winner.schedule.id, 'emergency');
 });
 
+test('upcoming schedule cards receive timing, asset count, and recurrence type metadata', () => {
+  const scheduler = new Scheduler({ replacePlaylist() {}, playIdle() {}, clear() {} });
+  scheduler.clear();
+  scheduler.schedules = [schedule({
+    id: 'weekly-upcoming',
+    title: 'Weekend Features',
+    recurrence: { freq: 'weekly', daysOfWeek: [6, 7] },
+    files: [{ path: 'A.mp4' }, { path: 'B.mp4' }]
+  })];
+  scheduler._nextUnfinishedOccurrence = () => ({
+    start: new Date('2026-09-05T03:00:00.000Z'),
+    duration: 5400000,
+    alreadyActive: false
+  });
+
+  assert.deepEqual(scheduler.getUpcoming(1), [{
+    scheduleId: 'weekly-upcoming',
+    title: 'Weekend Features',
+    startMs: new Date('2026-09-05T03:00:00.000Z').getTime(),
+    durationMs: 5400000,
+    endMs: new Date('2026-09-05T04:30:00.000Z').getTime(),
+    assetCount: 2,
+    type: 'weekly',
+    priority: 0,
+    freqLabel: 'weekly Sat,Sun'
+  }]);
+});
+
 test('scheduler sends every playlist item to VLC in order', () => {
   let received = null;
   const vlc = {
