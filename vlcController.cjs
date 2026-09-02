@@ -81,6 +81,7 @@ class VlcController extends EventEmitter {
     // scheduler reconciliation from interleaving RC commands with a transition
     // that is still preparing the previous target.
     this._playlistOperation = Promise.resolve();
+    this._playlistOperationsPending = 0;
     this._audioDeviceCapture = null;
     this.audioDevices = [];
     this.playback = {
@@ -537,6 +538,10 @@ class VlcController extends EventEmitter {
     return this.starting || Boolean(this._startPromise);
   }
 
+  isTransitioning() {
+    return this._playlistOperationsPending > 0;
+  }
+
   async _startWithRecovery() {
     if (this._isOwnedProcessAlive()) {
       try {
@@ -736,8 +741,18 @@ class VlcController extends EventEmitter {
     const generation = ++this._playlistGeneration;
     const operation = () => this._replacePlaylist(filePaths, { ...options, operationGeneration: generation });
     const pending = this._playlistOperation.then(operation, operation);
-    this._playlistOperation = pending.catch(() => {});
-    return pending;
+    this._playlistOperationsPending += 1;
+    if (this._playlistOperationsPending === 1) {
+      this.emit('transition-state', { transitioning: true });
+    }
+    const tracked = pending.finally(() => {
+      this._playlistOperationsPending = Math.max(0, this._playlistOperationsPending - 1);
+      if (this._playlistOperationsPending === 0) {
+        this.emit('transition-state', { transitioning: false });
+      }
+    });
+    this._playlistOperation = tracked.catch(() => {});
+    return tracked;
   }
 
   _isCurrentPlaylistOperation(options) {

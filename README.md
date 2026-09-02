@@ -269,10 +269,13 @@ or recurring occurrence becomes active. If the CMS later becomes unavailable, th
 Player continues using the last valid cached revision.
 
 Each playlist item may include a `startOffsetMs` position. The schedule timeline
-uses the effective played duration supplied by the CMS, while VLC seeks to the
-configured source position plus any elapsed time when the Player joins late or
-recovers during an occurrence. Payloads without the field continue from the
-beginning of the film.
+uses the effective played `durationMs` supplied by the CMS, while VLC seeks to
+the configured source position plus any elapsed time when the Player joins late
+or recovers during an occurrence. `sourceDurationMs` retains the complete film
+duration for source-relative progress display, so a film starting at 01:00 may
+still display a 02:12 total while contributing only 01:12 to the schedule.
+Payloads without these fields remain compatible; the Player derives the source
+duration from the effective duration and offset when necessary.
 
 Each playlist item may also include an absolute `volumePercent` from 0 to 100.
 The Player applies it when that film starts and updates the dashboard slider to

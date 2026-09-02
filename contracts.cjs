@@ -75,6 +75,12 @@ function normalizePlaylistItem(value, index, errors) {
   const volumePercent = item.volumePercent === undefined || item.volumePercent === null || item.volumePercent === ''
     ? 100
     : Math.max(0, Math.min(100, Number.isFinite(rawVolumePercent) ? Math.round(rawVolumePercent) : 100));
+  const durationMs = Math.max(0, Number(item.durationMs) || 0);
+  const startOffsetMs = Math.max(0, Number(item.startOffsetMs) || 0);
+  const sourceDurationMs = Math.max(
+    durationMs + startOffsetMs,
+    Math.max(0, Number(item.sourceDurationMs) || 0)
+  );
 
   return {
     assetId: assetId || null,
@@ -85,8 +91,9 @@ function normalizePlaylistItem(value, index, errors) {
       ? item.title.trim()
       : (localPath ? path.basename(localPath) : (assetId || mediaKey)),
     order: Number.isFinite(Number(item.order)) ? Number(item.order) : index,
-    durationMs: Math.max(0, Number(item.durationMs) || 0),
-    startOffsetMs: Math.max(0, Number(item.startOffsetMs) || 0),
+    sourceDurationMs,
+    durationMs,
+    startOffsetMs,
     gapAfterMs: Math.max(0, Number(item.gapAfterMs) || 0),
     volumePercent
   };
@@ -139,6 +146,7 @@ function normalizeSchedule(value) {
       path: item.localPath,
       title: item.title,
       order: item.order,
+      sourceDurationMs: item.sourceDurationMs,
       durationMs: item.durationMs,
       startOffsetMs: item.startOffsetMs,
       gapAfterMs: item.gapAfterMs,

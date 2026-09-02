@@ -2973,7 +2973,7 @@ async function startRuntime() {
       return Boolean(active && active.files && active.files.length);
     },
     isHealthy: () => isVlcPlaybackHealthy(),
-    isRecoveryDeferred: () => Boolean(vlc && vlc.isStarting()),
+    isRecoveryDeferred: () => Boolean(vlc && (vlc.isStarting() || vlc.isTransitioning())),
     recover: async ({ attempt, maxAttempts }) => {
       appendVlcLog(`[watchdog] recovery attempt ${attempt}/${maxAttempts}`);
       const checkpoint = playbackCheckpoint ? { ...playbackCheckpoint } : null;
@@ -3028,6 +3028,14 @@ async function startRuntime() {
   playbackWatchdog.on('state-change', () => pushDashboard());
   playbackWatchdog.on('internal-error', error => {
     appendVlcLog(`[watchdog] internal error: ${error.message}`);
+  });
+
+  // Start the packaged VLC as early as possible, before cached schedules and
+  // media health are reconciled. An active schedule reuses this same startup
+  // promise and supersedes the empty standby operation safely.
+  appendVlcLog('[standby] starting early VLC warm-up');
+  void vlc.playIdle().catch(error => {
+    appendVlcLog(`[standby] early VLC warm-up failed: ${error.message}`);
   });
 
   const cache = readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] });

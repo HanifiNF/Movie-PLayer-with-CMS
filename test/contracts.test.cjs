@@ -121,6 +121,24 @@ test('playlist film start offset is preserved and old payloads default to zero',
   assert.equal(normalized.files[1].startOffsetMs, 0);
 });
 
+test('playlist keeps full source duration separate from effective scheduled duration', () => {
+  const normalized = normalizeSchedule({
+    id: 'source-duration-contract',
+    startTime: '2026-08-01T10:00:00+07:00',
+    endTime: '2026-08-01T11:00:00+07:00',
+    playlist: [{
+      mediaKey: 'local:feature',
+      sourceDurationMs: 132000,
+      durationMs: 72000,
+      startOffsetMs: 60000
+    }]
+  });
+
+  assert.equal(normalized.playlist[0].sourceDurationMs, 132000);
+  assert.equal(normalized.playlist[0].durationMs, 72000);
+  assert.equal(normalized.files[0].sourceDurationMs, 132000);
+});
+
 test('playlist film volume is preserved as an absolute percentage and old payloads default to 100', () => {
   const normalized = normalizeSchedule({
     id: 'volume-contract',

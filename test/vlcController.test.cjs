@@ -193,6 +193,24 @@ test('a playlist superseded during cold startup never publishes the elapsed film
   assert.deepEqual(controller.currentPlaylist, ['C:\\media\\film B.mp4']);
 });
 
+test('playlist replacement exposes a transition guard until every queued operation settles', async () => {
+  const controller = new VlcController();
+  controller.ready = true;
+  const states = [];
+  controller.on('transition-state', value => states.push(value.transitioning));
+  controller._replacePlaylist = async () => {
+    await new Promise(resolve => setTimeout(resolve, 20));
+  };
+
+  const first = controller.replacePlaylist(['C:\\media\\film A.mp4']);
+  const second = controller.replacePlaylist(['C:\\media\\film B.mp4']);
+  assert.equal(controller.isTransitioning(), true);
+  await Promise.all([first, second]);
+
+  assert.equal(controller.isTransitioning(), false);
+  assert.deepEqual(states, [true, false]);
+});
+
 test('replacePlaylist seeks to the requested late-join playlist position', async () => {
   const controller = new VlcController();
   const commands = [];
