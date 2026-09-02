@@ -5,8 +5,8 @@ function isPlaybackExpected(active) {
 }
 
 function isVlcPlaybackHealthy(vlc, active) {
-  // VLC is intentionally stopped while no schedule is active. Standby is a
-  // healthy Player state and must not trigger recovery.
+  // Standby remains healthy whether VLC is still warming or already warm and
+  // empty; neither condition should trigger playback recovery.
   if (!isPlaybackExpected(active)) return true;
   return Boolean(
     vlc &&

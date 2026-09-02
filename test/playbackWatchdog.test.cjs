@@ -103,3 +103,24 @@ test('manual retry is a no-op while Player is in standby', async () => {
   assert.equal(result.attempts, 0);
   assert.equal(recoveries, 0);
 });
+
+test('watchdog defers recovery while VLC cold startup is still pending', async () => {
+  let starting = true;
+  let recoveries = 0;
+  const watchdog = new PlaybackWatchdog({
+    failureThreshold: 1,
+    isPlaybackExpected: () => true,
+    isHealthy: () => false,
+    isRecoveryDeferred: () => starting,
+    recover: async () => { recoveries += 1; }
+  });
+
+  const pending = await watchdog.check();
+  assert.equal(pending.state, 'starting');
+  assert.equal(pending.consecutiveFailures, 0);
+  assert.equal(recoveries, 0);
+
+  starting = false;
+  await watchdog.check();
+  assert.equal(recoveries, 1);
+});

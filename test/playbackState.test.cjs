@@ -9,7 +9,7 @@ const {
   resolvePlaybackTelemetry
 } = require('../playbackState.cjs');
 
-test('idle Player is healthy even though VLC is intentionally stopped', () => {
+test('idle Player is healthy while VLC standby is not ready yet', () => {
   const vlc = { ready: false, state: 'idle', idleMode: true };
   assert.equal(isPlaybackExpected(null), false);
   assert.equal(isVlcPlaybackHealthy(vlc, null), true);

@@ -59,11 +59,16 @@ class VlcController extends EventEmitter {
     this.resumeInputTimeoutMs = Math.max(250, Number(options.resumeInputTimeoutMs) || 3000);
     this.replacementStopTimeoutMs = Math.max(250, Number(options.replacementStopTimeoutMs) || 2000);
     this.existingRcTimeoutMs = Math.max(250, Number(options.existingRcTimeoutMs) || 1500);
+    this.startupTimeoutMs = Math.max(3000, Number(options.startupTimeoutMs) || 20000);
     this.onTransitionStart = options.onTransitionStart || null;
     this.onTransitionEnd = options.onTransitionEnd || null;
     this._pollHandle = null;
     this._buffer = '';
     this._pendingMetricResponses = [];
+    this._inputEpoch = 0;
+    this._metricsReady = false;
+    this._metricQuarantineMs = Math.max(100, Number(options.metricQuarantineMs) || 500);
+    this._metricQuarantineUntil = 0;
     // RC metric replies do not carry a request/input id. During a playlist
     // replacement, ignore numeric replies until VLC confirms the new input so
     // late get_time/get_length values cannot leak into the next film.
@@ -91,6 +96,8 @@ class VlcController extends EventEmitter {
     this.drawableHwnd = options.drawableHwnd == null ? null : String(options.drawableHwnd);
     this._startedDisplayId = null;
     this._startPromise = null;
+    this.starting = false;
+    this._playlistGeneration = 0;
     this.settings = normalizePlaybackSettings(options.settings);
     this.volumePercent = this.settings.volumePercent;
     this.currentAudioDeviceId = this.settings.audioDeviceId;
@@ -118,12 +125,16 @@ class VlcController extends EventEmitter {
     this.idleMode = false;
     this._startedDisplayId = null;
     this._pendingMetricResponses = [];
+    this._inputEpoch += 1;
+    this._metricsReady = false;
+    this._metricQuarantineUntil = 0;
     this._metricsBlockedUntilInput = true;
     this._confirmedInputIndex = -1;
     this._resetPlaybackProgress();
   }
 
   _resetPlaybackProgress(currentPath = null, currentIndex = -1) {
+    this._metricsReady = false;
     this.playback = {
       currentPath,
       currentIndex,
@@ -135,7 +146,24 @@ class VlcController extends EventEmitter {
   }
 
   getPlaybackStatus() {
-    return { ...this.playback };
+    return {
+      ...this.playback,
+      inputEpoch: this._inputEpoch,
+      inputConfirmed: this._confirmedInputIndex >= 0 && this._confirmedInputIndex === this.playback.currentIndex,
+      metricsReady: this._metricsReady
+    };
+  }
+
+  _quarantinePendingMetrics() {
+    this._pendingMetricResponses = [];
+    this._metricsReady = false;
+    this._metricQuarantineUntil = Date.now() + this._metricQuarantineMs;
+  }
+
+  _canAcceptMetrics() {
+    return !this._metricsBlockedUntilInput &&
+      this._confirmedInputIndex >= 0 &&
+      Date.now() >= this._metricQuarantineUntil;
   }
 
   getAudioStatus() {
@@ -163,7 +191,12 @@ class VlcController extends EventEmitter {
     const newlyConfirmed = this._confirmedInputIndex !== index;
     this._confirmedInputIndex = index;
     if (normalizedMrl && newlyConfirmed) {
+      // Keep the quarantine anchored to the beginning of the transition. By
+      // the time VLC confirms the new input, normal clear/enqueue/play latency
+      // has usually drained the old replies; extending it here would suppress
+      // the new input's one-shot seek confirmation.
       this._pendingMetricResponses = [];
+      this._metricsReady = false;
       this._metricsBlockedUntilInput = false;
     }
     if (index !== this.playback.currentIndex || currentPath !== this.playback.currentPath) {
@@ -321,7 +354,7 @@ class VlcController extends EventEmitter {
       }
 
       const timeMatch = t.match(/\btime\s*:\s*(\d+)s\b/i);
-      if (timeMatch && !this._metricsBlockedUntilInput && this._confirmedInputIndex >= 0) {
+      if (timeMatch && this._canAcceptMetrics()) {
         this.playback.positionSeconds = Math.max(0, Number(timeMatch[1]) || 0);
         this._emitPlaybackProgress();
       }
@@ -333,11 +366,20 @@ class VlcController extends EventEmitter {
       }
 
       const numericMatch = t.match(/^>?\s*(-?\d+)\s*$/);
+      if (numericMatch && Date.now() < this._metricQuarantineUntil) {
+        // old-RC numeric replies have no request or input identifier. Anything
+        // arriving in this short drain window belongs to the previous input.
+        continue;
+      }
       if (numericMatch && this._pendingMetricResponses.length) {
-        const metric = this._pendingMetricResponses.shift();
+        const pending = this._pendingMetricResponses.shift();
+        const metric = typeof pending === 'string' ? pending : pending.metric;
+        const epoch = typeof pending === 'string' ? this._inputEpoch : pending.epoch;
+        if (epoch !== this._inputEpoch || !this._canAcceptMetrics()) continue;
         const value = Math.max(0, Number(numericMatch[1]) || 0);
         if (metric === 'positionSeconds') this.playback.positionSeconds = value;
         if (metric === 'lengthSeconds') this.playback.lengthSeconds = value;
+        if (!this._pendingMetricResponses.length) this._metricsReady = true;
         this._emitPlaybackProgress();
         continue;
       }
@@ -397,7 +439,7 @@ class VlcController extends EventEmitter {
     });
   }
 
-  _waitForRc(maxMs = 8000) {
+  _waitForRc(maxMs = this.startupTimeoutMs) {
     const deadline = Date.now() + maxMs;
     return new Promise((resolve, reject) => {
       const tryConnect = async () => {
@@ -413,7 +455,7 @@ class VlcController extends EventEmitter {
     });
   }
 
-  _buildStartArgs() {
+  _buildStartArgs(options = {}) {
     const settings = normalizePlaybackSettings(this.settings);
     this.settings = settings;
     const output = resolveOutputSize(settings, this.display);
@@ -427,15 +469,17 @@ class VlcController extends EventEmitter {
       '--intf', settings.hideVlcUi ? 'dummy' : 'qt',
       '--extraintf', 'rc',
       `--rc-host=127.0.0.1:${this.rcPort}`,
+      '--no-one-instance',
+      '--no-one-instance-when-started-from-file',
       '--video-x', String(x),
       '--video-y', String(y),
       '--width', String(output.width),
       '--height', String(output.height),
       embeddedOutput ? '--no-fullscreen' : (fullscreen ? '--fullscreen' : '--no-fullscreen'),
       '--no-video-title-show',
-      '--volume', String(Math.round((settings.volumePercent / 100) * VLC_VOLUME_AT_100_PERCENT)),
       '--loop'
     ];
+    if (options.refreshPlugins) args.push('--no-plugins-cache');
     if (embeddedOutput) args.push(`--drawable-hwnd=${this.drawableHwnd}`);
     if (settings.hideVlcUi) {
       args.push('--no-qt-fs-controller', '--no-video-deco');
@@ -457,7 +501,12 @@ class VlcController extends EventEmitter {
       // output remains visible.
       windowsHide: this.settings.hideVlcUi,
       cwd: vlcDir,
-      env: process.env
+      env: {
+        ...process.env,
+        // A copied VLC plugins.dat may refer to its previous installation.
+        // Point the loader at this packaged VLC instance explicitly.
+        VLC_PLUGIN_PATH: path.join(vlcDir, 'plugins')
+      }
     };
   }
 
@@ -473,9 +522,19 @@ class VlcController extends EventEmitter {
 
   start() {
     if (this._startPromise) return this._startPromise;
+    this.starting = true;
+    this.emit('startup-state', { starting: true });
     this._startPromise = this._startWithRecovery()
-      .finally(() => { this._startPromise = null; });
+      .finally(() => {
+        this._startPromise = null;
+        this.starting = false;
+        this.emit('startup-state', { starting: false });
+      });
     return this._startPromise;
+  }
+
+  isStarting() {
+    return this.starting || Boolean(this._startPromise);
   }
 
   async _startWithRecovery() {
@@ -494,19 +553,26 @@ class VlcController extends EventEmitter {
 
     try {
       await this._spawnVlc();
-    } catch (error) {
+    } catch (firstError) {
+      this.emit('vlc-log', `[startup] first attempt failed: ${firstError.message}; retrying with a fresh plugin scan`);
       await this._stopForOutputChange();
-      this._setState('error');
-      throw error;
+      try {
+        await this._spawnVlc({ refreshPlugins: true });
+      } catch (error) {
+        await this._stopForOutputChange();
+        this._setState('error');
+        throw new Error(`VLC startup failed after retry: ${error.message}`);
+      }
     }
   }
 
-  _spawnVlc() {
+  _spawnVlc(options = {}) {
     return new Promise((resolve, reject) => {
-      const args = this._buildStartArgs();
+      const args = this._buildStartArgs(options);
 
       const vlcDir = path.dirname(this.vlcPath);
       this.emit('vlc-log', `--- start attempt at ${new Date().toISOString()} ---`);
+      this.emit('vlc-log', `[startup] executable=${this.vlcPath} rc=127.0.0.1:${this.rcPort} refreshPlugins=${Boolean(options.refreshPlugins)}`);
 
       try {
         this.proc = spawn(this.vlcPath, args, this._buildSpawnOptions(vlcDir));
@@ -518,6 +584,18 @@ class VlcController extends EventEmitter {
 
       const startedProc = this.proc;
       const stderrLines = [];
+      let startSettled = false;
+      const resolveStart = () => {
+        if (startSettled) return;
+        startSettled = true;
+        resolve();
+      };
+      const rejectStart = error => {
+        if (startSettled) return;
+        startSettled = true;
+        const tail = stderrLines.filter(Boolean).slice(-15).join('\n');
+        reject(new Error(`${error.message}${tail ? `\nVLC stderr:\n${tail}` : ''}`));
+      };
       startedProc.stdout.on('data', (buf) => {
         const text = buf.toString('utf8');
         this.emit('vlc-stdout', text.trim());
@@ -533,6 +611,7 @@ class VlcController extends EventEmitter {
         if (this.proc !== startedProc) return;
         this._setState('error');
         this.emit('error', err);
+        rejectStart(err);
       });
       startedProc.on('exit', (code) => {
         // A process intentionally closed for idle mode may report its exit
@@ -548,9 +627,10 @@ class VlcController extends EventEmitter {
           this._resetVlc();
           this._setState('idle');
         }
+        if (!this.ready) rejectStart(new Error(`VLC exited before opening RC TCP (code=${code == null ? 'unknown' : code})`));
       });
 
-      this._waitForRc().then(resolve).catch(reject);
+      this._waitForRc().then(resolveStart).catch(rejectStart);
     });
   }
 
@@ -563,11 +643,17 @@ class VlcController extends EventEmitter {
 
   _pollPlayback() {
     this.send('status');
-    if (this.idleMode || this._metricsBlockedUntilInput || this._confirmedInputIndex < 0) {
+    if (this.idleMode || !this._canAcceptMetrics()) {
       this._pendingMetricResponses = [];
       return;
     }
-    this._pendingMetricResponses = ['positionSeconds', 'lengthSeconds'];
+    // Do not overwrite an incomplete batch: old-RC replies are anonymous, so
+    // preserving request order is the only reliable correlation mechanism.
+    if (this._pendingMetricResponses.length) return;
+    this._pendingMetricResponses = [
+      { metric: 'positionSeconds', epoch: this._inputEpoch },
+      { metric: 'lengthSeconds', epoch: this._inputEpoch }
+    ];
     this.send('get_time');
     this.send('get_length');
   }
@@ -647,10 +733,21 @@ class VlcController extends EventEmitter {
   }
 
   replacePlaylist(filePaths, options = {}) {
-    const operation = () => this._replacePlaylist(filePaths, options);
+    const generation = ++this._playlistGeneration;
+    const operation = () => this._replacePlaylist(filePaths, { ...options, operationGeneration: generation });
     const pending = this._playlistOperation.then(operation, operation);
     this._playlistOperation = pending.catch(() => {});
     return pending;
+  }
+
+  _isCurrentPlaylistOperation(options) {
+    return !options.operationGeneration || options.operationGeneration === this._playlistGeneration;
+  }
+
+  _skipSupersededPlaylist(options) {
+    if (this._isCurrentPlaylistOperation(options)) return false;
+    this.emit('vlc-log', `[playlist] skipped superseded operation ${options.operationGeneration}`);
+    return true;
   }
 
   async _replacePlaylist(filePaths, options = {}) {
@@ -662,7 +759,6 @@ class VlcController extends EventEmitter {
       this.state === 'paused'
     );
     const nextIdleMode = Boolean(options.idle);
-    this.idleMode = nextIdleMode;
 
     const targetDisplay = nextIdleMode
       ? (this.idleDisplay || this.playbackDisplay || this.display)
@@ -674,7 +770,6 @@ class VlcController extends EventEmitter {
     );
 
     if (targetDisplay) this.display = targetDisplay;
-    this._beginInputTransition(filePaths);
     const shouldLoop = options.loop !== false;
 
     const useTransition = this.transitionDuration > 0;
@@ -691,9 +786,16 @@ class VlcController extends EventEmitter {
         await sleep(this.transitionDuration);
       }
 
+      if (this._skipSupersededPlaylist(options)) return this.getPlaybackStatus();
+
       if (outputDisplayChanged) await this._stopForOutputChange();
 
       if (!this.ready) await this.start();
+      // A cold start can outlive a short timeline segment. The scheduler will
+      // have queued the current segment by then, so never publish the stale one.
+      if (this._skipSupersededPlaylist(options)) return this.getPlaybackStatus();
+      this.idleMode = nextIdleMode;
+      this._beginInputTransition(filePaths);
       // VLC old-RC "clear" only clears the playlist; it does not reliably close
       // the decoder that is currently playing. Always stop and wait for VLC's
       // acknowledgement before loading the replacement so time/length replies
@@ -718,6 +820,7 @@ class VlcController extends EventEmitter {
           await this.start();
         }
       }
+      if (this._skipSupersededPlaylist(options)) return this.getPlaybackStatus();
       this.send('clear');
       await sleep(200);
       // RC "add" starts the newly added item immediately, so repeatedly using it
@@ -795,9 +898,11 @@ class VlcController extends EventEmitter {
   }
 
   async clear() {
+    this._playlistGeneration += 1;
+    this._inputEpoch += 1;
     this.currentPlaylist = [];
     this.idleMode = false;
-    this._pendingMetricResponses = [];
+    this._quarantinePendingMetrics();
     this._metricsBlockedUntilInput = true;
     this._confirmedInputIndex = -1;
     this._resetPlaybackProgress();
@@ -812,7 +917,8 @@ class VlcController extends EventEmitter {
   _beginInputTransition(filePaths) {
     const files = Array.isArray(filePaths) ? filePaths.slice() : [];
     this.currentPlaylist = files;
-    this._pendingMetricResponses = [];
+    this._inputEpoch += 1;
+    this._quarantinePendingMetrics();
     this._metricsBlockedUntilInput = files.length > 0 && !this.idleMode;
     this._confirmedInputIndex = -1;
     this._resetPlaybackProgress(files[0] || null, files.length ? 0 : -1);
@@ -951,16 +1057,34 @@ class VlcController extends EventEmitter {
   }
 
   async playIdle() {
-    // Electron owns the dedicated idle video window. VLC is fully stopped so
-    // no Qt/console/logo window can leak onto either monitor while idle.
+    // Electron owns the visible idle output. Keep a hidden, empty VLC process
+    // warm behind it so the next schedule does not spend its first segment on
+    // process/plugin initialization.
+    const idleGeneration = ++this._playlistGeneration;
+    this._inputEpoch += 1;
     this.idleMode = true;
     this.currentPlaylist = [];
-    this._pendingMetricResponses = [];
+    this._quarantinePendingMetrics();
     this._confirmedInputIndex = -1;
     this._resetPlaybackProgress();
     if (this.onTransitionStart) await Promise.resolve(this.onTransitionStart());
-    await this._stopForOutputChange();
+    if (!this.ready) {
+      try {
+        await this.start();
+      } catch (error) {
+        this.emit('vlc-log', `[standby] VLC warm-up failed: ${error.message}`);
+        throw error;
+      }
+    }
+    // A schedule may have become active while the cold start was pending.
+    if (idleGeneration !== this._playlistGeneration || !this.idleMode) {
+      return this.getPlaybackStatus();
+    }
+    this.send('stop');
+    this.send('clear');
     this._setState('idle');
+    this.emit('vlc-log', '[standby] VLC is warm and ready');
+    return this.getPlaybackStatus();
   }
 
   isPlaying() { return this.state === 'playing'; }

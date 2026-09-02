@@ -789,7 +789,10 @@
       let index = Number.isInteger(playback.currentIndex) ? playback.currentIndex : -1;
       if (index < 0 && playback.currentPath) index = files.findIndex(file => String(file.localPath || file.path || '').toLowerCase() === String(playback.currentPath).toLowerCase());
       if (!now || index < 0 || !files[index] || vlc.idleMode) { $('playbackDetails').classList.add('hidden'); $('progressFill').style.width = '0%'; return; }
-      const position = Math.max(0, Number(playback.positionSeconds) || 0); const length = Math.max(0, Number(playback.lengthSeconds) || 0);
+      const metricsReady = playback.metricsReady !== false && playback.inputConfirmed !== false;
+      const scheduledLength = Math.max(0, Math.round(Number(files[index].durationMs) / 1000) || 0);
+      const position = metricsReady ? Math.max(0, Number(playback.positionSeconds) || 0) : 0;
+      const length = scheduledLength || (metricsReady ? Math.max(0, Number(playback.lengthSeconds) || 0) : 0);
       const nextIndex = index + 1 < files.length ? index + 1 : (now.loop !== false && files.length > 1 ? 0 : -1);
       $('currentMedia').textContent = titleFor(files[index]); $('playlistPosition').textContent = `${Number.isInteger(now.itemIndex) ? now.itemIndex + 1 : index + 1} of ${Number(now.playlistSize) || files.length}`;
       $('progressFill').style.width = `${length > 0 ? Math.min(100, position / length * 100) : 0}%`;

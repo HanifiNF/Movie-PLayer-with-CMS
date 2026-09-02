@@ -571,6 +571,14 @@ function resolveIdleOutputMediaPath() {
   return candidates.find(candidate => candidate && fs.existsSync(candidate)) || null;
 }
 
+function packagedFileUrl(filePath, query = {}) {
+  const url = pathToFileURL(path.resolve(filePath));
+  for (const [key, value] of Object.entries(query)) {
+    if (value != null && value !== '') url.searchParams.set(key, String(value));
+  }
+  return url.href;
+}
+
 function nativeWindowHandleToString(handle) {
   if (!Buffer.isBuffer(handle) || handle.length < 4) {
     throw new Error('Electron did not provide a valid native output window handle');
@@ -675,7 +683,7 @@ function createFilmOutputWindow() {
       if (vlc) vlc.drawableHwnd = null;
     }
   });
-  filmOutputPromise = win.loadFile(path.join(__dirname, 'filmOutput.html')).catch(error => {
+  filmOutputPromise = win.loadURL(packagedFileUrl(path.join(__dirname, 'filmOutput.html'))).catch(error => {
     if (filmOutputWin === win) destroyFilmOutput();
     throw error;
   }).finally(() => {
@@ -738,7 +746,7 @@ async function showIdleOutput() {
   destroyIdleOutput();
   const target = idleDisplay;
   const mediaPath = resolveIdleOutputMediaPath();
-  if (!mediaPath) throw new Error('Bundled idle black video was not found');
+  if (!mediaPath) appendVlcLog('[idle] bundled video unavailable; using the HTML black-screen fallback');
 
   idleOutputDisplayId = targetId;
   const win = new BrowserWindow({
@@ -780,9 +788,9 @@ async function showIdleOutput() {
     }
   });
 
-  idleOutputPromise = win.loadFile(path.join(__dirname, 'idleOutput.html'), {
-    query: { media: pathToFileURL(mediaPath).href }
-  }).then(() => {
+  idleOutputPromise = win.loadURL(packagedFileUrl(path.join(__dirname, 'idleOutput.html'), {
+    media: mediaPath ? pathToFileURL(mediaPath).href : ''
+  })).then(() => {
     if (win.isDestroyed() || idleOutputWin !== win) return;
     win.setBounds(target.bounds, false);
     win.showInactive();
@@ -1035,7 +1043,7 @@ function appendVlcLog(line) {
   try {
     const logPath = path.join(DATA_DIR, 'vlc-stderr.log');
     fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.appendFileSync(logPath, line + '\n');
+    fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${line}\n`);
     const stats = fs.statSync(logPath);
     if (stats.size > 200 * 1024) {
       const content = fs.readFileSync(logPath, 'utf8');
@@ -2695,10 +2703,10 @@ async function shutdownPlaybackComponents() {
     if (oldScheduler) oldScheduler.clear();
 
     const oldVlc = vlc;
-    vlc = null;
     if (oldVlc) await oldVlc.quit().catch(error => {
       appendVlcLog(`[shutdown] VLC close failed: ${error.message || error}`);
     });
+    if (vlc === oldVlc) vlc = null;
 
     const oldGateway = ldgGateway;
     ldgGateway = null;
@@ -2834,10 +2842,17 @@ async function startRuntime() {
   vlc.on('playback-progress', playback => {
     if (manualPlayback) manualPlayback.handleProgress(playback);
     const active = scheduler ? scheduler.getNow() : null;
+    const activeFile = active && Array.isArray(active.files) && active.files[playback && playback.currentIndex];
+    const expectedSource = activeFile && (activeFile.playbackSource || activeFile.localPath || activeFile.path);
+    const playbackMatchesActiveFile = Boolean(
+      expectedSource && playback && playback.currentPath &&
+      String(expectedSource).toLowerCase() === String(playback.currentPath).toLowerCase()
+    );
     if (
       active && !vlc.idleMode &&
       (vlc.state === 'playing' || vlc.state === 'paused') &&
-      playback && Number.isInteger(playback.currentIndex) && playback.currentIndex >= 0
+      playback && Number.isInteger(playback.currentIndex) && playback.currentIndex >= 0 &&
+      playback.inputConfirmed !== false && playback.metricsReady !== false && playbackMatchesActiveFile
     ) {
       playbackCheckpoint = {
         scheduleId: active.scheduleId,
@@ -2890,6 +2905,14 @@ async function startRuntime() {
     lastResumeInfo = null;
     refreshTray();
     pushDashboard();
+  });
+  scheduler.on('media', () => {
+    // A checkpoint belongs to one concrete film, not merely to the enclosing
+    // schedule occurrence. Never carry its position into the next item.
+    playbackCheckpoint = null;
+  });
+  scheduler.on('gap', () => {
+    playbackCheckpoint = null;
   });
   scheduler.on('expire', () => {
     nowSchedule = null;
@@ -2950,6 +2973,7 @@ async function startRuntime() {
       return Boolean(active && active.files && active.files.length);
     },
     isHealthy: () => isVlcPlaybackHealthy(),
+    isRecoveryDeferred: () => Boolean(vlc && vlc.isStarting()),
     recover: async ({ attempt, maxAttempts }) => {
       appendVlcLog(`[watchdog] recovery attempt ${attempt}/${maxAttempts}`);
       const checkpoint = playbackCheckpoint ? { ...playbackCheckpoint } : null;
@@ -2979,6 +3003,11 @@ async function startRuntime() {
         pushDashboard();
       }
     }
+  });
+  vlc.on('ready', () => {
+    // Re-evaluate against wall-clock time after a cold start. A playlist
+    // request for an elapsed short film will be superseded by this target.
+    if (scheduler) scheduler.reconcileNow(new Date());
   });
   playbackWatchdog.on('attempt', ({ attempt, maxAttempts }) => {
     appendVlcLog(`[watchdog] attempting automatic recovery ${attempt}/${maxAttempts}`);

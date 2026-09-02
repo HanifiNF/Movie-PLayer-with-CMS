@@ -24,8 +24,11 @@ test('VLC startup defaults to a production-safe hidden fullscreen interface', ()
   assert.ok(!args.includes('--video-on-top'));
   assert.ok(args.includes('--no-qt-fs-controller'));
   assert.ok(args.includes('--no-video-deco'));
+  assert.ok(args.includes('--no-one-instance'));
+  assert.ok(args.includes('--no-one-instance-when-started-from-file'));
   assert.ok(!args.includes('--no-embedded-video'));
   assert.ok(!args.includes('--qt-continue=0'));
+  assert.ok(!args.includes('--volume'));
 });
 
 test('scheduled kiosk playback hides VLC console and interface windows', () => {
@@ -34,6 +37,22 @@ test('scheduled kiosk playback hides VLC console and interface windows', () => {
 
   assert.equal(options.windowsHide, true);
   assert.equal(options.cwd, 'C:\\player\\vlc-portable');
+  assert.equal(options.env.VLC_PLUGIN_PATH, 'C:\\player\\vlc-portable\\plugins');
+});
+
+test('VLC recovery retry disables a stale plugin cache', async () => {
+  const controller = new VlcController();
+  const attempts = [];
+  controller._spawnVlc = async options => {
+    attempts.push(options || {});
+    if (attempts.length === 1) throw new Error('RC TCP not available');
+  };
+  controller._stopForOutputChange = async () => {};
+
+  await controller.start();
+
+  assert.deepEqual(attempts, [{}, { refreshPlugins: true }]);
+  assert.ok(controller._buildStartArgs({ refreshPlugins: true }).includes('--no-plugins-cache'));
 });
 
 test('scheduled fullscreen output preserves the selected monitor origin and resolution', () => {
@@ -140,6 +159,38 @@ test('replacePlaylist enqueues every item before starting the first one', async 
     'C:\\media\\film A.mp4',
     'C:\\media\\film B.mp4'
   ]);
+});
+
+test('a playlist superseded during cold startup never publishes the elapsed film', { timeout: 5000 }, async () => {
+  const controller = new VlcController();
+  const commands = [];
+  let releaseStart;
+  controller.start = () => new Promise(resolve => {
+    releaseStart = () => {
+      controller.ready = true;
+      resolve();
+    };
+  });
+  controller.send = command => {
+    commands.push(command);
+    if (command === 'status') {
+      setTimeout(() => {
+        controller._setCurrentInput('file:///C:/media/film%20B.mp4');
+        controller._parseRc('status change: ( play state: 3 )\n');
+      }, 10);
+    }
+    return true;
+  };
+
+  const elapsedFilm = controller.replacePlaylist(['C:\\media\\film A.mp4'], { loop: false });
+  await new Promise(resolve => setImmediate(resolve));
+  const currentFilm = controller.replacePlaylist(['C:\\media\\film B.mp4'], { loop: false });
+  releaseStart();
+  await Promise.all([elapsedFilm, currentFilm]);
+
+  assert.equal(commands.includes('enqueue file:///C:/media/film%20A.mp4'), false);
+  assert.equal(commands.includes('enqueue file:///C:/media/film%20B.mp4'), true);
+  assert.deepEqual(controller.currentPlaylist, ['C:\\media\\film B.mp4']);
 });
 
 test('replacePlaylist seeks to the requested late-join playlist position', async () => {
@@ -457,15 +508,14 @@ test('start replaces an owned VLC process whose RC endpoint never becomes ready'
   assert.equal(controller._startPromise, null);
 });
 
-test('idle mode hands output to Electron and fully stops VLC', async () => {
+test('idle mode hands output to Electron and keeps an empty VLC warm', async () => {
   const transitions = [];
   const commands = [];
   const controller = new VlcController({
     onTransitionStart: () => transitions.push('show')
   });
   controller.ready = true;
-  let killed = false;
-  controller.proc = { kill: () => { killed = true; } };
+  controller.proc = { kill: () => {} };
   controller.currentPlaylist = ['C:\\media\\finished.mp4'];
   controller.send = command => {
     commands.push(command);
@@ -476,17 +526,19 @@ test('idle mode hands output to Electron and fully stops VLC', async () => {
 
   assert.equal(controller.idleMode, true);
   assert.equal(controller.state, 'idle');
-  assert.equal(controller.proc, null);
-  assert.equal(controller.ready, false);
-  assert.equal(killed, true);
+  assert.notEqual(controller.proc, null);
+  assert.equal(controller.ready, true);
   assert.deepEqual(controller.currentPlaylist, []);
-  assert.deepEqual(commands, ['quit']);
+  assert.deepEqual(commands, ['stop', 'clear']);
   assert.deepEqual(controller.getPlaybackStatus(), {
     currentPath: null,
     currentIndex: -1,
     positionSeconds: 0,
     lengthSeconds: 0,
-    updatedAt: controller.getPlaybackStatus().updatedAt
+    updatedAt: controller.getPlaybackStatus().updatedAt,
+    inputEpoch: 1,
+    inputConfirmed: false,
+    metricsReady: false
   });
   assert.deepEqual(transitions, ['show']);
 });
@@ -518,7 +570,10 @@ test('playback polling requests status, elapsed time, and media length', () => {
   controller._pollPlayback();
 
   assert.deepEqual(commands, ['status', 'get_time', 'get_length']);
-  assert.deepEqual(controller._pendingMetricResponses, ['positionSeconds', 'lengthSeconds']);
+  assert.deepEqual(controller._pendingMetricResponses, [
+    { metric: 'positionSeconds', epoch: 0 },
+    { metric: 'lengthSeconds', epoch: 0 }
+  ]);
   assert.equal(controller.pollIntervalMs, 1000);
 });
 
@@ -549,7 +604,10 @@ test('RC responses identify the active playlist item and its progress', () => {
     currentIndex: 1,
     positionSeconds: 42,
     lengthSeconds: 120,
-    updatedAt: controller.getPlaybackStatus().updatedAt
+    updatedAt: controller.getPlaybackStatus().updatedAt,
+    inputEpoch: 0,
+    inputConfirmed: true,
+    metricsReady: true
   });
   assert.ok(controller.getPlaybackStatus().updatedAt);
 });
@@ -656,8 +714,8 @@ test('relative and absolute seek clamp positions to the current media', async ()
 
   assert.deepEqual(commands, [
     'seek 52', 'status', 'get_time', 'get_length',
-    'seek 0', 'status', 'get_time', 'get_length',
-    'seek 59', 'status', 'get_time', 'get_length'
+    'seek 0', 'status',
+    'seek 59', 'status'
   ]);
   assert.equal(controller.getPlaybackStatus().positionSeconds, 59);
 });
@@ -679,7 +737,10 @@ test('late metrics from the previous film cannot overwrite a replacement input',
     currentIndex: 0,
     positionSeconds: 0,
     lengthSeconds: 0,
-    updatedAt: controller.getPlaybackStatus().updatedAt
+    updatedAt: controller.getPlaybackStatus().updatedAt,
+    inputEpoch: 1,
+    inputConfirmed: false,
+    metricsReady: false
   });
   assert.equal(controller._metricsBlockedUntilInput, true);
   controller.send = command => commands.push(command);
@@ -687,9 +748,18 @@ test('late metrics from the previous film cannot overwrite a replacement input',
   assert.deepEqual(commands, ['status']);
 
   controller._parseRc('( new input: file:///C:/media/film%20B.mp4 )\n');
+  // Even if anonymous replies from A arrive after B is confirmed, the drain
+  // window must prevent them from becoming B's progress.
+  controller._parseRc('19\n25\n');
+  assert.equal(controller.getPlaybackStatus().positionSeconds, 0);
+  assert.equal(controller.getPlaybackStatus().lengthSeconds, 0);
+  controller._pollPlayback();
+  assert.deepEqual(commands, ['status', 'status']);
+  controller._metricQuarantineUntil = 0;
   controller._pollPlayback();
   controller._parseRc('3\n120\n');
   assert.equal(controller.getPlaybackStatus().positionSeconds, 3);
   assert.equal(controller.getPlaybackStatus().lengthSeconds, 120);
-  assert.deepEqual(commands, ['status', 'status', 'get_time', 'get_length']);
+  assert.equal(controller.getPlaybackStatus().metricsReady, true);
+  assert.deepEqual(commands, ['status', 'status', 'status', 'get_time', 'get_length']);
 });

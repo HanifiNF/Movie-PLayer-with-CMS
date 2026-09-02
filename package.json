@@ -1,7 +1,7 @@
 {
   "name": "player",
-  "version": "1.1.0",
-  "description": "Realtime media player for WirGroup CMS - receives schedule via Socket.IO and plays through VLC",
+  "version": "1.0.0",
+  "description": "Realtime media player for Layardigi CMS - receives schedule via Socket.IO and plays through VLC",
   "main": "main.cjs",
   "scripts": {
     "start": "electron .",
@@ -9,7 +9,7 @@
     "pack": "electron-builder --dir",
     "build": "electron-builder --win nsis portable"
   },
-  "author": "WirGroup",
+  "author": "Hanifi",
   "license": "UNLICENSED",
   "private": true,
   "engines": {
@@ -23,7 +23,7 @@
     "socket.io-client": "^4.8.3"
   },
   "build": {
-    "appId": "com.wirgroup.player",
+    "appId": "com.player",
     "productName": "Player",
     "copyright": "Copyright © 2026 WirGroup",
     "directories": {
@@ -48,6 +48,7 @@
       "playbackPreview.cjs",
       "cmsClient.cjs",
       "realtimeClient.cjs",
+      "revisionSync.cjs",
       "deviceCredentials.cjs",
       "managedAssetCleanup.cjs",
       "displaySelector.cjs",

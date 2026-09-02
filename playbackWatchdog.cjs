@@ -7,6 +7,7 @@ class PlaybackWatchdog extends EventEmitter {
     super();
     this.isPlaybackExpected = options.isPlaybackExpected || (() => false);
     this.isHealthy = options.isHealthy || (() => true);
+    this.isRecoveryDeferred = options.isRecoveryDeferred || (() => false);
     this.recover = options.recover || (async () => {});
     this.intervalMs = Math.max(250, Number(options.intervalMs) || 3000);
     this.failureThreshold = Math.max(1, Number(options.failureThreshold) || 2);
@@ -62,6 +63,17 @@ class PlaybackWatchdog extends EventEmitter {
     if (this.inFlight) return this.inFlight;
     if (!this.isPlaybackExpected()) {
       if (this.state !== 'idle' || this.attempts || this.consecutiveFailures) this.reset();
+      return this.getStatus();
+    }
+
+    // A portable VLC cold start can take several seconds while Windows scans
+    // its extracted plugins. Let the controller's own timeout/retry complete
+    // instead of starting watchdog recovery against the same process.
+    if (this.isRecoveryDeferred()) {
+      this.consecutiveFailures = 0;
+      this.nextRetryAt = null;
+      this.lastError = null;
+      this._setState('starting');
       return this.getStatus();
     }
 

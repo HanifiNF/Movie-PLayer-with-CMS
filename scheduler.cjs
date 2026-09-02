@@ -286,6 +286,10 @@ class Scheduler extends EventEmitter {
     this._reconcile(new Date());
   }
 
+  reconcileNow(now = new Date()) {
+    this._reconcile(now);
+  }
+
   _reconcile(now) {
     if (this._reconciling) return;
     this._reconciling = true;
