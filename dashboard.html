@@ -255,6 +255,26 @@
     .status-pill.queued,.status-pill.verifying { background: #f6ecd9; color: var(--amber); }
     .status-pill.downloading { background: var(--red-soft); color: var(--red-dark); }
     .status-pill.failed { background: #fbe5e4; color: var(--red-dark); }
+    .manual-banner { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 15px; padding: 13px 15px; border: 1px solid #e9c47f; border-radius: 11px; background: #fff8e8; }
+    .manual-banner.hidden { display: none; }
+    .manual-banner strong,.manual-banner span { display: block; }
+    .manual-banner strong { font-size: 12px; }
+    .manual-banner span { margin-top: 3px; color: var(--muted); font-size: 9px; }
+    .asset-action { text-align: right; }
+    .asset-action .btn { padding: 7px 10px; font-size: 10px; white-space: nowrap; }
+    dialog.manual-dialog { width: min(510px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--border); border-radius: 15px; background: var(--surface); color: var(--text); box-shadow: 0 24px 70px rgba(50,35,30,.24); }
+    dialog.manual-dialog::backdrop { background: rgba(41,37,36,.55); backdrop-filter: blur(2px); }
+    .manual-dialog-body { padding: 22px; }
+    .manual-dialog h3 { margin: 0; font-size: 17px; }
+    .manual-dialog-copy { margin: 6px 0 18px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+    .manual-time-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .manual-time-group { padding: 13px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-soft); }
+    .manual-time-group > label { color: var(--text); font-weight: 750; }
+    .manual-time-fields { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+    .manual-time-fields span { color: var(--subtle); font-size: 8px; text-align: center; }
+    .manual-time-fields input { padding-inline: 7px; text-align: center; }
+    .manual-dialog-error { min-height: 16px; margin-top: 11px; color: var(--red-dark); font-size: 10px; }
+    .manual-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
     .health-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .health-state { font-size: 10px; font-weight: 800; text-transform: uppercase; }
@@ -434,6 +454,7 @@
 
         <section id="view-assets" class="view hidden">
           <div class="page-heading"><div><h2>Assets</h2><p>Browse media available in the Media Folder and downloaded assets.</p></div><button id="btnRefreshAssets" class="btn primary">Refresh Assets</button></div>
+          <div id="manualPlaybackBanner" class="manual-banner hidden"><div><strong id="manualPlaybackTitle">Manual playback</strong><span id="manualPlaybackRange"></span></div><button id="btnStopManualPlayback" class="btn danger">Stop manual playback</button></div>
           <article class="card remote-downloads">
             <div class="remote-download-head"><div><h3>Remote Downloads</h3><p>Films assigned to this Player by the CMS.</p></div><span id="remoteAssignedCount" class="badge offline">0 assigned</span></div>
             <div id="remoteDownloadList" class="remote-download-list"></div>
@@ -442,7 +463,7 @@
           <div class="summary-grid"><article class="card summary-card"><span>Total</span><strong id="assetTotal">0</strong></article><article class="card summary-card"><span>Ready</span><strong id="assetReady">0</strong></article><article class="card summary-card"><span>Problems</span><strong id="assetProblems" class="red">0</strong></article><article class="card summary-card"><span>Showing</span><strong id="assetShowing">0</strong></article></div>
           <div class="toolbar"><div class="search-wrap"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16 16l5 5"/></svg><input id="assetSearch" type="search" placeholder="Search title, filename, or path..." /></div><select id="assetFilter" aria-label="Filter assets"><option value="all">All assets</option><option value="ready">Ready to play</option><option value="problem">Has problems</option><option value="local">Media Folder</option><option value="managed">Downloaded</option></select></div>
           <div id="assetDirectory" class="directory-note"></div>
-          <div class="card table-card"><table class="table"><thead><tr><th style="width:42%">Media</th><th style="width:16%">Source</th><th style="width:14%">Duration</th><th style="width:14%">Size</th><th style="width:14%">Status</th></tr></thead><tbody id="assetRows"></tbody></table><div id="assetEmpty" class="empty-state">Open this page to scan available media.</div></div>
+          <div class="card table-card"><table class="table"><thead><tr><th style="width:34%">Media</th><th style="width:14%">Source</th><th style="width:12%">Duration</th><th style="width:12%">Size</th><th style="width:12%">Status</th><th style="width:16%;text-align:right">Action</th></tr></thead><tbody id="assetRows"></tbody></table><div id="assetEmpty" class="empty-state">Open this page to scan available media.</div></div>
         </section>
 
         <section id="view-health" class="view hidden">
@@ -495,6 +516,18 @@
           </div>
         </section>
       </main>
+      <dialog id="manualPlaybackDialog" class="manual-dialog">
+        <form id="manualPlaybackForm" class="manual-dialog-body">
+          <h3>Play asset manually</h3>
+          <p id="manualPlaybackDialogCopy" class="manual-dialog-copy"></p>
+          <div class="manual-time-grid">
+            <div class="manual-time-group"><label>Start film at</label><div class="manual-time-fields"><span>Hours</span><span>Minutes</span><span>Seconds</span><input id="manualStartHours" type="number" min="0" value="0" required><input id="manualStartMinutes" type="number" min="0" max="59" value="0" required><input id="manualStartSeconds" type="number" min="0" max="59" value="0" required></div></div>
+            <div class="manual-time-group"><label>End film at</label><div class="manual-time-fields"><span>Hours</span><span>Minutes</span><span>Seconds</span><input id="manualEndHours" type="number" min="0" value="0" required><input id="manualEndMinutes" type="number" min="0" max="59" value="0" required><input id="manualEndSeconds" type="number" min="0" max="59" value="0" required></div></div>
+          </div>
+          <div id="manualPlaybackError" class="manual-dialog-error"></div>
+          <div class="manual-dialog-actions"><button id="btnCancelManualPlayback" class="btn" type="button">Cancel</button><button id="btnConfirmManualPlayback" class="btn primary" type="submit">Play now</button></div>
+        </form>
+      </dialog>
     </div>
   </div>
 
@@ -505,7 +538,7 @@
     const pauseIcon = '<rect class="solid" x="6" y="4" width="4" height="16"/><rect class="solid" x="14" y="4" width="4" height="16"/>';
     const playIcon = '<path class="solid" d="M7 4l13 8-13 8z"/>';
     let activeView = 'home';
-    let state = { status: 'offline', deviceId: '', device: { id: '', name: 'Player', location: '', timezone: '' }, display: { mode: 'single', hasDedicatedDisplay: false }, appVersion: '1.0.0', development: false, serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, realtime: { status: 'disabled', connected: false, lastError: null }, refresh: { status: 'idle', lastRefreshedAt: null, lastError: null }, remoteDownloads: { status: 'idle', assignedCount: 0, items: [] }, operator: { unlocked: false, user: null }, now: null, upcoming: [], skipped: [], vlc: { state: 'idle' }, preview: { status: 'waiting', label: 'Waiting', message: 'Preview starts with the next active schedule.' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
+    let state = { status: 'offline', deviceId: '', device: { id: '', name: 'Player', location: '', timezone: '' }, display: { mode: 'single', hasDedicatedDisplay: false }, appVersion: '1.0.0', development: false, serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, realtime: { status: 'disabled', connected: false, lastError: null }, refresh: { status: 'idle', lastRefreshedAt: null, lastError: null }, remoteDownloads: { status: 'idle', assignedCount: 0, items: [] }, operator: { unlocked: false, user: null }, now: null, manualPlayback: { active: false, availability: { allowed: true } }, upcoming: [], skipped: [], vlc: { state: 'idle' }, preview: { status: 'waiting', label: 'Waiting', message: 'Preview starts with the next active schedule.' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
     let previewFrame = { status: 'waiting', frame: null, capturedAt: null };
     let previewStream = null;
     let previewStreamDisplayId = '';
@@ -524,6 +557,7 @@
     let recoveryTestStartedAt = 0;
     let volumeDragging = false;
     let volumeUpdateTimer = null;
+    let selectedManualAsset = null;
 
     function fmtCountdown(ms) {
       if (ms == null || isNaN(ms)) return '';
@@ -632,12 +666,55 @@
         const duration = document.createElement('td'); duration.textContent = Number(item.durationMs) > 0 ? fmtPlaybackTime(Number(item.durationMs) / 1000) : '—'; tr.appendChild(duration);
         const size = document.createElement('td'); size.textContent = fmtBytes(item.size); tr.appendChild(size);
         const status = document.createElement('td'); const pill = document.createElement('span'); pill.className = `status-pill ${item.healthStatus}`; pill.textContent = item.healthStatus; status.appendChild(pill); tr.appendChild(status);
+        const action = document.createElement('td'); action.className = 'asset-action';
+        const play = document.createElement('button'); play.className = 'btn'; play.type = 'button'; play.textContent = 'Play manually';
+        const availability = state.manualPlayback && state.manualPlayback.availability || { allowed: !state.now };
+        const durationAvailable = Number(item.durationMs) > 0;
+        play.disabled = item.healthStatus !== 'ready' || !durationAvailable || !availability.allowed;
+        if (item.healthStatus !== 'ready') play.title = 'Only Ready assets can be played.';
+        else if (!durationAvailable) play.title = 'The asset duration is unavailable. Refresh Assets before manual playback.';
+        else play.title = availability.allowed ? 'Play this asset immediately.' : (availability.error || 'A schedule currently has priority.');
+        play.onclick = () => openManualPlaybackDialog(item);
+        action.appendChild(play); tr.appendChild(action);
         rows.appendChild(tr);
       }
       $('assetEmpty').style.display = filtered.length ? 'none' : 'block';
       $('assetEmpty').textContent = assetState.loading ? 'Scanning assets...' : assetState.error || (assetState.loaded ? 'No assets match the current search and filter.' : 'Open this page to scan available media.');
       $('btnRefreshAssets').disabled = assetState.loading;
       $('btnRefreshAssets').textContent = assetState.loading ? 'Scanning...' : 'Refresh Assets';
+    }
+
+    function setManualTime(prefix, totalSeconds) {
+      const total = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+      $(`${prefix}Hours`).value = String(Math.floor(total / 3600));
+      $(`${prefix}Minutes`).value = String(Math.floor((total % 3600) / 60));
+      $(`${prefix}Seconds`).value = String(total % 60);
+    }
+
+    function readManualTime(prefix) {
+      const hours = Number($(`${prefix}Hours`).value);
+      const minutes = Number($(`${prefix}Minutes`).value);
+      const seconds = Number($(`${prefix}Seconds`).value);
+      if (![hours, minutes, seconds].every(Number.isFinite) || hours < 0 || minutes < 0 || minutes > 59 || seconds < 0 || seconds > 59) {
+        throw new Error('Hours, minutes, and seconds must contain a valid duration.');
+      }
+      return Math.floor(hours * 3600 + minutes * 60 + seconds);
+    }
+
+    function openManualPlaybackDialog(item) {
+      if (!item || item.healthStatus !== 'ready') return;
+      const durationSeconds = Math.floor(Math.max(0, Number(item.durationMs) || 0) / 1000);
+      selectedManualAsset = item;
+      $('manualPlaybackDialogCopy').textContent = `${item.title || item.filename || 'Untitled'} · duration ${fmtPlaybackTime(durationSeconds)}. This starts immediately and never creates a schedule.`;
+      $('manualPlaybackError').textContent = '';
+      setManualTime('manualStart', 0); setManualTime('manualEnd', durationSeconds);
+      $('manualPlaybackDialog').showModal();
+    }
+
+    function closeManualPlaybackDialog() {
+      selectedManualAsset = null;
+      $('manualPlaybackError').textContent = '';
+      if ($('manualPlaybackDialog').open) $('manualPlaybackDialog').close();
     }
 
     function renderRemoteDownloads() {
@@ -1034,10 +1111,14 @@
       $('refreshMessage').textContent = refreshing ? 'Refreshing...' : (refresh.status === 'error' ? refresh.lastError || 'Refresh failed' : (refreshedTime ? `Synced ${refreshedTime}` : ''));
       $('sidebarVersion').textContent = `v${state.appVersion || '1.0.0'}`; $('btnAddSchedule').style.display = state.bypass ? 'inline-block' : 'none'; $('btnManageSchedules').style.display = state.bypass ? 'inline-block' : 'none';
       const now = state.now;
+      const manual = state.manualPlayback || { active: false };
       const hasNow = !!now;
-      if (now) { const inGap = now.phase === 'gap'; $('nowTitle').textContent = inGap ? 'Film gap' : (now.title || now.scheduleId); $('nowTitle').classList.remove('empty'); $('nowFile').textContent = inGap ? `Next: ${now.nextTitle || 'end of playlist'}` : (now.files || []).map(titleFor).join(' → '); $('nowCountdown').textContent = inGap ? fmtCountdown(now.gapRemainingMs).replace('ends in', 'continues in') : fmtCountdown(now.endMs ? now.endMs - Date.now() : null); }
+      const hasPlayback = hasNow || manual.active;
+      const playbackNow = now || (manual.active ? { title: 'Manual playback', files: [{ title: manual.title }], itemIndex: 0, playlistSize: 1, loop: false } : null);
+      if (manual.active && !now) { $('nowTitle').textContent = 'Manual playback'; $('nowTitle').classList.remove('empty'); $('nowFile').textContent = manual.title || 'Untitled media'; $('nowCountdown').textContent = `stops at ${fmtPlaybackTime(manual.endSeconds)}`; }
+      else if (now) { const inGap = now.phase === 'gap'; $('nowTitle').textContent = inGap ? 'Film gap' : (now.title || now.scheduleId); $('nowTitle').classList.remove('empty'); $('nowFile').textContent = inGap ? `Next: ${now.nextTitle || 'end of playlist'}` : (now.files || []).map(titleFor).join(' → '); $('nowCountdown').textContent = inGap ? fmtCountdown(now.gapRemainingMs).replace('ends in', 'continues in') : fmtCountdown(now.endMs ? now.endMs - Date.now() : null); }
       else { $('nowTitle').textContent = 'No active schedule'; $('nowTitle').classList.add('empty'); $('nowFile').textContent = ''; $('nowCountdown').textContent = ''; }
-      const vlc = state.vlc || {}; renderPlayback(now, vlc);
+      const vlc = state.vlc || {}; renderPlayback(playbackNow, vlc);
       const displayState = vlc.state === 'playing' && vlc.idleMode ? 'idle' : vlc.state || 'idle'; $('vlcState').className = `vlc-state ${displayState}`; $('vlcState').textContent = displayState;
       const audio = vlc.audio || {};
       const volumePercent = Math.max(0, Math.min(100, Math.round(Number(audio.volumePercent ?? 100))));
@@ -1057,13 +1138,19 @@
       else if (controlError) $('vlcNote').textContent = `Playback control failed: ${controlError}`;
       else if (state.recoveryResume && now && state.recoveryResume.scheduleId === now.scheduleId) $('vlcNote').textContent = `Recovered: resumed ${state.recoveryResume.title} at ${fmtPlaybackTime(state.recoveryResume.positionSeconds)}.`;
       else if (inGap) $('vlcNote').textContent = `Film gap. Playback continues with ${now.nextTitle || 'the next item'} automatically.`;
+      else if (manual.active) $('vlcNote').textContent = `Emergency manual playback · ${fmtPlaybackTime(manual.startSeconds)}–${fmtPlaybackTime(manual.endSeconds)}. A valid schedule will take priority.`;
       else if (!hasNow) $('vlcNote').textContent = 'Standby. VLC starts automatically when the next schedule begins.';
       else $('vlcNote').textContent = vlc.state === 'error' ? 'VLC is unavailable. Automatic recovery will run while a schedule is active.' : '';
       const playing = vlc.state === 'playing'; const paused = vlc.state === 'paused'; const playback = vlc.playback || {}; const isIdleMode = !!vlc.idleMode;
-      const canSeek = hasNow && !inGap && !isIdleMode && (playing || paused) && Number(playback.lengthSeconds) > 0 && Number.isInteger(playback.currentIndex) && playback.currentIndex >= 0;
-      $('btnPlayPause').disabled = !(hasNow && !inGap && !isIdleMode && (playing || paused)); $('playPauseIcon').innerHTML = paused ? playIcon : pauseIcon;
+      const canSeek = hasPlayback && !inGap && !isIdleMode && (playing || paused) && Number(playback.lengthSeconds) > 0 && Number.isInteger(playback.currentIndex) && playback.currentIndex >= 0;
+      $('btnPlayPause').disabled = !(hasPlayback && !inGap && !isIdleMode && (playing || paused)); $('playPauseIcon').innerHTML = paused ? playIcon : pauseIcon;
       $('btnPlayPause').dataset.tooltip = paused ? 'Resume' : 'Pause'; $('btnPlayPause').setAttribute('aria-label', paused ? 'Resume' : 'Pause');
-      $('btnRewind').disabled = !canSeek; $('btnForward').disabled = !canSeek; $('btnJump').disabled = !canSeek; $('btnSkip').disabled = !hasNow;
+      $('btnRewind').disabled = !canSeek; $('btnForward').disabled = !canSeek; $('btnJump').disabled = !canSeek; $('btnSkip').disabled = !hasPlayback;
+      $('btnSkip').dataset.tooltip = manual.active ? 'Stop Manual Playback' : 'Skip Schedule';
+      $('btnSkip').setAttribute('aria-label', manual.active ? 'Stop manual playback' : 'Skip schedule');
+      $('manualPlaybackBanner').classList.toggle('hidden', !manual.active);
+      $('manualPlaybackTitle').textContent = manual.active ? `Playing manually: ${manual.title || 'Untitled media'}` : 'Manual playback';
+      $('manualPlaybackRange').textContent = manual.active ? `${fmtPlaybackTime(manual.startSeconds)} to ${fmtPlaybackTime(manual.endSeconds)} · schedules retain priority` : '';
       if (jumpPanelOpen) { if (!canSeek || jumpMediaKey !== playbackMediaKey(playback)) closeJumpPanel(); else { jumpMaxSeconds = Math.max(0, Math.floor(Number(playback.lengthSeconds)) - 1); $('jumpSlider').max = String(jumpMaxSeconds); $('jumpMinutes').max = String(Math.floor(jumpMaxSeconds / 60)); setJumpTarget($('jumpSlider').value); } }
       const upcoming = $('upcoming'); upcoming.innerHTML = '';
       if (!(state.upcoming || []).length) { const li = document.createElement('li'); li.innerHTML = '<div class="empty-state" style="width:100%">No upcoming schedules.</div>'; upcoming.appendChild(li); }
@@ -1145,6 +1232,34 @@
     };
     $('btnRestorePlaybackSettings').onclick = async () => { const result = await ipcRenderer.invoke('restore-playback-settings'); if (!result || !result.ok) { playbackSettingsStatus = result && result.error || 'Could not restore defaults.'; playbackSettingsError = true; renderPlaybackSettings(true); return; } state.display = Object.assign({}, state.display || {}, { settings: result.settings, pending: Boolean(result.appliesAfterCurrentSchedule) }); playbackSettingsStatus = result.appliesAfterCurrentSchedule ? 'Defaults restored. They will apply after the active schedule finishes.' : 'Default playback settings restored.'; playbackSettingsError = false; playbackSettingsDirty = false; renderPlaybackSettings(true); };
     $('btnRefreshAssets').onclick = loadAssets; $('assetSearch').oninput = renderAssets; $('assetFilter').onchange = renderAssets; $('skippedSearch').oninput = renderSkipped;
+    $('btnCancelManualPlayback').onclick = closeManualPlaybackDialog;
+    $('manualPlaybackDialog').addEventListener('cancel', event => { event.preventDefault(); closeManualPlaybackDialog(); });
+    $('manualPlaybackForm').onsubmit = async event => {
+      event.preventDefault();
+      if (!selectedManualAsset) return;
+      const button = $('btnConfirmManualPlayback');
+      try {
+        const startSeconds = readManualTime('manualStart');
+        const endSeconds = readManualTime('manualEnd');
+        if (endSeconds <= startSeconds) throw new Error('End film at must be after Start film at.');
+        button.disabled = true; button.textContent = 'Starting...'; $('manualPlaybackError').textContent = '';
+        const result = await ipcRenderer.invoke('manual-playback-start', {
+          mediaId: selectedManualAsset.id, startSeconds, endSeconds
+        });
+        if (!result || !result.ok) throw new Error(result && result.error || 'Manual playback could not be started.');
+        closeManualPlaybackDialog(); setView('home');
+      } catch (error) {
+        $('manualPlaybackError').textContent = error && error.message ? error.message : String(error);
+      } finally {
+        button.disabled = false; button.textContent = 'Play now';
+      }
+    };
+    $('btnStopManualPlayback').onclick = async () => {
+      $('btnStopManualPlayback').disabled = true;
+      const result = await ipcRenderer.invoke('manual-playback-stop');
+      $('btnStopManualPlayback').disabled = false;
+      if (!result || !result.ok) { controlError = result && result.error || 'Manual playback could not be stopped.'; render(); }
+    };
     $('btnRewind').onclick = () => invokePlaybackControl('vlc-seek-relative', -10);
     $('btnPlayPause').onclick = () => invokePlaybackControl(state.vlc && state.vlc.state === 'paused' ? 'vlc-resume' : 'vlc-pause');
     $('btnForward').onclick = () => invokePlaybackControl('vlc-seek-relative', 10); $('btnJump').onclick = () => jumpPanelOpen ? closeJumpPanel() : openJumpPanel();
@@ -1167,7 +1282,7 @@
     $('vlcVolume').addEventListener('pointerup', () => { volumeDragging = false; });
     $('jumpSlider').oninput = () => setJumpTarget($('jumpSlider').value); $('jumpMinutes').oninput = syncJumpTargetFromInputs; $('jumpSeconds').oninput = syncJumpTargetFromInputs; $('btnJumpCancel').onclick = closeJumpPanel;
     $('btnJumpApply').onclick = async () => { const target = syncJumpTargetFromInputs(); $('btnJumpApply').disabled = true; const result = await invokePlaybackControl('vlc-seek-to', target); $('btnJumpApply').disabled = false; if (result) closeJumpPanel(); };
-    $('btnSkip').onclick = () => ipcRenderer.invoke('vlc-skip'); $('btnRetry').onclick = () => ipcRenderer.invoke('vlc-retry'); $('btnAddSchedule').onclick = () => ipcRenderer.invoke('open-schedule-adder'); $('btnManageSchedules').onclick = () => ipcRenderer.invoke('open-schedule-manager');
+    $('btnSkip').onclick = () => ipcRenderer.invoke(state.manualPlayback && state.manualPlayback.active ? 'manual-playback-stop' : 'vlc-skip'); $('btnRetry').onclick = () => ipcRenderer.invoke('vlc-retry'); $('btnAddSchedule').onclick = () => ipcRenderer.invoke('open-schedule-adder'); $('btnManageSchedules').onclick = () => ipcRenderer.invoke('open-schedule-manager');
     $('btnRecheckMedia').onclick = async () => { healthError = ''; $('btnRecheckMedia').disabled = true; $('btnRecheckMedia').textContent = 'Checking...'; const result = await ipcRenderer.invoke('recheck-media-health'); if (!result || !result.ok) healthError = result && result.error || 'Media health check failed'; render(); };
     $('btnRefreshPlayer').onclick = async () => { await ipcRenderer.invoke('refresh-player'); };
     $('btnConfig').onclick = () => ipcRenderer.invoke('open-config-folder'); $('btnLock').onclick = () => ipcRenderer.invoke('operator-logout'); $('btnQuit').onclick = () => ipcRenderer.invoke('quit');

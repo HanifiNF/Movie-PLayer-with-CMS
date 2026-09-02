@@ -44,6 +44,7 @@
       "playbackWatchdog.cjs",
       "playbackState.cjs",
       "playbackResume.cjs",
+      "manualPlayback.cjs",
       "playbackPreview.cjs",
       "cmsClient.cjs",
       "realtimeClient.cjs",

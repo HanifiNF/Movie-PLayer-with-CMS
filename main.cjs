@@ -19,6 +19,11 @@ const { scanBeforeRemoteDistribution } = require('./assetRefresh.cjs');
 const { MediaProbe } = require('./mediaProbe.cjs');
 const { PlaybackWatchdog } = require('./playbackWatchdog.cjs');
 const {
+  ManualPlaybackSession,
+  manualPlaybackAvailability,
+  normalizeManualRange
+} = require('./manualPlayback.cjs');
+const {
   isPlaybackAlertStatus,
   isPlaybackExpected,
   isVlcPlaybackHealthy: resolveVlcPlaybackHealth,
@@ -130,6 +135,7 @@ let mediaManager = null;
 let ldgGateway = null;
 let mediaProbe = null;
 let playbackWatchdog = null;
+let manualPlayback = null;
 let playbackCheckpoint = null;
 let lastResumeInfo = null;
 let mediaHealthMonitor = null;
@@ -1486,6 +1492,8 @@ function pushDashboard() {
   const upcoming = scheduler ? scheduler.getUpcoming(6) : [];
   const skipped = scheduler ? scheduler.getSkipped() : [];
   const preview = currentPlaybackPreviewState(now);
+  const watchdog = playbackWatchdog ? playbackWatchdog.getStatus() : { state: 'idle', attempts: 0 };
+  const manualStatus = manualPlayback ? manualPlayback.getStatus() : { active: false };
   const payload = {
     status: statusLabel,
     deviceId: cfg && cfg.deviceId || '',
@@ -1522,6 +1530,10 @@ function pushDashboard() {
       user: operatorSession && operatorSession.user || null
     },
     now,
+    manualPlayback: {
+      ...manualStatus,
+      availability: manualPlaybackAvailability(now, watchdog)
+    },
     upcoming,
     skipped,
     preview,
@@ -1532,7 +1544,7 @@ function pushDashboard() {
       playback: vlc ? vlc.getPlaybackStatus() : null,
       audio: getCombinedAudioStatus()
     },
-    watchdog: playbackWatchdog ? playbackWatchdog.getStatus() : { state: 'idle', attempts: 0 },
+    watchdog,
     recoveryResume: lastResumeInfo,
     mediaHealth: mediaHealthSnapshot
   };
@@ -1544,10 +1556,11 @@ function pushDashboard() {
 }
 
 function currentPlaybackPreviewState(now = scheduler ? scheduler.getNow() : null) {
+  const manualStatus = manualPlayback ? manualPlayback.getStatus() : { active: false };
   return {
     ...resolvePreviewState({
       hasDedicatedDisplay: hasDedicatedPlaybackDisplay,
-      now,
+      now: now || (manualStatus.active ? { phase: 'media' } : null),
       vlcState: vlc ? vlc.state : 'idle',
       idleMode: vlc ? vlc.idleMode : false
     }),
@@ -2254,6 +2267,104 @@ ipcMain.handle('list-local-media', async () => {
   }
 });
 
+async function resolveManualPlaybackAsset(mediaId) {
+  const normalizedId = String(mediaId || '').trim();
+  if (!normalizedId) throw new Error('Select an asset to play.');
+  const inventory = await collectAssetInventory();
+  const selected = inventory.displayItems.find(item => String(item.id) === normalizedId);
+  if (!selected) throw new Error('The selected asset is no longer available. Refresh Assets.');
+  if (selected.healthStatus !== 'ready') throw new Error('Only assets with Ready status can be played manually.');
+
+  let playbackSource = selected.path;
+  if (selected.source === 'managed') {
+    const asset = getCachedAssets().find(item => String(item.id) === String(selected.assetId));
+    if (!asset) throw new Error('The downloaded asset is no longer assigned to this Player.');
+    if (!await mediaManager.isReady(asset)) throw new Error('The downloaded asset failed its integrity check. Refresh Assets.');
+    playbackSource = await mediaManager.resolvePlaybackSource(asset, selected.path);
+  }
+  if (!playbackSource) throw new Error('A safe playback source could not be resolved for this asset.');
+  return { selected, playbackSource };
+}
+
+ipcMain.handle('manual-playback-start', async (_event, payload) => {
+  const denied = operatorAccessError(); if (denied) return denied;
+  if (!vlc || !manualPlayback || !scheduler) return { ok: false, error: 'Playback runtime is not initialized.' };
+  try {
+    let active = scheduler.getNow();
+    let availability = manualPlaybackAvailability(
+      active,
+      playbackWatchdog ? playbackWatchdog.getStatus() : { state: 'idle' }
+    );
+    if (!availability.allowed) throw new Error(availability.error);
+
+    // A terminally broken occurrence must not keep reconciling underneath the
+    // emergency playback session. Skip only this in-memory occurrence; cached
+    // schedules and the CMS revision remain unchanged.
+    if (active) {
+      scheduler.skip();
+      active = scheduler.getNow();
+      availability = manualPlaybackAvailability(
+        active,
+        playbackWatchdog ? playbackWatchdog.getStatus() : { state: 'idle' }
+      );
+      if (!availability.allowed) throw new Error('Another valid schedule became active and has priority.');
+    }
+
+    const { selected, playbackSource } = await resolveManualPlaybackAsset(payload && payload.mediaId);
+    const range = normalizeManualRange(payload, selected.durationMs);
+    const latestActive = scheduler.getNow();
+    const latestAvailability = manualPlaybackAvailability(
+      latestActive,
+      playbackWatchdog ? playbackWatchdog.getStatus() : { state: 'idle' }
+    );
+    if (!latestAvailability.allowed) throw new Error('A valid schedule started while the asset was being prepared and has priority.');
+    manualPlayback.preempt('replaced-by-operator');
+    const sessionDetails = {
+      mediaId: selected.id,
+      title: selected.title || selected.filename,
+      ...range,
+      reason: latestAvailability.reason
+    };
+    try {
+      await vlc.replacePlaylist([playbackSource], {
+        loop: false,
+        startPositionSeconds: range.startSeconds,
+        volumePercent: playbackSettings.volumePercent
+      });
+    } catch (error) {
+      manualPlayback.preempt('start-failed');
+      throw error;
+    }
+    if (scheduler.getNow()) {
+      throw new Error('A valid schedule started during VLC preparation and has priority.');
+    }
+    manualPlayback.begin(sessionDetails);
+    appendVlcLog(
+      `[manual] ${operatorSession && operatorSession.user && (operatorSession.user.email || operatorSession.user.name) || 'operator'} ` +
+      `started ${selected.id} from ${range.startSeconds}s to ${range.endSeconds}s (${latestAvailability.reason})`
+    );
+    pushDashboard();
+    return { ok: true, manualPlayback: manualPlayback.getStatus() };
+  } catch (error) {
+    appendVlcLog(`[manual] start rejected: ${error.message || error}`);
+    pushDashboard();
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('manual-playback-stop', async () => {
+  const denied = operatorAccessError(); if (denied) return denied;
+  if (!manualPlayback) return { ok: true, manualPlayback: { active: false } };
+  try {
+    await manualPlayback.stop('operator-stop');
+    appendVlcLog(`[manual] stopped by operator`);
+    pushDashboard();
+    return { ok: true, manualPlayback: manualPlayback.getStatus() };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
 ipcMain.handle('retry-asset-download', async (_event, assetId) => {
   let asset = null;
   try {
@@ -2576,6 +2687,9 @@ async function shutdownPlaybackComponents() {
     playbackWatchdog = null;
     if (oldWatchdog) oldWatchdog.stop();
 
+    if (manualPlayback) manualPlayback.preempt('runtime-shutdown');
+    manualPlayback = null;
+
     const oldScheduler = scheduler;
     scheduler = null;
     if (oldScheduler) oldScheduler.clear();
@@ -2718,6 +2832,7 @@ async function startRuntime() {
     appendVlcLog(line);
   });
   vlc.on('playback-progress', playback => {
+    if (manualPlayback) manualPlayback.handleProgress(playback);
     const active = scheduler ? scheduler.getNow() : null;
     if (
       active && !vlc.idleMode &&
@@ -2746,6 +2861,9 @@ async function startRuntime() {
   });
   vlc.on('state-change', () => {
     const active = scheduler && scheduler.getNow();
+    if (manualPlayback && manualPlayback.getStatus().active && vlc.state === 'idle' && !vlc.idleMode) {
+      void manualPlayback.stop('media-ended');
+    }
     if (vlc.state === 'error' && isPlaybackExpected(active)) {
       setStatus('vlc-error');
     } else if (isPlaybackAlertStatus(statusLabel) && isVlcPlaybackHealthy()) {
@@ -2759,6 +2877,9 @@ async function startRuntime() {
     isMediaReady: file => mediaHealthMonitor.isReady(file)
   });
   scheduler.on('activate', (info) => {
+    if (manualPlayback && manualPlayback.preempt('schedule-started')) {
+      appendVlcLog(`[manual] preempted by schedule ${info.schedule.id}`);
+    }
     nowSchedule = info.schedule;
     const active = scheduler.getNow();
     if (!playbackCheckpoint || !active ||
@@ -2809,6 +2930,15 @@ async function startRuntime() {
     refreshMediaHealth(scheduler.schedules, getCachedAssets()).catch(() => {});
     pushDashboard();
   });
+
+  manualPlayback = new ManualPlaybackSession({
+    stopPlayback: async reason => {
+      appendVlcLog(`[manual] playback ended (${reason})`);
+      if (!scheduler || !scheduler.getNow()) await vlc.playIdle();
+      pushDashboard();
+    }
+  });
+  manualPlayback.on('change', () => pushDashboard());
 
   playbackWatchdog = new PlaybackWatchdog({
     intervalMs: 3000,
