@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('crypto');
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 const { LdgGateway, parseLdgHeader, unwrapAssetKey } = require('../ldg.cjs');
@@ -118,4 +119,23 @@ test('local LDG gateway decrypts byte ranges without writing plaintext to disk',
     await gateway.close();
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('LDG gateway shutdown terminates active local sockets', async () => {
+  const gateway = new LdgGateway({ playerToken: PLAYER_TOKEN, deviceId: DEVICE_ID });
+  await gateway.start();
+  const socket = net.connect(gateway.port, '127.0.0.1');
+  await new Promise((resolve, reject) => {
+    socket.once('connect', resolve);
+    socket.once('error', reject);
+  });
+
+  const socketClosed = new Promise(resolve => socket.once('close', resolve));
+  await gateway.close();
+  await socketClosed;
+
+  assert.equal(gateway.server, null);
+  assert.equal(gateway.port, 0);
+  assert.equal(gateway.connections.size, 0);
+  assert.equal(socket.destroyed, true);
 });

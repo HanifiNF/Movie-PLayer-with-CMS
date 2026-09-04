@@ -75,7 +75,11 @@
     "extraResources": [
       {
         "from": "vlc-portable",
-        "to": "vlc"
+        "to": "vlc",
+        "filter": [
+          "**/*",
+          "!plugins/plugins.dat"
+        ]
       },
       {
         "from": "assets/idle-black.mp4",

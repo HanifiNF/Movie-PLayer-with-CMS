@@ -143,6 +143,7 @@ class LdgGateway {
     this.port = 0;
     this.records = new Map();
     this.assetTokens = new Map();
+    this.connections = new Set();
   }
 
   async start() {
@@ -157,6 +158,10 @@ class LdgGateway {
         });
       });
       server.on('error', reject);
+      server.on('connection', socket => {
+        this.connections.add(socket);
+        socket.once('close', () => this.connections.delete(socket));
+      });
       server.listen(0, '127.0.0.1', () => {
         this.server = server;
         this.port = server.address().port;
@@ -279,7 +284,20 @@ class LdgGateway {
     if (!this.server) return;
     const server = this.server;
     this.server = null;
-    await new Promise(resolve => server.close(resolve));
+    await new Promise(resolve => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolve();
+      };
+      const timeout = setTimeout(finish, 1000);
+      server.close(finish);
+      for (const socket of this.connections) socket.destroy();
+      this.connections.clear();
+      if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+    });
     this.port = 0;
   }
 }

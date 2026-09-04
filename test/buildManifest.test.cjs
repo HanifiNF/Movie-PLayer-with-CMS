@@ -32,3 +32,12 @@ test('packaged build includes the idle video at the runtime location', () => {
   );
   assert.equal(fs.existsSync(path.join(root, 'assets', 'idle-black.mp4')), true, 'Idle video source is missing');
 });
+
+test('packaged VLC excludes its location-sensitive plugin cache', () => {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const resources = packageJson.build && packageJson.build.extraResources || [];
+  const vlcResource = resources.find(item => item.from === 'vlc-portable' && item.to === 'vlc');
+
+  assert.ok(vlcResource, 'VLC extraResource mapping is missing');
+  assert.ok(vlcResource.filter.includes('!plugins/plugins.dat'));
+});

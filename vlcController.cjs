@@ -308,6 +308,31 @@ class VlcController extends EventEmitter {
     });
   }
 
+  _waitForPlaybackMetrics(targetIndex, timeoutMs = this.resumeInputTimeoutMs) {
+    const isReady = playback => (
+      this._confirmedInputIndex === targetIndex &&
+      this._metricsReady &&
+      Number(playback && playback.lengthSeconds) > 0
+    );
+    if (isReady(this.playback)) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const onProgress = playback => {
+        if (!isReady(playback)) return;
+        cleanup();
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('VLC did not report decoded media metrics'));
+      }, timeoutMs);
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.removeListener('playback-progress', onProgress);
+      };
+      this.on('playback-progress', onProgress);
+    });
+  }
+
   _toMrl(p) {
     let s = String(p);
     if (/^https?:\/\//i.test(s)) return s.replace(/ /g, '%20');
@@ -480,7 +505,11 @@ class VlcController extends EventEmitter {
       '--no-video-title-show',
       '--loop'
     ];
-    if (options.refreshPlugins) args.push('--no-plugins-cache');
+    // electron-builder Portable extracts VLC into a new temporary directory.
+    // A copied plugins.dat therefore has stale timestamps/paths on every run.
+    // Scanning the bundled directory is deterministic and finishes before RC
+    // readiness instead of leaking plugin initialization into the first film.
+    args.push('--no-plugins-cache');
     if (embeddedOutput) args.push(`--drawable-hwnd=${this.drawableHwnd}`);
     if (settings.hideVlcUi) {
       args.push('--no-qt-fs-controller', '--no-video-deco');
@@ -577,7 +606,7 @@ class VlcController extends EventEmitter {
 
       const vlcDir = path.dirname(this.vlcPath);
       this.emit('vlc-log', `--- start attempt at ${new Date().toISOString()} ---`);
-      this.emit('vlc-log', `[startup] executable=${this.vlcPath} rc=127.0.0.1:${this.rcPort} refreshPlugins=${Boolean(options.refreshPlugins)}`);
+      this.emit('vlc-log', `[startup] executable=${this.vlcPath} rc=127.0.0.1:${this.rcPort} pluginCache=disabled`);
 
       try {
         this.proc = spawn(this.vlcPath, args, this._buildSpawnOptions(vlcDir));
@@ -1099,6 +1128,61 @@ class VlcController extends EventEmitter {
     this.send('clear');
     this._setState('idle');
     this.emit('vlc-log', '[standby] VLC is warm and ready');
+    return this.getPlaybackStatus();
+  }
+
+  async warmUpVideoOutput(mediaPath) {
+    const resolvedPath = mediaPath && path.resolve(String(mediaPath));
+    if (!resolvedPath || !fs.existsSync(resolvedPath)) {
+      throw new Error('VLC warm-up media is unavailable');
+    }
+
+    const warmGeneration = ++this._playlistGeneration;
+    this.emit('vlc-log', `[standby] decoder warm-up starting with ${path.basename(resolvedPath)}`);
+    if (this.onTransitionStart) await Promise.resolve(this.onTransitionStart());
+    if (!this.ready) await this.start();
+    if (warmGeneration !== this._playlistGeneration) {
+      this.emit('vlc-log', '[standby] decoder warm-up superseded');
+      return this.getPlaybackStatus();
+    }
+
+    this.idleMode = false;
+    this._beginInputTransition([resolvedPath]);
+    this.send('stop');
+    this.send('clear');
+    await sleep(150);
+    this.send(`enqueue ${this._toMrl(resolvedPath)}`);
+    this.send('loop on');
+    const inputConfirmed = this._waitForPlaylistIndex(0);
+    const playingConfirmed = this._waitForFreshPlaybackState('playing');
+    this.send('play');
+    this.send('status');
+    await Promise.all([inputConfirmed, playingConfirmed]);
+
+    const metricsConfirmed = this._waitForPlaybackMetrics(0);
+    const metricDelayMs = Math.max(0, this._metricQuarantineUntil - Date.now());
+    if (metricDelayMs) await sleep(metricDelayMs);
+    this._pollPlayback();
+    await metricsConfirmed;
+    // Let VLC create the decoder and drawable video output, not merely accept
+    // the input. The black transition cover keeps this priming frame invisible.
+    await sleep(250);
+    this.emit('vlc-log', '[standby] decoder and video output confirmed');
+
+    const stopped = this._waitForStopAcknowledgement();
+    this.send('stop');
+    this.send('status');
+    await stopped;
+    this.send('clear');
+    this.idleMode = true;
+    this.currentPlaylist = [];
+    this._inputEpoch += 1;
+    this._quarantinePendingMetrics();
+    this._metricsBlockedUntilInput = true;
+    this._confirmedInputIndex = -1;
+    this._resetPlaybackProgress();
+    this._setState('idle');
+    this.emit('vlc-log', '[standby] VLC decoder is warm and ready');
     return this.getPlaybackStatus();
   }
 

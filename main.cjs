@@ -330,9 +330,19 @@ function trayRealtimeLabel() {
 }
 
 function refreshTray() {
-  if (!tray) return;
+  if (!tray || isShuttingDown) return;
   tray.setToolTip(`Player — ${statusLabel.toUpperCase()} | ${cfg && cfg.deviceId || ''}`);
   tray.setContextMenu(buildTrayMenu());
+}
+
+function destroyTray() {
+  const currentTray = tray;
+  tray = null;
+  try {
+    if (currentTray && !currentTray.isDestroyed()) currentTray.destroy();
+  } catch (error) {
+    console.error('Tray close failed', error);
+  }
 }
 
 function setStatus(s) {
@@ -370,7 +380,7 @@ function createLoginWindow() {
   loginWin.removeMenu();
   loginWin.loadFile(path.join(__dirname, 'login.html'));
   loginWin.on('close', (e) => {
-    if (cfg && cfg.token) {
+    if (!isShuttingDown && !allowAppQuit && cfg && cfg.token) {
       e.preventDefault();
       loginWin.hide();
     }
@@ -406,9 +416,9 @@ function createDashboardWindow() {
     void capturePlaybackPreview();
   });
   dashboardWin.on('close', (e) => {
-    if (!app.isQuiting) {
-        e.preventDefault();
-        dashboardWin.hide();
+    if (!isShuttingDown && !allowAppQuit) {
+      e.preventDefault();
+      dashboardWin.hide();
     }
   });
   dashboardWin.on('minimize', () => {
@@ -2839,6 +2849,15 @@ async function startRuntime() {
   vlc.on('vlc-log', (line) => {
     appendVlcLog(line);
   });
+  const warmUpMediaPath = resolveIdleOutputMediaPath();
+  try {
+    await vlc.warmUpVideoOutput(warmUpMediaPath);
+  } catch (error) {
+    appendVlcLog(`[standby] decoder warm-up failed: ${error.message}`);
+    // Do not prevent offline schedules from starting if the diagnostic media
+    // is missing or a specific machine cannot initialize it.
+    await vlc.playIdle();
+  }
   vlc.on('playback-progress', playback => {
     if (manualPlayback) manualPlayback.handleProgress(playback);
     const active = scheduler ? scheduler.getNow() : null;
@@ -3028,14 +3047,6 @@ async function startRuntime() {
   playbackWatchdog.on('state-change', () => pushDashboard());
   playbackWatchdog.on('internal-error', error => {
     appendVlcLog(`[watchdog] internal error: ${error.message}`);
-  });
-
-  // Start the packaged VLC as early as possible, before cached schedules and
-  // media health are reconciled. An active schedule reuses this same startup
-  // promise and supersedes the empty standby operation safely.
-  appendVlcLog('[standby] starting early VLC warm-up');
-  void vlc.playIdle().catch(error => {
-    appendVlcLog(`[standby] early VLC warm-up failed: ${error.message}`);
   });
 
   const cache = readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] });
@@ -3438,6 +3449,9 @@ async function logout(notice = '') {
 function quitApp() {
   if (quitPromise) return quitPromise;
   isShuttingDown = true;
+  // Remove the notification icon as soon as the explicit quit is accepted.
+  // This also prevents later status callbacks from rebuilding its menu.
+  destroyTray();
   quitPromise = (async () => {
     stopRealtimeConnection('disabled');
     stopCmsConnection();
@@ -3446,6 +3460,8 @@ function quitApp() {
     await shutdownPlaybackComponents();
     allowAppQuit = true;
     app.quit();
+    const forceExit = setTimeout(() => app.exit(0), 2000);
+    if (forceExit.unref) forceExit.unref();
   })();
   return quitPromise;
 }
@@ -3492,7 +3508,7 @@ app.on('ready', () => {
 });
 
 app.on('window-all-closed', (e) => {
-  e.preventDefault();
+  if (!isShuttingDown && !allowAppQuit) e.preventDefault();
 });
 
 app.on('before-quit', event => {
@@ -3509,6 +3525,7 @@ app.on('before-quit', event => {
 
 app.on('will-quit', () => {
   isShuttingDown = true;
+  destroyTray();
 });
 
 process.on('uncaughtException', (err) => {

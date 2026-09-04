@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const path = require('node:path');
 const test = require('node:test');
 const { VlcController, parseAudioDeviceLine } = require('../vlcController.cjs');
 
@@ -29,6 +30,7 @@ test('VLC startup defaults to a production-safe hidden fullscreen interface', ()
   assert.ok(!args.includes('--no-embedded-video'));
   assert.ok(!args.includes('--qt-continue=0'));
   assert.ok(!args.includes('--volume'));
+  assert.ok(args.includes('--no-plugins-cache'));
 });
 
 test('scheduled kiosk playback hides VLC console and interface windows', () => {
@@ -40,7 +42,7 @@ test('scheduled kiosk playback hides VLC console and interface windows', () => {
   assert.equal(options.env.VLC_PLUGIN_PATH, 'C:\\player\\vlc-portable\\plugins');
 });
 
-test('VLC recovery retry disables a stale plugin cache', async () => {
+test('VLC recovery retry keeps the plugin cache disabled', async () => {
   const controller = new VlcController();
   const attempts = [];
   controller._spawnVlc = async options => {
@@ -52,6 +54,7 @@ test('VLC recovery retry disables a stale plugin cache', async () => {
   await controller.start();
 
   assert.deepEqual(attempts, [{}, { refreshPlugins: true }]);
+  assert.ok(controller._buildStartArgs().includes('--no-plugins-cache'));
   assert.ok(controller._buildStartArgs({ refreshPlugins: true }).includes('--no-plugins-cache'));
 });
 
@@ -559,6 +562,36 @@ test('idle mode hands output to Electron and keeps an empty VLC warm', async () 
     metricsReady: false
   });
   assert.deepEqual(transitions, ['show']);
+});
+
+test('cold-start warm-up decodes the black media before returning to idle', async () => {
+  const controller = new VlcController({ metricQuarantineMs: 100 });
+  const commands = [];
+  const phases = [];
+  controller.ready = true;
+  controller.onTransitionStart = () => { phases.push('covered'); };
+  controller.send = command => {
+    commands.push(command);
+    return true;
+  };
+  controller._waitForPlaylistIndex = async () => {
+    controller._confirmedInputIndex = 0;
+    controller._metricsBlockedUntilInput = false;
+  };
+  controller._waitForFreshPlaybackState = async () => {};
+  controller._waitForPlaybackMetrics = async () => {};
+  controller._waitForStopAcknowledgement = async () => {};
+
+  await controller.warmUpVideoOutput(path.join(__dirname, '..', 'assets', 'idle-black.mp4'));
+
+  assert.deepEqual(phases, ['covered']);
+  assert.ok(commands.some(command => command.startsWith('enqueue file:')));
+  assert.ok(commands.includes('play'));
+  assert.ok(commands.includes('get_length'));
+  assert.equal(commands.filter(command => command === 'stop').length, 2);
+  assert.equal(controller.idleMode, true);
+  assert.equal(controller.state, 'idle');
+  assert.deepEqual(controller.currentPlaylist, []);
 });
 
 test('recovery test terminates only the controller-owned VLC process', () => {
