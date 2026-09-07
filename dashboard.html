@@ -271,6 +271,11 @@
     .download-fill.failed { background: var(--red-dark); }
     .download-error { margin-top: 5px; color: var(--red-dark); font-size: 9px; overflow-wrap: anywhere; }
     .remote-download-empty { padding: 13px 0 2px; color: var(--subtle); font-size: 10px; }
+    .remote-download-pagination { display: flex; align-items: center; justify-content: center; gap: 5px; margin-top: 12px; }
+    .remote-download-pagination:empty { display: none; }
+    .remote-download-pagination button { min-width: 30px; height: 29px; padding: 0 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--muted); font-size: 9px; font-weight: 750; cursor: pointer; }
+    .remote-download-pagination button:hover:not(:disabled), .remote-download-pagination button[aria-current="page"] { border-color: var(--red); background: var(--red); color: #fff; }
+    .remote-download-pagination button:disabled { cursor: default; opacity: .45; }
     .status-pill.queued,.status-pill.verifying { background: #f6ecd9; color: var(--amber); }
     .status-pill.downloading { background: var(--red-soft); color: var(--red-dark); }
     .status-pill.failed { background: #fbe5e4; color: var(--red-dark); }
@@ -479,6 +484,7 @@
             <div class="remote-download-head"><div><h3>Remote Downloads</h3><p>Films assigned to this Player by the CMS.</p></div><span id="remoteAssignedCount" class="badge offline">0 assigned</span></div>
             <div id="remoteDownloadList" class="remote-download-list"></div>
             <div id="remoteDownloadEmpty" class="remote-download-empty">No films are currently assigned by the CMS.</div>
+            <nav id="remoteDownloadPagination" class="remote-download-pagination" aria-label="Remote download pages"></nav>
           </article>
           <div class="summary-grid"><article class="card summary-card"><span>Total</span><strong id="assetTotal">0</strong></article><article class="card summary-card"><span>Ready</span><strong id="assetReady">0</strong></article><article class="card summary-card"><span>Problems</span><strong id="assetProblems" class="red">0</strong></article><article class="card summary-card"><span>Showing</span><strong id="assetShowing">0</strong></article></div>
           <div class="toolbar"><div class="search-wrap"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16 16l5 5"/></svg><input id="assetSearch" type="search" placeholder="Search title, filename, or path..." /></div><select id="assetFilter" aria-label="Filter assets"><option value="all">All assets</option><option value="ready">Ready to play</option><option value="problem">Has problems</option><option value="local">Media Folder</option><option value="managed">Downloaded</option></select></div>
@@ -578,6 +584,8 @@
     let volumeDragging = false;
     let volumeUpdateTimer = null;
     let selectedManualAsset = null;
+    let remoteDownloadPage = 1;
+    const remoteDownloadPageSize = 5;
     const expandedSchedules = new Set();
     let scheduleQueueSignature = '';
 
@@ -746,7 +754,13 @@
       $('remoteAssignedCount').textContent = `${count} assigned`;
       $('remoteAssignedCount').className = `badge ${remote.status === 'complete' ? 'online' : (remote.status === 'error' || remote.status === 'warning' ? 'offline' : 'connecting')}`;
       const list = $('remoteDownloadList'); list.innerHTML = '';
-      for (const item of items) {
+      const pageCount = Math.max(1, Math.ceil(items.length / remoteDownloadPageSize));
+      remoteDownloadPage = Math.min(Math.max(1, remoteDownloadPage), pageCount);
+      const visibleItems = items.slice(
+        (remoteDownloadPage - 1) * remoteDownloadPageSize,
+        remoteDownloadPage * remoteDownloadPageSize
+      );
+      for (const item of visibleItems) {
         const total = Math.max(0, Number(item.totalBytes) || 0);
         const downloaded = Math.min(total || Infinity, Math.max(0, Number(item.downloadedBytes) || 0));
         const percent = total > 0 ? Math.min(100, Math.round(downloaded / total * 100)) : (item.status === 'ready' ? 100 : 0);
@@ -783,6 +797,24 @@
       $('remoteDownloadEmpty').style.display = items.length ? 'none' : 'block';
       if (!items.length && remote.lastError) { $('remoteDownloadEmpty').textContent = `Could not load assignments: ${remote.lastError}`; }
       else if (!items.length) { $('remoteDownloadEmpty').textContent = remote.status === 'syncing' ? 'Checking CMS assignments...' : 'No films are currently assigned by the CMS.'; }
+      const pagination = $('remoteDownloadPagination');
+      pagination.replaceChildren();
+      if (items.length > remoteDownloadPageSize) {
+        const addPageButton = (label, page, disabled, current = false) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = label;
+          button.disabled = disabled;
+          if (current) button.setAttribute('aria-current', 'page');
+          else if (!disabled) button.onclick = () => { remoteDownloadPage = page; renderRemoteDownloads(); };
+          pagination.appendChild(button);
+        };
+        addPageButton('Previous', remoteDownloadPage - 1, remoteDownloadPage === 1);
+        for (let page = 1; page <= pageCount; page += 1) {
+          addPageButton(String(page), page, false, page === remoteDownloadPage);
+        }
+        addPageButton('Next', remoteDownloadPage + 1, remoteDownloadPage === pageCount);
+      }
     }
 
     function renderMediaHealth() {
