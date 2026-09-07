@@ -126,6 +126,64 @@ test('upcoming schedule cards receive timing, asset count, and recurrence type m
   }]);
 });
 
+test('schedule queue retains the active schedule and assigns schedule states', () => {
+  const scheduler = new Scheduler({ replacePlaylist() {}, playIdle() {}, clear() {} });
+  scheduler.clear();
+  const active = schedule({
+    id: 'active',
+    title: 'Now playing',
+    recurrence: null,
+    files: [
+      { assetId: 'a', title: 'Film A', durationMs: 60000, gapAfterMs: 5000, volumePercent: 80 },
+      { assetId: 'b', title: 'Film B', durationMs: 120000, gapAfterMs: 0, volumePercent: 60 }
+    ]
+  });
+  const next = schedule({ id: 'next', title: 'Next schedule', recurrence: null });
+  const later = schedule({ id: 'later', title: 'Later schedule', recurrence: null });
+  scheduler.schedules = [active, next, later];
+  scheduler.currentScheduleId = active.id;
+  scheduler.currentStart = new Date('2026-09-07T03:00:00.000Z');
+  scheduler.currentDuration = 185000;
+  scheduler.currentTimeline = { phase: 'media', currentIndex: 0, cycle: 0 };
+  scheduler._nextUnfinishedOccurrence = item => {
+    if (item.id === 'active') return { start: scheduler.currentStart, duration: 185000, alreadyActive: true };
+    if (item.id === 'next') return { start: new Date('2026-09-07T04:00:00.000Z'), duration: 3600000, alreadyActive: false };
+    return { start: new Date('2026-09-07T05:00:00.000Z'), duration: 3600000, alreadyActive: false };
+  };
+
+  const queue = scheduler.getScheduleQueue(3, new Date('2026-09-07T03:00:30.000Z'));
+  assert.deepEqual(queue.map(item => item.status), ['playing', 'upcoming', 'waiting']);
+  assert.deepEqual(queue[0].assets.map(item => item.status), ['playing', 'upcoming']);
+  assert.equal(queue[0].assets[0].volumePercent, 80);
+  assert.equal(queue[0].assets[1].startMs, scheduler.currentStart.getTime() + 65000);
+  assert.equal(queue[1].assets[0].status, 'upcoming');
+  assert.equal(queue[2].assets[0].status, 'waiting');
+});
+
+test('schedule queue marks completed and upcoming assets while in a gap', () => {
+  const scheduler = new Scheduler({ replacePlaylist() {}, playIdle() {}, clear() {} });
+  scheduler.clear();
+  const active = schedule({
+    id: 'gap',
+    recurrence: null,
+    files: [
+      { title: 'Film A', path: 'A.mp4', durationMs: 60000, gapAfterMs: 10000 },
+      { title: 'Film B', path: 'B.mp4', durationMs: 120000, gapAfterMs: 0 },
+      { title: 'Film C', path: 'C.mp4', durationMs: 90000, gapAfterMs: 0 }
+    ]
+  });
+  scheduler.schedules = [active];
+  scheduler.currentScheduleId = active.id;
+  scheduler.currentStart = new Date('2026-09-07T03:00:00.000Z');
+  scheduler.currentDuration = 280000;
+  scheduler.currentTimeline = { phase: 'gap', currentIndex: 0, cycle: 0, segmentRemainingMs: 4000 };
+
+  const queue = scheduler.getScheduleQueue(1);
+  assert.equal(queue[0].phase, 'gap');
+  assert.equal(queue[0].gapRemainingMs, 4000);
+  assert.deepEqual(queue[0].assets.map(item => item.status), ['completed', 'upcoming', 'waiting']);
+});
+
 test('scheduler sends every playlist item to VLC in order', () => {
   let received = null;
   const vlc = {
@@ -158,6 +216,37 @@ test('scheduler sends every playlist item to VLC in order', () => {
     ],
     options: { loop: false }
   });
+});
+
+test('scheduler treats repeated references to the same asset as separate timeline items', () => {
+  const received = [];
+  const vlc = {
+    replacePlaylist(files, options) { received.push({ files, options }); },
+    playIdle() {},
+    clear() {}
+  };
+  const scheduler = new Scheduler(vlc);
+  const active = schedule({
+    id: 'repeated-asset',
+    loop: false,
+    files: [
+      { assetId: 'same', path: 'C:\\media\\same.mp4', durationMs: 60000, volumePercent: 100 },
+      { assetId: 'same', path: 'C:\\media\\same.mp4', durationMs: 60000, volumePercent: 70 }
+    ]
+  });
+  const start = new Date(active.startTime);
+
+  scheduler.schedules = [active];
+  scheduler._activate(active, start, 120000, start);
+  scheduler._syncTimeline(active, start, new Date(start.getTime() + 61000));
+  scheduler.clear();
+
+  assert.equal(received.length, 2);
+  assert.deepEqual(received.map(call => call.files), [
+    ['C:\\media\\same.mp4'],
+    ['C:\\media\\same.mp4']
+  ]);
+  assert.deepEqual(received.map(call => call.options.volumePercent), [100, 70]);
 });
 
 test('scheduler skips unavailable media and exposes the actual playback playlist', () => {

@@ -1508,6 +1508,7 @@ function pushDashboard() {
   if (!dashboardWin || dashboardWin.isDestroyed() || !dashboardWin.webContents) return;
   const now = scheduler ? scheduler.getNow() : null;
   const upcoming = scheduler ? scheduler.getUpcoming(6) : [];
+  const scheduleQueue = scheduler ? scheduler.getScheduleQueue(6) : [];
   const skipped = scheduler ? scheduler.getSkipped() : [];
   const preview = currentPlaybackPreviewState(now);
   const watchdog = playbackWatchdog ? playbackWatchdog.getStatus() : { state: 'idle', attempts: 0 };
@@ -1553,6 +1554,7 @@ function pushDashboard() {
       availability: manualPlaybackAvailability(now, watchdog)
     },
     upcoming,
+    scheduleQueue,
     skipped,
     preview,
     vlc: {

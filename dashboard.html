@@ -204,7 +204,8 @@
     .list .title { flex: 1; min-width: 0; overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
     .list .meta { color: var(--muted); font-size: 10px; }
     .upcoming-list { display: grid; gap: 8px; }
-    .upcoming-list .upcoming-card { display: grid; grid-template-columns: minmax(165px, 1.35fr) minmax(128px, 1fr) minmax(82px, .65fr) minmax(128px, 1fr) minmax(62px, .48fr); align-items: center; gap: 14px; min-width: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-soft); }
+    .upcoming-list .upcoming-card { display: block; min-width: 0; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-soft); }
+    .schedule-card-head { display: grid; grid-template-columns: minmax(165px, 1.35fr) minmax(128px, 1fr) minmax(82px, .65fr) minmax(128px, 1fr) minmax(62px, .48fr) auto; align-items: center; gap: 14px; min-width: 0; padding: 10px 12px 8px; }
     .upcoming-identity, .upcoming-detail { min-width: 0; }
     .upcoming-identity { display: flex; align-items: center; gap: 8px; }
     .upcoming-title { min-width: 0; overflow: hidden; font-size: 12px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
@@ -212,6 +213,24 @@
     .upcoming-detail small { display: block; margin-bottom: 3px; color: var(--subtle); font-size: 8px; font-weight: 750; letter-spacing: .45px; text-transform: uppercase; }
     .upcoming-detail strong { display: block; overflow: hidden; color: var(--text); font-family: ui-monospace, Consolas, monospace; font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
     .upcoming-assets strong { font-family: inherit; }
+    .queue-status, .asset-queue-status { display: inline-flex; align-items: center; justify-content: center; width: max-content; padding: 4px 8px; border-radius: 999px; font-size: 8px; font-weight: 850; letter-spacing: .35px; text-transform: uppercase; }
+    .queue-status.playing, .asset-queue-status.playing { background: #dff3e8; color: var(--green); }
+    .queue-status.upcoming, .asset-queue-status.upcoming { background: #f8e7e6; color: var(--red-dark); }
+    .queue-status.waiting, .asset-queue-status.waiting, .asset-queue-status.completed { background: #eee9e5; color: var(--muted); }
+    .asset-queue-status.completed { color: var(--green); }
+    .schedule-toggle { position: relative; display: flex; align-items: center; width: 100%; height: 18px; padding: 0 12px; border: 0; background: transparent; color: var(--red); cursor: pointer; }
+    .schedule-toggle::before, .schedule-toggle::after { height: 1px; background: var(--border); content: ''; flex: 1; }
+    .schedule-toggle svg { width: 17px; height: 17px; margin: 0 9px; fill: none; stroke: currentColor; stroke-width: 2; transition: transform .2s ease; }
+    .schedule-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+    .schedule-collapse { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .24s ease; }
+    .schedule-collapse.open { grid-template-rows: 1fr; }
+    .schedule-collapse-inner { min-height: 0; overflow: hidden; }
+    .schedule-assets { display: grid; gap: 6px; padding: 5px 12px 12px; }
+    .schedule-asset { display: grid; grid-template-columns: minmax(140px, 1.35fr) minmax(68px, .55fr) minmax(118px, 1fr) minmax(118px, 1fr) minmax(58px, .45fr) auto; align-items: center; gap: 12px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+    .schedule-asset-title { min-width: 0; overflow: hidden; font-size: 10px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+    .schedule-asset-detail { min-width: 0; }
+    .schedule-asset-detail small { display: block; margin-bottom: 2px; color: var(--subtle); font-size: 7px; font-weight: 750; letter-spacing: .35px; text-transform: uppercase; }
+    .schedule-asset-detail strong { display: block; overflow: hidden; font-family: ui-monospace, Consolas, monospace; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
     .empty-state { padding: 34px 16px; color: var(--subtle); font-size: 12px; font-style: italic; text-align: center; }
 
     .toolbar { display: grid; grid-template-columns: minmax(220px, 1fr) 190px; gap: 10px; margin-bottom: 14px; }
@@ -336,8 +355,9 @@
       .settings-layout { grid-template-columns: 1fr; }
     }
     @media (max-width: 680px) {
-      .upcoming-list .upcoming-card { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .schedule-card-head, .schedule-asset { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .upcoming-identity { grid-column: 1 / -1; }
+      .queue-status, .asset-queue-status { justify-self: start; }
     }
   </style>
 </head>
@@ -431,7 +451,7 @@
             </div>
           </article>
           <div class="home-grid">
-            <article class="card card-pad"><div class="section-label">Upcoming schedules</div><ul id="upcoming" class="list upcoming-list"></ul></article>
+            <article class="card card-pad"><div class="section-label">Schedule queue</div><ul id="upcoming" class="list upcoming-list"></ul></article>
             <div class="home-side">
             <article class="card preview-card">
               <div class="preview-card-head"><div class="section-label">Film output preview</div><span id="previewState" class="preview-state waiting">Waiting</span></div>
@@ -538,7 +558,7 @@
     const pauseIcon = '<rect class="solid" x="6" y="4" width="4" height="16"/><rect class="solid" x="14" y="4" width="4" height="16"/>';
     const playIcon = '<path class="solid" d="M7 4l13 8-13 8z"/>';
     let activeView = 'home';
-    let state = { status: 'offline', deviceId: '', device: { id: '', name: 'Player', location: '', timezone: '' }, display: { mode: 'single', hasDedicatedDisplay: false }, appVersion: '1.0.0', development: false, serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, realtime: { status: 'disabled', connected: false, lastError: null }, refresh: { status: 'idle', lastRefreshedAt: null, lastError: null }, remoteDownloads: { status: 'idle', assignedCount: 0, items: [] }, operator: { unlocked: false, user: null }, now: null, manualPlayback: { active: false, availability: { allowed: true } }, upcoming: [], skipped: [], vlc: { state: 'idle' }, preview: { status: 'waiting', label: 'Waiting', message: 'Preview starts with the next active schedule.' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
+    let state = { status: 'offline', deviceId: '', device: { id: '', name: 'Player', location: '', timezone: '' }, display: { mode: 'single', hasDedicatedDisplay: false }, appVersion: '1.0.0', development: false, serverURL: '', cms: { status: 'offline', lastHeartbeatAt: null, lastError: null }, realtime: { status: 'disabled', connected: false, lastError: null }, refresh: { status: 'idle', lastRefreshedAt: null, lastError: null }, remoteDownloads: { status: 'idle', assignedCount: 0, items: [] }, operator: { unlocked: false, user: null }, now: null, manualPlayback: { active: false, availability: { allowed: true } }, upcoming: [], scheduleQueue: [], skipped: [], vlc: { state: 'idle' }, preview: { status: 'waiting', label: 'Waiting', message: 'Preview starts with the next active schedule.' }, watchdog: { state: 'idle', attempts: 0, maxAttempts: 5 }, recoveryResume: null, mediaHealth: null, bypass: false };
     let previewFrame = { status: 'waiting', frame: null, capturedAt: null };
     let previewStream = null;
     let previewStreamDisplayId = '';
@@ -558,6 +578,8 @@
     let volumeDragging = false;
     let volumeUpdateTimer = null;
     let selectedManualAsset = null;
+    const expandedSchedules = new Set();
+    let scheduleQueueSignature = '';
 
     function fmtCountdown(ms) {
       if (ms == null || isNaN(ms)) return '';
@@ -1093,6 +1115,145 @@
       }
     }
 
+    function renderScheduleQueue() {
+      const queue = Array.isArray(state.scheduleQueue) && state.scheduleQueue.length
+        ? state.scheduleQueue
+        : (state.upcoming || []).map((item, index) => ({
+            ...item,
+            occurrenceKey: `${item.scheduleId}:${item.startMs}`,
+            status: index === 0 ? 'upcoming' : 'waiting',
+            assets: []
+          }));
+      const signature = JSON.stringify(queue.map(item => ({
+        occurrenceKey: item.occurrenceKey,
+        title: item.title,
+        startMs: item.startMs,
+        durationMs: item.durationMs,
+        endMs: item.endMs,
+        assetCount: item.assetCount,
+        type: item.type,
+        status: item.status,
+        phase: item.phase,
+        assets: (item.assets || []).map(asset => ({
+          assetId: asset.assetId,
+          title: asset.title,
+          durationMs: asset.durationMs,
+          startMs: asset.startMs,
+          endMs: asset.endMs,
+          volumePercent: asset.volumePercent,
+          status: asset.status
+        }))
+      })));
+      if (signature === scheduleQueueSignature) return;
+      scheduleQueueSignature = signature;
+
+      const upcoming = $('upcoming');
+      upcoming.innerHTML = '';
+      if (!queue.length) {
+        const li = document.createElement('li');
+        li.innerHTML = '<div class="empty-state" style="width:100%">No schedules in the queue.</div>';
+        upcoming.appendChild(li);
+        return;
+      }
+
+      const detail = (label, value, extraClass = '') => {
+        const box = document.createElement('div');
+        box.className = `upcoming-detail ${extraClass}`.trim();
+        const caption = document.createElement('small');
+        const content = document.createElement('strong');
+        caption.textContent = label;
+        content.textContent = value;
+        content.title = value;
+        box.append(caption, content);
+        return box;
+      };
+
+      for (const item of queue) {
+        const key = String(item.occurrenceKey || `${item.scheduleId}:${item.startMs}`);
+        const open = expandedSchedules.has(key);
+        const li = document.createElement('li');
+        li.className = 'upcoming-card';
+
+        const head = document.createElement('div');
+        head.className = 'schedule-card-head';
+        const identity = document.createElement('div');
+        identity.className = 'upcoming-identity';
+        const title = document.createElement('span');
+        title.className = 'upcoming-title';
+        title.textContent = item.title || 'Untitled schedule';
+        title.title = title.textContent;
+        const type = document.createElement('span');
+        type.className = 'upcoming-type';
+        type.textContent = String(item.type || 'one-time').replace('-', ' ');
+        type.title = item.freqLabel || type.textContent;
+        identity.append(title, type);
+        const status = document.createElement('span');
+        status.className = `queue-status ${item.status || 'waiting'}`;
+        status.textContent = item.status === 'playing' && item.phase === 'gap'
+          ? 'Playing · gap'
+          : (item.status || 'waiting');
+        head.append(
+          identity,
+          detail('Start time', fmtDate(item.startMs)),
+          detail('Duration', fmtPlaybackTime(Number(item.durationMs || 0) / 1000)),
+          detail('End time', fmtDate(item.endMs)),
+          detail('Assets', String(Math.max(0, Number(item.assetCount) || 0)), 'upcoming-assets'),
+          status
+        );
+
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'schedule-toggle';
+        toggle.setAttribute('aria-expanded', String(open));
+        toggle.setAttribute('aria-label', `${open ? 'Hide' : 'Show'} assets for ${title.textContent}`);
+        toggle.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
+
+        const collapse = document.createElement('div');
+        collapse.className = `schedule-collapse${open ? ' open' : ''}`;
+        const collapseInner = document.createElement('div');
+        collapseInner.className = 'schedule-collapse-inner';
+        const assets = document.createElement('div');
+        assets.className = 'schedule-assets';
+        if (!(item.assets || []).length) {
+          const empty = document.createElement('div');
+          empty.className = 'empty-state';
+          empty.textContent = 'Asset details are not available.';
+          assets.appendChild(empty);
+        }
+        for (const asset of item.assets || []) {
+          const row = document.createElement('div');
+          row.className = 'schedule-asset';
+          const assetTitle = document.createElement('div');
+          assetTitle.className = 'schedule-asset-title';
+          assetTitle.textContent = asset.title || 'Untitled asset';
+          assetTitle.title = assetTitle.textContent;
+          const assetStatus = document.createElement('span');
+          assetStatus.className = `asset-queue-status ${asset.status || 'waiting'}`;
+          assetStatus.textContent = asset.status || 'waiting';
+          row.append(
+            assetTitle,
+            detail('Duration', fmtPlaybackTime(Number(asset.durationMs || 0) / 1000), 'schedule-asset-detail'),
+            detail('Start time', fmtDate(asset.startMs), 'schedule-asset-detail'),
+            detail('End time', fmtDate(asset.endMs), 'schedule-asset-detail'),
+            detail('Volume', `${Math.max(0, Math.min(100, Number(asset.volumePercent) || 0))}%`, 'schedule-asset-detail'),
+            assetStatus
+          );
+          assets.appendChild(row);
+        }
+        collapseInner.appendChild(assets);
+        collapse.appendChild(collapseInner);
+        toggle.onclick = () => {
+          const nextOpen = !expandedSchedules.has(key);
+          if (nextOpen) expandedSchedules.add(key); else expandedSchedules.delete(key);
+          toggle.setAttribute('aria-expanded', String(nextOpen));
+          toggle.setAttribute('aria-label', `${nextOpen ? 'Hide' : 'Show'} assets for ${title.textContent}`);
+          collapse.classList.toggle('open', nextOpen);
+        };
+        li.append(head, toggle, collapse);
+        upcoming.appendChild(li);
+      }
+    }
+
     function render() {
       $('operatorLock').classList.toggle('hidden', Boolean(state.bypass || state.operator && state.operator.unlocked));
       $('badge').className = badgeClass(state.status); $('badge').textContent = badgeLabel(state.status); $('device').textContent = state.deviceId || '—';
@@ -1155,24 +1316,7 @@
       $('manualPlaybackTitle').textContent = manual.active ? `Playing manually: ${manual.title || 'Untitled media'}` : 'Manual playback';
       $('manualPlaybackRange').textContent = manual.active ? `${fmtPlaybackTime(manual.startSeconds)} to ${fmtPlaybackTime(manual.endSeconds)} · schedules retain priority` : '';
       if (jumpPanelOpen) { if (!canSeek || jumpMediaKey !== playbackMediaKey(playback)) closeJumpPanel(); else { jumpMaxSeconds = Math.max(0, Math.floor(Number(playback.lengthSeconds)) - 1); $('jumpSlider').max = String(jumpMaxSeconds); $('jumpMinutes').max = String(Math.floor(jumpMaxSeconds / 60)); setJumpTarget($('jumpSlider').value); } }
-      const upcoming = $('upcoming'); upcoming.innerHTML = '';
-      if (!(state.upcoming || []).length) { const li = document.createElement('li'); li.innerHTML = '<div class="empty-state" style="width:100%">No upcoming schedules.</div>'; upcoming.appendChild(li); }
-      for (const item of state.upcoming || []) {
-        const li = document.createElement('li'); li.className = 'upcoming-card';
-        const identity = document.createElement('div'); identity.className = 'upcoming-identity';
-        const title = document.createElement('span'); title.className = 'upcoming-title'; title.textContent = item.title || 'Untitled schedule'; title.title = title.textContent;
-        const type = document.createElement('span'); type.className = 'upcoming-type'; type.textContent = String(item.type || 'one-time').replace('-', ' '); type.title = item.freqLabel || type.textContent;
-        identity.append(title, type);
-        const detail = (label, value, extraClass = '') => { const box = document.createElement('div'); box.className = `upcoming-detail ${extraClass}`.trim(); const caption = document.createElement('small'); const content = document.createElement('strong'); caption.textContent = label; content.textContent = value; content.title = value; box.append(caption, content); return box; };
-        li.append(
-          identity,
-          detail('Start time', fmtDate(item.startMs)),
-          detail('Duration', fmtPlaybackTime(Number(item.durationMs || 0) / 1000)),
-          detail('End time', fmtDate(item.endMs)),
-          detail('Assets', String(Math.max(0, Number(item.assetCount) || 0)), 'upcoming-assets')
-        );
-        upcoming.appendChild(li);
-      }
+      renderScheduleQueue();
       renderMediaHealth(); renderSkipped(); renderRemoteDownloads(); renderPlaybackPreview(); if (assetState.loaded || assetState.loading || assetState.error) renderAssets();
       renderPlaybackSettings(); renderRecoveryTestState();
       $('aboutVersion').textContent = state.appVersion || '1.0.0'; $('aboutDevice').textContent = state.deviceId || 'Not registered'; $('aboutMode').textContent = badgeLabel(state.status); $('aboutHeartbeat').textContent = state.cms && state.cms.lastHeartbeatAt ? new Date(state.cms.lastHeartbeatAt).toLocaleString() : '—'; $('aboutServer').textContent = state.serverURL || (state.bypass ? 'Test mode' : '—'); $('aboutRealtime').textContent = realtimeLabel(realtime); $('aboutRealtime').title = realtime.lastError || realtime.url || ''; $('aboutVlc').textContent = displayState; $('aboutRc').textContent = vlc.rcReady ? 'Ready' : 'Unavailable';

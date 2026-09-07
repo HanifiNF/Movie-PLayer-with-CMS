@@ -158,6 +158,53 @@ function buildTimelineSegments(files, loop = false) {
   return segments;
 }
 
+function buildQueueAssets(schedule, occurrenceStartMs, scheduleStatus, timeline = null) {
+  const files = Array.isArray(schedule && schedule.files) ? schedule.files : [];
+  const loop = schedule && schedule.loop !== false;
+  const cycleDurationMs = buildTimelineSegments(files, loop)
+    .reduce((sum, segment) => sum + segment.durationMs, 0);
+  const cycle = scheduleStatus === 'playing' && timeline
+    ? Math.max(0, Number(timeline.cycle) || 0)
+    : 0;
+  let cursorMs = occurrenceStartMs + cycle * cycleDurationMs;
+  const activeIndex = timeline && Number.isInteger(timeline.currentIndex)
+    ? timeline.currentIndex
+    : -1;
+  const phase = timeline && timeline.phase;
+
+  return files.map((file, index) => {
+    const durationMs = Math.max(0, Number(file.durationMs) || 0);
+    const gapAfterMs = Math.max(0, Number(file.gapAfterMs) || 0);
+    let status = 'waiting';
+    if (scheduleStatus === 'upcoming' && index === 0) status = 'upcoming';
+    if (scheduleStatus === 'playing') {
+      if (phase === 'gap') {
+        if (index <= activeIndex) status = 'completed';
+        else if (index === activeIndex + 1) status = 'upcoming';
+      } else {
+        if (index < activeIndex) status = 'completed';
+        else if (index === activeIndex) status = 'playing';
+        else if (index === activeIndex + 1) status = 'upcoming';
+      }
+    }
+
+    const asset = {
+      assetId: file.assetId || null,
+      title: file.title || file.path || file.assetId || `Asset ${index + 1}`,
+      durationMs,
+      startMs: cursorMs,
+      endMs: cursorMs + durationMs,
+      gapAfterMs,
+      volumePercent: Math.max(0, Math.min(100,
+        Number.isFinite(Number(file.volumePercent)) ? Math.round(Number(file.volumePercent)) : 100
+      )),
+      status
+    };
+    cursorMs = asset.endMs + (index < files.length - 1 || loop ? gapAfterMs : 0);
+    return asset;
+  });
+}
+
 function resolveTimelineTarget(files, occurrenceStart, now = new Date(), loop = false) {
   const startMs = occurrenceStart instanceof Date ? occurrenceStart.getTime() : new Date(occurrenceStart).getTime();
   const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
@@ -439,8 +486,7 @@ class Scheduler extends EventEmitter {
     };
   }
 
-  getUpcoming(limit = 6) {
-    const now = new Date();
+  getUpcoming(limit = 6, now = new Date()) {
     const items = [];
     for (const schedule of this.schedules) {
       const occurrence = this._nextUnfinishedOccurrence(schedule, now);
@@ -459,6 +505,51 @@ class Scheduler extends EventEmitter {
     }
     items.sort((a, b) => a.startMs - b.startMs || b.priority - a.priority);
     return items.slice(0, limit);
+  }
+
+  getScheduleQueue(limit = 6, now = new Date()) {
+    const items = [];
+    if (this.currentScheduleId && this.currentStart) {
+      const schedule = this.schedules.find(item => item.id === this.currentScheduleId);
+      if (schedule) {
+        const startMs = this.currentStart.getTime();
+        const durationMs = Math.max(0, Number(this.currentDuration) || 0);
+        items.push({
+          scheduleId: schedule.id,
+          occurrenceKey: `${schedule.id}:${startMs}`,
+          title: schedule.title || schedule.id,
+          startMs,
+          durationMs,
+          endMs: startMs + durationMs,
+          assetCount: Array.isArray(schedule.files) ? schedule.files.length : 0,
+          type: scheduleType(schedule),
+          priority: Number(schedule.priority) || 0,
+          freqLabel: describeRecurrence(schedule),
+          status: 'playing',
+          phase: this.currentTimeline?.phase || 'media',
+          gapRemainingMs: this.currentTimeline?.phase === 'gap'
+            ? this.currentTimeline.segmentRemainingMs
+            : 0,
+          assets: buildQueueAssets(schedule, startMs, 'playing', this.currentTimeline)
+        });
+      }
+    }
+
+    const future = this.getUpcoming(Math.max(0, limit - items.length), now);
+    future.forEach((item, index) => {
+      const schedule = this.schedules.find(candidate => candidate.id === item.scheduleId);
+      if (!schedule) return;
+      const status = index === 0 ? 'upcoming' : 'waiting';
+      items.push({
+        ...item,
+        occurrenceKey: `${item.scheduleId}:${item.startMs}`,
+        status,
+        phase: null,
+        gapRemainingMs: 0,
+        assets: buildQueueAssets(schedule, item.startMs, status)
+      });
+    });
+    return items;
   }
 
   getSkipped() {
