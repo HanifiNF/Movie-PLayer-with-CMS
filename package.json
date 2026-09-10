@@ -26,6 +26,9 @@
     "appId": "com.player",
     "productName": "Player",
     "copyright": "Copyright © 2026 WirGroup",
+    "asarUnpack": [
+      "integrityHashWorker.cjs"
+    ],
     "directories": {
       "output": "dist",
       "buildResources": "assets"
@@ -41,6 +44,8 @@
       "assetRefresh.cjs",
       "mediaProbe.cjs",
       "mediaHealth.cjs",
+      "integrityVerifier.cjs",
+      "integrityHashWorker.cjs",
       "playbackWatchdog.cjs",
       "playbackState.cjs",
       "playbackResume.cjs",

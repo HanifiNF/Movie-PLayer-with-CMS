@@ -249,7 +249,9 @@
     .table .asset-main { overflow: hidden; font-size: 12px; font-weight: 680; text-overflow: ellipsis; white-space: nowrap; }
     .table .asset-path { margin-top: 3px; overflow: hidden; color: var(--subtle); font-family: ui-monospace, Consolas, monospace; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
     .status-pill { display: inline-flex; padding: 4px 8px; border-radius: 999px; font-size: 9px; font-weight: 750; text-transform: capitalize; }
-    .status-pill.ready { background: #e3f5ec; color: var(--green); }
+    .status-pill.ready, .status-pill.verified { background: #e3f5ec; color: var(--green); }
+    .status-pill.provisional { background: #e8effa; color: #315f9b; }
+    .status-pill.waiting, .status-pill.queued, .status-pill.verifying { background: #f6ecd9; color: var(--amber); }
     .status-pill.missing, .status-pill.corrupt, .status-pill.unreadable { background: #fbe5e4; color: var(--red-dark); }
     .status-pill.checking, .status-pill.idle { background: #eee9e5; color: var(--muted); }
     .directory-note { margin: -5px 0 13px; color: var(--muted); font-family: ui-monospace, Consolas, monospace; font-size: 9px; overflow-wrap: anywhere; }
@@ -304,11 +306,15 @@
     .health-state { font-size: 10px; font-weight: 800; text-transform: uppercase; }
     .health-state.healthy { color: var(--green); }
     .health-state.warning, .health-state.checking { color: var(--amber); }
+    .health-state.waiting, .health-state.verifying { color: var(--amber); }
     .health-state.error { color: var(--red-dark); }
     .health-list { display: grid; gap: 9px; margin-top: 14px; }
     .health-item { display: flex; justify-content: space-between; gap: 15px; padding: 12px 13px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-soft); }
+    .health-item > div { flex: 1; min-width: 0; }
     .health-item strong { display: block; font-size: 12px; }
     .health-item small { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; overflow-wrap: anywhere; }
+    .health-progress { margin-top: 8px; }
+    .health-progress-copy { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 5px; color: var(--muted); font-size: 9px; }
 
     .skipped-item { align-items: flex-start !important; }
     .skipped-details { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; }
@@ -819,6 +825,7 @@
 
     function renderMediaHealth() {
       const health = state.mediaHealth || {}; const counts = health.counts || {};
+      const verificationCounts = health.verificationCounts || {};
       const problems = (Number(counts.missing) || 0) + (Number(counts.corrupt) || 0) + (Number(counts.unreadable) || 0);
       const healthState = health.state || 'idle';
       $('healthState').textContent = healthState; $('healthState').className = `health-state ${healthState}`;
@@ -826,13 +833,32 @@
       $('healthFreeSpace').textContent = health.disk ? fmtBytes(health.disk.freeBytes) : '—';
       $('healthCheckedAt').textContent = health.checkedAt ? new Date(health.checkedAt).toLocaleTimeString() : '—';
       const items = Array.isArray(health.items) ? health.items : [];
-      $('healthSummary').textContent = healthError || (healthState === 'checking' ? 'Checking scheduled media...' : `${items.length} scheduled media item${items.length === 1 ? '' : 's'} checked.`);
+      const pending = (Number(verificationCounts.queued) || 0) + (Number(verificationCounts.waiting) || 0) + (Number(verificationCounts.verifying) || 0);
+      $('healthSummary').textContent = healthError || (healthState === 'checking'
+        ? 'Checking scheduled media...'
+        : (pending
+            ? `${pending} media verification job${pending === 1 ? '' : 's'} will continue while the Player is idle.`
+            : `${items.length} scheduled media item${items.length === 1 ? '' : 's'} checked.`));
       const list = $('healthDetails'); list.innerHTML = '';
       if (!items.length) { const empty = document.createElement('div'); empty.className = 'empty-state'; empty.textContent = 'No scheduled media has been checked yet.'; list.appendChild(empty); }
       for (const item of items) {
         const row = document.createElement('div'); row.className = 'health-item';
         const info = document.createElement('div'); const title = document.createElement('strong'); const detail = document.createElement('small');
         title.textContent = item.title || item.path || item.id; detail.textContent = [item.path, item.reason].filter(Boolean).join(' · '); info.append(title, detail);
+        if (item.progress && item.progress.totalBytes > 0) {
+          const progress = document.createElement('div'); progress.className = 'health-progress';
+          const copy = document.createElement('div'); copy.className = 'health-progress-copy';
+          const bytes = document.createElement('span');
+          bytes.textContent = `${fmtBytes(item.progress.processedBytes)} / ${fmtBytes(item.progress.totalBytes)}`;
+          const metrics = document.createElement('span');
+          const speed = item.progress.speedBytesPerSecond > 0 ? `${fmtBytes(item.progress.speedBytesPerSecond)}/s` : '';
+          const eta = Number.isFinite(item.progress.etaSeconds) ? `ETA ${fmtPlaybackTime(item.progress.etaSeconds)}` : '';
+          metrics.textContent = [speed, eta, `${item.progress.percent || 0}%`].filter(Boolean).join(' · ');
+          copy.append(bytes, metrics);
+          const track = document.createElement('div'); track.className = 'download-track';
+          const fill = document.createElement('div'); fill.className = 'download-fill'; fill.style.width = `${item.progress.percent || 0}%`;
+          track.appendChild(fill); progress.append(copy, track); info.appendChild(progress);
+        }
         const pill = document.createElement('span'); pill.className = `status-pill ${item.status}`; pill.textContent = item.status; row.append(info, pill); list.appendChild(row);
       }
       $('btnRecheckMedia').disabled = healthState === 'checking'; $('btnRecheckMedia').textContent = healthState === 'checking' ? 'Checking...' : 'Recheck Media';
@@ -845,7 +871,9 @@
       if (!now || index < 0 || !files[index] || vlc.idleMode) { $('playbackDetails').classList.add('hidden'); $('progressFill').style.width = '0%'; return; }
       const metricsReady = playback.metricsReady !== false && playback.inputConfirmed !== false;
       const scheduledLength = Math.max(0, Math.round(Number(files[index].sourceDurationMs || files[index].durationMs) / 1000) || 0);
-      const position = metricsReady ? Math.max(0, Number(playback.positionSeconds) || 0) : 0;
+      const position = metricsReady
+        ? Math.max(0, Number(playback.positionSeconds) || 0)
+        : Math.max(0, Number(playback.estimatedPositionSeconds) || 0);
       const length = scheduledLength || (metricsReady ? Math.max(0, Number(playback.lengthSeconds) || 0) : 0);
       const nextIndex = index + 1 < files.length ? index + 1 : (now.loop !== false && files.length > 1 ? 0 : -1);
       $('currentMedia').textContent = titleFor(files[index]); $('playlistPosition').textContent = `${Number.isInteger(now.itemIndex) ? now.itemIndex + 1 : index + 1} of ${Number(now.playlistSize) || files.length}`;

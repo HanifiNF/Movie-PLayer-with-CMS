@@ -814,3 +814,52 @@ test('late metrics from the previous film cannot overwrite a replacement input',
   assert.equal(controller.getPlaybackStatus().metricsReady, true);
   assert.deepEqual(commands, ['status', 'status', 'status', 'get_time', 'get_length']);
 });
+
+test('confirmed new input rejects VLC metrics retained from the previous film', () => {
+  const controller = new VlcController();
+  controller.state = 'playing';
+  controller._beginInputTransition(['C:\\media\\film B.mp4'], {
+    expectedDurationSeconds: 132,
+    startPositionSeconds: 0
+  });
+  controller._metricQuarantineUntil = 0;
+  controller._setCurrentInput('file:///C:/media/film%20B.mp4');
+  controller._pendingMetricResponses = ['positionSeconds', 'lengthSeconds'];
+
+  controller._parseRc('19\n25\n');
+
+  const stale = controller.getPlaybackStatus();
+  assert.equal(stale.positionSeconds, 0);
+  assert.equal(stale.lengthSeconds, 0);
+  assert.equal(stale.metricsReady, false);
+  assert.equal(stale.metricsFallback, true);
+  assert.equal(stale.expectedLengthSeconds, 132);
+  assert.ok(stale.estimatedPositionSeconds < 1);
+
+  controller._pendingMetricResponses = ['positionSeconds', 'lengthSeconds'];
+  controller._parseRc('1\n132\n');
+  const recovered = controller.getPlaybackStatus();
+  assert.equal(recovered.positionSeconds, 1);
+  assert.equal(recovered.lengthSeconds, 132);
+  assert.equal(recovered.metricsReady, true);
+  assert.equal(recovered.metricsFallback, false);
+});
+
+test('fresh schedule rejects a plausible old duration when its initial time is stale', () => {
+  const controller = new VlcController();
+  controller.state = 'playing';
+  controller._beginInputTransition(['C:\\media\\dolby.mp4'], {
+    expectedDurationSeconds: 25,
+    startPositionSeconds: 0
+  });
+  controller._metricQuarantineUntil = 0;
+  controller._setCurrentInput('file:///C:/media/dolby.mp4');
+  controller._pendingMetricResponses = ['positionSeconds', 'lengthSeconds'];
+
+  controller._parseRc('19\n25\n');
+
+  const playback = controller.getPlaybackStatus();
+  assert.equal(playback.metricsReady, false);
+  assert.equal(playback.metricsFallback, true);
+  assert.ok(playback.estimatedPositionSeconds < 1);
+});

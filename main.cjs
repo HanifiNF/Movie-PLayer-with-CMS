@@ -31,6 +31,7 @@ const {
 } = require('./playbackState.cjs');
 const { resolveResumeTarget } = require('./playbackResume.cjs');
 const { MediaHealthMonitor } = require('./mediaHealth.cjs');
+const { IntegrityVerifier } = require('./integrityVerifier.cjs');
 const { CmsClient, normalizeServerUrl, parseSessionExpiry } = require('./cmsClient.cjs');
 const { RealtimeClient } = require('./realtimeClient.cjs');
 const { DeviceCredentials } = require('./deviceCredentials.cjs');
@@ -64,6 +65,7 @@ const INSTALLATION_PATH = path.join(DATA_DIR, 'installation.json');
 const CACHE_PATH = path.join(DATA_DIR, 'schedules.json');
 const DURATION_CACHE_PATH = path.join(DATA_DIR, 'media-durations.json');
 const PLAYBACK_SETTINGS_PATH = path.join(DATA_DIR, 'playback-settings.json');
+const MEDIA_INTEGRITY_PATH = path.join(DATA_DIR, 'media-integrity.json');
 const VLC_RC_PORT = resolveVlcRcPort(
   CFG.VLC_RC_PORT,
   DATA_DIR,
@@ -132,6 +134,7 @@ let appliedPlaybackSettings = { ...DEFAULT_PLAYBACK_SETTINGS };
 let playbackSettingsPending = false;
 let isShuttingDown = false;
 let mediaManager = null;
+let integrityVerifier = null;
 let ldgGateway = null;
 let mediaProbe = null;
 let playbackWatchdog = null;
@@ -141,6 +144,7 @@ let lastResumeInfo = null;
 let mediaHealthMonitor = null;
 let mediaHealthSnapshot = null;
 let mediaHealthCheck = null;
+let integrityHealthRefreshTimer = null;
 let syncQueue = Promise.resolve();
 let pairingNotice = '';
 let refreshPromise = null;
@@ -1116,14 +1120,19 @@ async function refreshMediaHealth(schedules, assets, options = {}) {
     state: 'checking'
   };
   pushDashboard();
-  mediaHealthCheck = mediaHealthMonitor.scan(schedules || [], assets || [])
+  mediaHealthCheck = mediaHealthMonitor.scan(schedules || [], assets || [], {
+    queueVerification: options.queueVerification !== false,
+    forceVerification: Boolean(options.forceVerification)
+  })
     .then(snapshot => {
       mediaHealthSnapshot = snapshot;
       const problemCount = snapshot.counts.missing + snapshot.counts.corrupt + snapshot.counts.unreadable;
-      appendVlcLog(
-        `[media-health] ready=${snapshot.counts.ready} problems=${problemCount} ` +
-        `free=${snapshot.disk.freeBytes == null ? 'unknown' : snapshot.disk.freeBytes}`
-      );
+      if (!options.silent) {
+        appendVlcLog(
+          `[media-health] ready=${snapshot.counts.ready} problems=${problemCount} ` +
+          `free=${snapshot.disk.freeBytes == null ? 'unknown' : snapshot.disk.freeBytes}`
+        );
+      }
       pushDashboard();
       return snapshot;
     })
@@ -1139,6 +1148,24 @@ async function refreshMediaHealth(schedules, assets, options = {}) {
     })
     .finally(() => { mediaHealthCheck = null; });
   return mediaHealthCheck;
+}
+
+function scheduleIntegrityHealthRefresh() {
+  if (integrityHealthRefreshTimer || !mediaHealthMonitor) return;
+  integrityHealthRefreshTimer = setTimeout(() => {
+    integrityHealthRefreshTimer = null;
+    try {
+      const cache = normalizeSyncPayload(readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] }));
+      const schedules = scheduler ? scheduler.schedules : cache.schedules;
+      void refreshMediaHealth(schedules, cache.assets, {
+        queueVerification: false,
+        silent: true
+      });
+    } catch (error) {
+      appendVlcLog(`[integrity] dashboard refresh failed: ${error.message || error}`);
+    }
+  }, 250);
+  if (integrityHealthRefreshTimer.unref) integrityHealthRefreshTimer.unref();
 }
 
 function getCachedAssets() {
@@ -1286,6 +1313,7 @@ function sendAssetInventory(inventory) {
 
 function syncScheduleSnapshot(options = {}) {
   const task = scheduleSyncQueue.then(async () => {
+    const startedAt = Date.now();
     if (!cfg || cfg.bypass) return { revision: 0, schedules: [] };
     const client = cmsClient || new CmsClient({ serverURL: cfg.serverURL });
     const snapshot = await client.schedules(cfg.token);
@@ -1304,9 +1332,11 @@ function syncScheduleSnapshot(options = {}) {
       schedules: prepared,
       assets
     });
-    await refreshMediaHealth(prepared, assets, { force: true });
     if (scheduler) scheduler.update(prepared);
-    appendVlcLog(`[schedules] synchronized revision ${incoming.revision} (${prepared.length} schedules)`);
+    void refreshMediaHealth(prepared, assets).catch(() => {});
+    appendVlcLog(
+      `[schedules] synchronized revision ${incoming.revision} (${prepared.length} schedules) in ${Date.now() - startedAt}ms`
+    );
     pushDashboard();
     return { revision: incoming.revision, schedules: prepared };
   });
@@ -1353,16 +1383,29 @@ async function syncRemoteDistribution() {
         continue;
       }
       if (ldgGateway) ldgGateway.unregister(removal.id);
+      if (integrityVerifier) integrityVerifier.remove(removal.id);
       await client.acknowledgeAssetRemoval(cfg.token, removal.id);
       appendVlcLog(`[media] removed expired or unassigned asset ${removal.id}`);
     }
     pendingRemovalRetry = deferredRemoval;
 
+    // Apply the schedule manifest before downloads or full verification can
+    // occupy the distribution cycle. A second pass attaches newly ready files.
+    const earlyInventory = await collectAssetInventory();
+    const earlyScheduleResult = await syncScheduleSnapshot({ assets: assigned, inventory: earlyInventory });
+    appendVlcLog(`[schedules] early distribution sync applied at revision ${earlyScheduleResult.revision}`);
+
     const downloads = await mediaManager.prepareAssets(assigned);
     const inventory = await collectAssetInventory();
     const summary = await uploadAssetInventory(inventory);
     sendAssetInventory(inventory);
-    const scheduleResult = await syncScheduleSnapshot({ assets: assigned, inventory });
+    const unavailableBefore = new Set(earlyScheduleResult.schedules.flatMap(schedule => (
+      (schedule.files || []).filter(file => file.assetId && !file.localPath).map(file => String(file.assetId))
+    )));
+    const becameReady = downloads.ready.some(item => unavailableBefore.has(String(item.assetId)));
+    const scheduleResult = becameReady
+      ? await syncScheduleSnapshot({ assets: assigned, inventory })
+      : earlyScheduleResult;
     remoteDownloadState = {
       ...remoteDownloadState,
       status: downloads.failed.length ? 'warning' : 'complete',
@@ -2123,13 +2166,29 @@ ipcMain.handle('recheck-media-health', async () => {
       readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] })
     );
     const activeId = scheduler && scheduler.getNow() && scheduler.getNow().scheduleId;
-    const prepared = await prepareRuntimeSchedules(cache.schedules, cache.assets);
-    const snapshot = await refreshMediaHealth(prepared, cache.assets, { force: true });
+    const prepared = scheduler
+      ? scheduler.schedules.slice()
+      : await prepareRuntimeSchedules(
+          cache.schedules,
+          cache.assets,
+          null,
+          { downloadMissing: false }
+        );
+    const snapshot = await refreshMediaHealth(prepared, cache.assets, {
+      force: true,
+      forceVerification: true
+    });
     if (scheduler) {
       scheduler.update(prepared);
       if (activeId) scheduler.reactivate(activeId);
     }
-    return { ok: true, mediaHealth: snapshot };
+    return {
+      ok: true,
+      mediaHealth: snapshot,
+      message: integrityVerifier && integrityVerifier.getSnapshot().jobs.length
+        ? 'Media verification queued and will continue while the Player is idle.'
+        : 'Media health check completed.'
+    };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
   }
@@ -2288,6 +2347,7 @@ ipcMain.handle('list-local-media', async () => {
 });
 
 async function resolveManualPlaybackAsset(mediaId) {
+  const startedAt = Date.now();
   const normalizedId = String(mediaId || '').trim();
   if (!normalizedId) throw new Error('Select an asset to play.');
   const inventory = await collectAssetInventory();
@@ -2299,10 +2359,14 @@ async function resolveManualPlaybackAsset(mediaId) {
   if (selected.source === 'managed') {
     const asset = getCachedAssets().find(item => String(item.id) === String(selected.assetId));
     if (!asset) throw new Error('The downloaded asset is no longer assigned to this Player.');
-    if (!await mediaManager.isReady(asset)) throw new Error('The downloaded asset failed its integrity check. Refresh Assets.');
+    const readiness = mediaManager.checkReadiness(asset);
+    if (!readiness.ready) {
+      throw new Error(readiness.reason || 'The downloaded asset failed its integrity check. Refresh Assets.');
+    }
     playbackSource = await mediaManager.resolvePlaybackSource(asset, selected.path);
   }
   if (!playbackSource) throw new Error('A safe playback source could not be resolved for this asset.');
+  appendVlcLog(`[manual] prepared ${selected.id} in ${Date.now() - startedAt}ms`);
   return { selected, playbackSource };
 }
 
@@ -2345,14 +2409,17 @@ ipcMain.handle('manual-playback-start', async (_event, payload) => {
       ...range,
       reason: latestAvailability.reason
     };
+    if (integrityVerifier) integrityVerifier.suspendForPlayback();
     try {
       await vlc.replacePlaylist([playbackSource], {
         loop: false,
         startPositionSeconds: range.startSeconds,
+        expectedDurationSeconds: range.durationSeconds,
         volumePercent: playbackSettings.volumePercent
       });
     } catch (error) {
       manualPlayback.preempt('start-failed');
+      if (integrityVerifier) integrityVerifier.resumeAfterIdle();
       throw error;
     }
     if (scheduler.getNow()) {
@@ -2714,6 +2781,14 @@ async function shutdownPlaybackComponents() {
     scheduler = null;
     if (oldScheduler) oldScheduler.clear();
 
+    const oldIntegrityVerifier = integrityVerifier;
+    integrityVerifier = null;
+    if (integrityHealthRefreshTimer) clearTimeout(integrityHealthRefreshTimer);
+    integrityHealthRefreshTimer = null;
+    if (oldIntegrityVerifier) await oldIntegrityVerifier.close().catch(error => {
+      appendVlcLog(`[shutdown] integrity verifier close failed: ${error.message || error}`);
+    });
+
     const oldVlc = vlc;
     if (oldVlc) await oldVlc.quit().catch(error => {
       appendVlcLog(`[shutdown] VLC close failed: ${error.message || error}`);
@@ -2758,9 +2833,24 @@ async function startRuntime() {
     ldgGateway = new LdgGateway({ playerToken: cfg.token, deviceId: cfg.deviceId });
     ldgGateway.onError = error => appendVlcLog(`[ldg] playback gateway failed: ${error.message || error}`);
   }
+  integrityVerifier = new IntegrityVerifier({
+    cachePath: MEDIA_INTEGRITY_PATH,
+    canVerifyNow: () => Boolean(
+      !isShuttingDown &&
+      (!scheduler || !scheduler.getNow()) &&
+      (!manualPlayback || !manualPlayback.getStatus().active)
+    ),
+    isIdle: () => Boolean(
+      !isShuttingDown &&
+      (!scheduler || !scheduler.getNow()) &&
+      (!manualPlayback || !manualPlayback.getStatus().active) &&
+      !remoteDownloadState.items.some(item => ['downloading', 'verifying'].includes(item.status))
+    )
+  });
   mediaManager = new MediaManager({
     mediaDir: path.join(DATA_DIR, 'media'),
     concurrency: 2,
+    integrityVerifier,
     getDownloadOptions: asset => {
       const limitBytesPerSecond = getDevelopmentDownloadLimitBytesPerSecond();
       try {
@@ -2778,9 +2868,22 @@ async function startRuntime() {
       return ldgGateway.register(asset, localPath);
     }
   });
-  mediaHealthMonitor = new MediaHealthMonitor({ storagePath: mediaManager.mediaDir });
+  mediaHealthMonitor = new MediaHealthMonitor({
+    storagePath: mediaManager.mediaDir,
+    readinessProvider: (asset, filePath, options) => integrityVerifier.inspect(asset, filePath, options)
+  });
   mediaHealthSnapshot = mediaHealthMonitor.getSnapshot();
   mediaProbe = new MediaProbe({ cachePath: DURATION_CACHE_PATH });
+  integrityVerifier.on('update', scheduleIntegrityHealthRefresh);
+  integrityVerifier.on('verified', ({ asset, durationMs }) => {
+    appendVlcLog(`[integrity] verified ${asset.id} in ${durationMs}ms`);
+  });
+  integrityVerifier.on('corrupt', ({ asset, reason }) => {
+    appendVlcLog(`[integrity] corrupt ${asset.id}: ${reason}`);
+  });
+  integrityVerifier.on('verification-error', ({ asset, error }) => {
+    appendVlcLog(`[integrity] verification failed ${asset.id}: ${error.message || error}`);
+  });
   mediaManager.on('download-start', ({ asset, speedLimitKbps }) => {
     appendVlcLog(`[media] downloading ${asset.id}`);
     updateRemoteDownload(asset, { status: 'downloading', cached: false, error: null, speedLimitKbps });
@@ -2794,6 +2897,15 @@ async function startRuntime() {
   });
   mediaManager.on('verifying', ({ asset }) => {
     updateRemoteDownload(asset, { status: 'verifying', downloadedBytes: asset.size, totalBytes: asset.size });
+  });
+  mediaManager.on('verification-progress', ({ asset, processedBytes, totalBytes }) => {
+    const now = Date.now();
+    const last = downloadProgressBroadcastAt.get(asset.id) || 0;
+    const shouldBroadcast = now - last >= 250 || processedBytes >= totalBytes;
+    updateRemoteDownload(asset, {
+      status: 'verifying', downloadedBytes: processedBytes, totalBytes
+    }, shouldBroadcast);
+    if (shouldBroadcast) downloadProgressBroadcastAt.set(asset.id, now);
   });
   mediaManager.on('download-retry', ({ asset, reason }) => {
     appendVlcLog(`[media] retrying ${asset.id} from zero after ${reason}`);
@@ -2913,6 +3025,7 @@ async function startRuntime() {
     isMediaReady: file => mediaHealthMonitor.isReady(file)
   });
   scheduler.on('activate', (info) => {
+    if (integrityVerifier) integrityVerifier.suspendForPlayback();
     if (manualPlayback && manualPlayback.preempt('schedule-started')) {
       appendVlcLog(`[manual] preempted by schedule ${info.schedule.id}`);
     }
@@ -2953,6 +3066,7 @@ async function startRuntime() {
     });
     refreshTray();
     pushDashboard();
+    if (integrityVerifier) integrityVerifier.resumeAfterIdle();
   });
   scheduler.on('finish', () => {
     nowSchedule = null;
@@ -2960,6 +3074,7 @@ async function startRuntime() {
     applyPendingPlaybackSettings();
     refreshTray();
     pushDashboard();
+    if (integrityVerifier) integrityVerifier.resumeAfterIdle();
   });
   scheduler.on('tick', () => {
     pushDashboard();
@@ -2982,7 +3097,12 @@ async function startRuntime() {
       pushDashboard();
     }
   });
-  manualPlayback.on('change', () => pushDashboard());
+  manualPlayback.on('change', status => {
+    pushDashboard();
+    if (integrityVerifier && (!status || !status.active) && (!scheduler || !scheduler.getNow())) {
+      integrityVerifier.resumeAfterIdle();
+    }
+  });
 
   playbackWatchdog = new PlaybackWatchdog({
     intervalMs: 3000,
@@ -3051,26 +3171,32 @@ async function startRuntime() {
     appendVlcLog(`[watchdog] internal error: ${error.message}`);
   });
 
+  const startupStartedAt = Date.now();
   const cache = readJson(CACHE_PATH, { revision: 0, schedules: [], assets: [] });
   try {
     const normalizedCache = normalizeSyncPayload(cache);
     const prepared = await prepareRuntimeSchedules(
       normalizedCache.schedules,
-      normalizedCache.assets
+      normalizedCache.assets,
+      null,
+      { downloadMissing: false }
     );
-    await refreshMediaHealth(prepared, normalizedCache.assets, { force: true });
     scheduler.update(prepared);
+    appendVlcLog(`[startup] cached schedules prepared in ${Date.now() - startupStartedAt}ms`);
+    startCmsConnection();
+    if (CFG.SOCKET_ENABLED) ensureRealtimeConnection();
+    void refreshMediaHealth(prepared, normalizedCache.assets).catch(() => {});
   } catch (error) {
     appendVlcLog(`[cache] invalid: ${error.message}`);
-    await refreshMediaHealth([], [], { force: true });
     scheduler.update([]);
+    startCmsConnection();
+    if (CFG.SOCKET_ENABLED) ensureRealtimeConnection();
+    void refreshMediaHealth([], []).catch(() => {});
   }
 
   app.setLoginItemSettings({ openAtLogin: true, path: process.execPath });
 
   playbackWatchdog.start();
-  startCmsConnection();
-  if (CFG.SOCKET_ENABLED) ensureRealtimeConnection();
   refreshTray();
 }
 
@@ -3155,6 +3281,7 @@ function sendPairingRefresh(result) {
 }
 
 async function performPlayerRefresh(source) {
+  const refreshStartedAt = Date.now();
   refreshState = {
     status: 'refreshing',
     lastRefreshedAt: refreshState.lastRefreshedAt,
@@ -3239,6 +3366,7 @@ async function performPlayerRefresh(source) {
     sendPairingRefresh(result);
     return result;
   } finally {
+    appendVlcLog(`[refresh] ${source} ${refreshState.status} in ${Date.now() - refreshStartedAt}ms`);
     refreshTray();
     pushDashboard();
   }
@@ -3264,7 +3392,7 @@ async function applySyncPayload(payload, mode = 'replace') {
     ? mergeSchedules(current.schedules, incoming.schedules)
     : incoming.schedules;
   const assets = mergeAssets(current.assets, incoming.assets);
-  const prepared = await prepareRuntimeSchedules(schedules, assets);
+  const prepared = await prepareRuntimeSchedules(schedules, assets, null, { downloadMissing: false });
   const revision = incoming.revision || current.revision;
 
   writeJson(CACHE_PATH, {
@@ -3273,8 +3401,8 @@ async function applySyncPayload(payload, mode = 'replace') {
     schedules: prepared,
     assets
   });
-  await refreshMediaHealth(prepared, assets, { force: true });
   scheduler.update(prepared);
+  void refreshMediaHealth(prepared, assets).catch(() => {});
   pushDashboard();
   return { applied: true, revision };
 }
@@ -3285,15 +3413,15 @@ async function applyClearPayload(payload) {
   const ids = payload && Array.isArray(payload.ids) ? payload.ids : [];
   const revision = Math.max(current.revision, Number(payload && payload.revision) || 0);
   const remaining = current.schedules.filter(schedule => !ids.includes(schedule.id));
-  const prepared = await prepareRuntimeSchedules(remaining, current.assets);
+  const prepared = await prepareRuntimeSchedules(remaining, current.assets, null, { downloadMissing: false });
   writeJson(CACHE_PATH, {
     revision,
     updatedAt: new Date().toISOString(),
     schedules: prepared,
     assets: current.assets
   });
-  await refreshMediaHealth(prepared, current.assets, { force: true });
   scheduler.update(prepared);
+  void refreshMediaHealth(prepared, current.assets).catch(() => {});
   pushDashboard();
   return { applied: true, revision };
 }

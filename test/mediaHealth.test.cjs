@@ -21,7 +21,7 @@ test('basic media inspection distinguishes ready, missing, and empty files', t =
   assert.equal(inspectBasicFile(path.join(root, 'missing.mp4')).status, 'missing');
 });
 
-test('health scan verifies managed checksums and reports aggregate counts', async t => {
+test('health scan uses non-blocking managed integrity state and reports aggregate counts', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wir-health-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const localPath = path.join(root, 'local.mp4');
@@ -31,7 +31,8 @@ test('health scan verifies managed checksums and reports aggregate counts', asyn
 
   const monitor = new MediaHealthMonitor({
     storagePath: root,
-    lowSpaceBytes: Number.MAX_SAFE_INTEGER
+    lowSpaceBytes: Number.MAX_SAFE_INTEGER,
+    readinessProvider: () => ({ ready: false, status: 'corrupt', reason: 'SHA-256 checksum mismatch' })
   });
   const snapshot = await monitor.scan([{
     files: [

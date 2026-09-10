@@ -350,7 +350,7 @@ test('scheduler forwards the configured film offset plus elapsed segment time to
 
   assert.deepEqual(received, {
     files: ['C:\\media\\feature.mp4'],
-    options: { loop: false, startPositionSeconds: 630, volumePercent: 100 }
+    options: { loop: false, startPositionSeconds: 630, expectedDurationSeconds: 120, volumePercent: 100 }
   });
 });
 
@@ -382,7 +382,7 @@ test('scheduler forwards a late-join target to VLC during active reconciliation'
 
   assert.deepEqual(received, {
     files: ['C:\\media\\feature.mp4'],
-    options: { loop: false, startPositionSeconds: 30, volumePercent: 100 }
+    options: { loop: false, startPositionSeconds: 30, expectedDurationSeconds: 120, volumePercent: 100 }
   });
 });
 
@@ -422,7 +422,7 @@ test('active schedule metadata refresh seeks the next film to its newly synchron
 
   assert.deepEqual(received.at(-1), {
     files: ['C:\\media\\film-b.mp4'],
-    options: { loop: false, startPositionSeconds: 60, volumePercent: 100 }
+    options: { loop: false, startPositionSeconds: 60, expectedDurationSeconds: 72, volumePercent: 100 }
   });
 });
 
@@ -450,7 +450,7 @@ test('scheduler applies each film schedule volume as an absolute VLC volume', ()
 
   assert.deepEqual(received, {
     files: ['C:\\media\\feature.mp4'],
-    options: { loop: false, startPositionSeconds: 0, volumePercent: 64 }
+    options: { loop: false, startPositionSeconds: 0, expectedDurationSeconds: 120, volumePercent: 64 }
   });
 });
 

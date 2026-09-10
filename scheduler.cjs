@@ -417,7 +417,15 @@ class Scheduler extends EventEmitter {
       // carry durations and therefore use the segment timeline below.
       if (force && files.length) {
         const sources = files.map(file => file.playbackSource || file.localPath || file.path).filter(Boolean);
-        if (sources.length) Promise.resolve(this.vlc.replacePlaylist(sources, { loop: schedule.loop !== false })).catch(error => this.emit('error', error));
+        if (sources.length) {
+          const expectedDurationsSeconds = files.map(file => Math.max(
+            0,
+            Number(file.sourceDurationMs || file.durationMs) / 1000 || 0
+          ));
+          const options = { loop: schedule.loop !== false };
+          if (expectedDurationsSeconds.some(Boolean)) options.expectedDurationsSeconds = expectedDurationsSeconds;
+          Promise.resolve(this.vlc.replacePlaylist(sources, options)).catch(error => this.emit('error', error));
+        }
       }
       return;
     }
@@ -440,6 +448,7 @@ class Scheduler extends EventEmitter {
     Promise.resolve(this.vlc.replacePlaylist([source], {
       loop: false,
       startPositionSeconds: target.positionSeconds,
+      expectedDurationSeconds: Math.max(0, Number(file.sourceDurationMs || file.durationMs) / 1000 || 0),
       volumePercent: Number.isFinite(Number(file.volumePercent)) ? Number(file.volumePercent) : 100
     })).catch(error => this.emit('error', error));
     this.emit('media', { schedule, file, ...target });

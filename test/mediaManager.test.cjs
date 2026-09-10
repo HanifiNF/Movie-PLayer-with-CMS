@@ -8,6 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { MediaManager } = require('../mediaManager.cjs');
+const { IntegrityVerifier } = require('../integrityVerifier.cjs');
 
 test('downloads an asset, verifies SHA-256, and resolves it to a local path', async t => {
   const content = Buffer.from('verified media content');
@@ -28,7 +29,14 @@ test('downloads an asset, verifies SHA-256, and resolves it to a local path', as
   t.after(() => server.close());
 
   const address = server.address();
-  const manager = new MediaManager({ mediaDir: path.join(tempDir, 'media') });
+  const verifier = new IntegrityVerifier({
+    cachePath: path.join(tempDir, 'media-integrity.json'), idleDelayMs: 0,
+    isIdle: () => true, canVerifyNow: () => true
+  });
+  t.after(() => verifier.close());
+  const manager = new MediaManager({
+    mediaDir: path.join(tempDir, 'media'), integrityVerifier: verifier
+  });
   const prepared = await manager.prepareSchedules([{
     id: 'schedule-1',
     playlist: [{ assetId: 'asset-1' }],
@@ -48,6 +56,9 @@ test('downloads an asset, verifies SHA-256, and resolves it to a local path', as
     size: content.length,
     sha256
   }), true);
+  assert.equal(verifier.inspect({
+    id: 'asset-1', filename: 'promo.mp4', size: content.length, sha256
+  }, prepared[0].files[0].path, { queue: false }).status, 'verified');
 
   const target = prepared[0].files[0].path;
   fs.renameSync(target, `${target}.part`);

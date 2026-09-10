@@ -65,6 +65,7 @@ class VlcController extends EventEmitter {
     this._pollHandle = null;
     this._buffer = '';
     this._pendingMetricResponses = [];
+    this._metricBatch = null;
     this._inputEpoch = 0;
     this._metricsReady = false;
     this._metricQuarantineMs = Math.max(100, Number(options.metricQuarantineMs) || 500);
@@ -77,6 +78,10 @@ class VlcController extends EventEmitter {
     // "new input" response. It prevents optimistic UI state from being
     // mistaken for confirmation that an input is already seekable.
     this._confirmedInputIndex = -1;
+    this._expectedDurationsSeconds = [];
+    this._expectedStartPositionSeconds = 0;
+    this._inputConfirmedAt = 0;
+    this._invalidMetricBatchCount = 0;
     // Playlist replacement is a transaction. Serializing it prevents a
     // scheduler reconciliation from interleaving RC commands with a transition
     // that is still preparing the previous target.
@@ -126,11 +131,16 @@ class VlcController extends EventEmitter {
     this.idleMode = false;
     this._startedDisplayId = null;
     this._pendingMetricResponses = [];
+    this._metricBatch = null;
     this._inputEpoch += 1;
     this._metricsReady = false;
     this._metricQuarantineUntil = 0;
     this._metricsBlockedUntilInput = true;
     this._confirmedInputIndex = -1;
+    this._expectedDurationsSeconds = [];
+    this._expectedStartPositionSeconds = 0;
+    this._inputConfirmedAt = 0;
+    this._invalidMetricBatchCount = 0;
     this._resetPlaybackProgress();
   }
 
@@ -147,16 +157,65 @@ class VlcController extends EventEmitter {
   }
 
   getPlaybackStatus() {
-    return {
+    const status = {
       ...this.playback,
       inputEpoch: this._inputEpoch,
       inputConfirmed: this._confirmedInputIndex >= 0 && this._confirmedInputIndex === this.playback.currentIndex,
       metricsReady: this._metricsReady
     };
+    const expectedLengthSeconds = this._expectedDurationForIndex(this.playback.currentIndex);
+    if (expectedLengthSeconds > 0 && status.inputConfirmed) {
+      const elapsedSinceConfirmation = this._inputConfirmedAt > 0 && this.state === 'playing'
+        ? Math.max(0, (Date.now() - this._inputConfirmedAt) / 1000)
+        : 0;
+      status.expectedLengthSeconds = expectedLengthSeconds;
+      status.estimatedPositionSeconds = this._metricsReady
+        ? status.positionSeconds
+        : Math.min(
+          expectedLengthSeconds,
+          this._expectedStartPositionSeconds + elapsedSinceConfirmation
+        );
+      status.metricsFallback = !this._metricsReady;
+    }
+    return status;
+  }
+
+  _expectedDurationForIndex(index) {
+    if (!Number.isInteger(index) || index < 0) return 0;
+    return Math.max(0, Number(this._expectedDurationsSeconds[index]) || 0);
+  }
+
+  _positionMetricIsPlausible(positionSeconds, index = this._confirmedInputIndex) {
+    const position = Math.max(0, Number(positionSeconds) || 0);
+    const expectedLength = this._expectedDurationForIndex(index);
+    // Without schedule metadata there is no trustworthy baseline. Preserve the
+    // legacy behavior for locally-authored playlists and manual controller use.
+    if (expectedLength <= 0) return true;
+    if (expectedLength > 0 && position > expectedLength + 1) return false;
+    if (this._metricsReady || !this._inputConfirmedAt) return true;
+    const elapsed = Math.max(0, (Date.now() - this._inputConfirmedAt) / 1000);
+    // A fresh input cannot legitimately jump far beyond its requested start in
+    // the first metric response. This catches VLC old-RC retaining (for example)
+    // 19 seconds from the previous decoder while the new video starts at zero.
+    return position <= this._expectedStartPositionSeconds + elapsed + 4;
+  }
+
+  _metricBatchIsValid(batch) {
+    if (!batch || batch.epoch !== this._inputEpoch) return false;
+    const position = Math.max(0, Number(batch.positionSeconds) || 0);
+    const length = Math.max(0, Number(batch.lengthSeconds) || 0);
+    const expectedLength = this._expectedDurationForIndex(this._confirmedInputIndex);
+    if (!this._positionMetricIsPlausible(position)) return false;
+    if (expectedLength > 0) {
+      const tolerance = Math.max(2, expectedLength * 0.03);
+      if (Math.abs(length - expectedLength) > tolerance) return false;
+    }
+    return length > 0;
   }
 
   _quarantinePendingMetrics() {
     this._pendingMetricResponses = [];
+    this._metricBatch = null;
     this._metricsReady = false;
     this._metricQuarantineUntil = Date.now() + this._metricQuarantineMs;
   }
@@ -199,6 +258,8 @@ class VlcController extends EventEmitter {
       this._pendingMetricResponses = [];
       this._metricsReady = false;
       this._metricsBlockedUntilInput = false;
+      this._inputConfirmedAt = Date.now();
+      this._invalidMetricBatchCount = 0;
     }
     if (index !== this.playback.currentIndex || currentPath !== this.playback.currentPath) {
       this._resetPlaybackProgress(currentPath, index);
@@ -380,7 +441,7 @@ class VlcController extends EventEmitter {
       }
 
       const timeMatch = t.match(/\btime\s*:\s*(\d+)s\b/i);
-      if (timeMatch && this._canAcceptMetrics()) {
+      if (timeMatch && this._canAcceptMetrics() && this._positionMetricIsPlausible(timeMatch[1])) {
         this.playback.positionSeconds = Math.max(0, Number(timeMatch[1]) || 0);
         this._emitPlaybackProgress();
       }
@@ -403,10 +464,28 @@ class VlcController extends EventEmitter {
         const epoch = typeof pending === 'string' ? this._inputEpoch : pending.epoch;
         if (epoch !== this._inputEpoch || !this._canAcceptMetrics()) continue;
         const value = Math.max(0, Number(numericMatch[1]) || 0);
-        if (metric === 'positionSeconds') this.playback.positionSeconds = value;
-        if (metric === 'lengthSeconds') this.playback.lengthSeconds = value;
-        if (!this._pendingMetricResponses.length) this._metricsReady = true;
-        this._emitPlaybackProgress();
+        if (!this._metricBatch || this._metricBatch.epoch !== epoch) {
+          this._metricBatch = { epoch, requestedAt: Date.now(), positionSeconds: null, lengthSeconds: null };
+        }
+        this._metricBatch[metric] = value;
+        if (!this._pendingMetricResponses.length) {
+          const batch = this._metricBatch;
+          this._metricBatch = null;
+          if (this._metricBatchIsValid(batch)) {
+            this.playback.positionSeconds = batch.positionSeconds;
+            this.playback.lengthSeconds = batch.lengthSeconds;
+            this._metricsReady = true;
+            this._invalidMetricBatchCount = 0;
+          } else {
+            this._metricsReady = false;
+            this._invalidMetricBatchCount += 1;
+            if (this._invalidMetricBatchCount === 1 || this._invalidMetricBatchCount % 10 === 0) {
+              const expected = this._expectedDurationForIndex(this._confirmedInputIndex);
+              this.emit('vlc-log', `[metrics] rejected stale VLC reply time=${batch && batch.positionSeconds}s length=${batch && batch.lengthSeconds}s expectedLength=${expected || 'unknown'}s`);
+            }
+          }
+          this._emitPlaybackProgress();
+        }
         continue;
       }
 
@@ -688,6 +767,12 @@ class VlcController extends EventEmitter {
       { metric: 'positionSeconds', epoch: this._inputEpoch },
       { metric: 'lengthSeconds', epoch: this._inputEpoch }
     ];
+    this._metricBatch = {
+      epoch: this._inputEpoch,
+      requestedAt: Date.now(),
+      positionSeconds: null,
+      lengthSeconds: null
+    };
     this.send('get_time');
     this.send('get_length');
   }
@@ -839,7 +924,7 @@ class VlcController extends EventEmitter {
       // have queued the current segment by then, so never publish the stale one.
       if (this._skipSupersededPlaylist(options)) return this.getPlaybackStatus();
       this.idleMode = nextIdleMode;
-      this._beginInputTransition(filePaths);
+      this._beginInputTransition(filePaths, options);
       // VLC old-RC "clear" only clears the playlist; it does not reliably close
       // the decoder that is currently playing. Always stop and wait for VLC's
       // acknowledgement before loading the replacement so time/length replies
@@ -958,9 +1043,18 @@ class VlcController extends EventEmitter {
     this.send('status');
   }
 
-  _beginInputTransition(filePaths) {
+  _beginInputTransition(filePaths, options = {}) {
     const files = Array.isArray(filePaths) ? filePaths.slice() : [];
     this.currentPlaylist = files;
+    const suppliedDurations = Array.isArray(options.expectedDurationsSeconds)
+      ? options.expectedDurationsSeconds
+      : files.map((_file, index) => index === 0 ? options.expectedDurationSeconds : 0);
+    this._expectedDurationsSeconds = files.map((_file, index) => (
+      Math.max(0, Number(suppliedDurations[index]) || 0)
+    ));
+    this._expectedStartPositionSeconds = Math.max(0, Number(options.startPositionSeconds) || 0);
+    this._inputConfirmedAt = 0;
+    this._invalidMetricBatchCount = 0;
     this._inputEpoch += 1;
     this._quarantinePendingMetrics();
     this._metricsBlockedUntilInput = files.length > 0 && !this.idleMode;

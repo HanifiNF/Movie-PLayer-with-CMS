@@ -171,6 +171,7 @@ class MediaManager extends EventEmitter {
     this.resolvePlaybackSource = typeof options.resolvePlaybackSource === 'function'
       ? options.resolvePlaybackSource
       : async (_asset, localPath) => localPath;
+    this.integrityVerifier = options.integrityVerifier || null;
     fs.mkdirSync(this.mediaDir, { recursive: true });
   }
 
@@ -199,32 +200,77 @@ class MediaManager extends EventEmitter {
     return path.join(this.mediaDir, `${safeId}${extension}`);
   }
 
-  async isReady(asset) {
+  checkReadiness(asset, options = {}) {
     const target = this.getAssetPath(asset);
-    if (!fileExists(target)) return false;
+    if (this.integrityVerifier) {
+      return this.integrityVerifier.inspect(asset, target, {
+        queue: options.queue !== false,
+        force: Boolean(options.force)
+      });
+    }
+    if (!fileExists(target)) return { ready: false, status: 'missing', reason: 'File was not found' };
     const stat = fs.statSync(target);
-    if (stat.size !== asset.size) return false;
+    if (stat.size !== asset.size) {
+      return { ready: false, status: 'corrupt', reason: `Size mismatch: expected ${asset.size}, found ${stat.size}` };
+    }
+    return { ready: null, status: 'unverified', reason: 'Full verification is required' };
+  }
+
+  async isReady(asset, options = {}) {
+    const readiness = this.checkReadiness(asset, options);
+    if (readiness.ready !== null) return readiness.ready;
+    const target = this.getAssetPath(asset);
     return (await hashFile(target)) === asset.sha256;
+  }
+
+  async hashForVerification(asset, filePath) {
+    if (!this.integrityVerifier) return hashFile(filePath);
+    const totalBytes = fs.statSync(filePath).size;
+    const result = await this.integrityVerifier.verifyPath(filePath, processedBytes => {
+      this.emit('verification-progress', { asset, processedBytes, totalBytes });
+    });
+    return result.digest;
   }
 
   async prepareAsset(asset, allowIntegrityRetry = true) {
     const target = this.getAssetPath(asset);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     const partial = `${target}.part`;
-    if (await this.isReady(asset)) {
+    const readiness = this.checkReadiness(asset);
+    const ready = readiness.ready === null
+      ? (await hashFile(target).catch(() => '')) === asset.sha256
+      : readiness.ready;
+    if (ready) {
       removeDownloadState(partial);
       this.emit('ready', { asset, path: target, cached: true });
       return target;
     }
 
+    if (
+      this.integrityVerifier && fileExists(target) &&
+      fs.statSync(target).size === Number(asset.size) &&
+      ['queued', 'waiting', 'verifying'].includes(readiness.status)
+    ) {
+      this.emit('verifying', { asset, path: target });
+      const existingDigest = await this.hashForVerification(asset, target);
+      if (String(existingDigest).toLowerCase() === String(asset.sha256 || '').toLowerCase()) {
+        this.integrityVerifier.recordVerified(asset, target, existingDigest);
+        removeDownloadState(partial);
+        this.emit('ready', { asset, path: target, cached: true });
+        return target;
+      }
+      this.integrityVerifier.recordCorrupt(asset, target, 'SHA-256 checksum mismatch');
+    }
+
     if (fileExists(partial)) {
       const partialSize = fs.statSync(partial).size;
       if (partialSize === asset.size) {
-        const partialDigest = await hashFile(partial);
+        const partialDigest = await this.hashForVerification(asset, partial);
         if (partialDigest === asset.sha256) {
           if (fileExists(target)) fs.unlinkSync(target);
           fs.renameSync(partial, target);
           removeDownloadState(partial, false);
+          if (this.integrityVerifier) this.integrityVerifier.recordVerified(asset, target, partialDigest);
           this.emit('ready', { asset, path: target, cached: false });
           return target;
         }
@@ -247,7 +293,7 @@ class MediaManager extends EventEmitter {
       onProgress: progress => this.emit('download-progress', { asset, ...progress })
     });
     this.emit('verifying', { asset, path: partial });
-    const digest = await hashFile(partial);
+    const digest = await this.hashForVerification(asset, partial);
     if (digest !== asset.sha256) {
       removeDownloadState(partial);
       if (allowIntegrityRetry) {
@@ -259,6 +305,7 @@ class MediaManager extends EventEmitter {
     if (fileExists(target)) fs.unlinkSync(target);
     fs.renameSync(partial, target);
     removeDownloadState(partial, false);
+    if (this.integrityVerifier) this.integrityVerifier.recordVerified(asset, target, digest);
     this.emit('ready', { asset, path: target, cached: false });
     return target;
   }
@@ -323,7 +370,13 @@ class MediaManager extends EventEmitter {
         const playbackSource = asset && localPath
           ? await this.resolvePlaybackSource(asset, localPath)
           : localPath;
-        playlist.push({ ...item, localPath, path: localPath, playbackSource });
+        playlist.push({
+          ...item,
+          localPath,
+          path: localPath,
+          healthPath: asset ? this.getAssetPath(asset) : localPath,
+          playbackSource
+        });
       }
       preparedSchedules.push({
         ...schedule,
